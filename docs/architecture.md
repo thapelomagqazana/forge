@@ -2,11 +2,11 @@
 
 - **Document type:** Model
 - **Status:** Draft
-- **Version:** 0.3.0
+- **Version:** 0.4.0
 - **Author:** @thapelomagqazana
 - **Created:** 2026-10-09
-- **Last Updated:** 2026-10-09
-- **Supersedes:** 0.2.0
+- **Last Updated:** 2026-10-10
+- **Supersedes:** 0.3.0
 - **Superseded by:** —
 
 ---
@@ -26,6 +26,7 @@ This document exists to answer:
 - What interfaces connect modules?
 - What is the end-to-end data flow?
 - How is the process boundary made testable?
+- How are the handler and application logic separated?
 - How are errors structured?
 - How is logging structured?
 - What does the architecture look like as a diagram?
@@ -44,6 +45,7 @@ other specification documents. This document defines **structure**.
 - Interface contracts between modules
 - End-to-end data flow
 - The two-boundary execution model
+- The handler / service boundary
 - Error architecture
 - Logging architecture
 - Architecture diagram
@@ -121,6 +123,7 @@ Forge is organised into the following top-level modules.
 | **Renderer** | Application | Transform template content into rendered content |
 | **Validator** | Application | Evaluate rules against repository state |
 | **Update Engine** | Application | Compute and apply safe updates |
+| **Version Service** | Application | Report build metadata for the running binary |
 | **Filesystem** | Infrastructure | Provide safe, sandboxed filesystem access |
 | **Process** | Infrastructure | Provide process execution where needed |
 | **Registry** | Infrastructure | Fetch and verify remote artifacts (future) |
@@ -148,6 +151,25 @@ check, diff, update, explain).
 
 **Depends on:** Domain, Renderer, Validator, Update Engine,
 Filesystem, Logging.
+
+##### 4.2.2a Version Service — A Concrete Example
+
+The `Version Service` submodule (`internal/app/version/`) is the
+first implemented application service. It is deliberately simple:
+it reads the build metadata (version, commit, build date) from
+`internal/version` and formats it for a human reader.
+
+It exists to demonstrate the handler / service pattern that every
+future command follows. Its structure is documented in § 11.12.
+
+**Responsibility:** Produce an `Info` value describing the running
+binary, and render it to an `io.Writer`.
+
+**Does not:** Parse flags, construct Cobra commands, read files, or
+write to process-global streams.
+
+**Depends on:** `internal/version` (for the build metadata). It does
+not depend on `internal/cli` or `github.com/spf13/cobra`.
 
 #### 4.2.3 Domain
 
@@ -279,7 +301,7 @@ required (e.g., Git operations).
 │  │  └───────────────────────────────────────┘    │      │
 │  │                                               │      │
 │  │  Application Services                         │      │
-│  │  Renderer  Validator  Update Engine           │      │
+│  │  Renderer  Validator  Update Engine  Version  │      │
 │  │                                               │      │
 │  └───────────────────────────────────────────────┘      │
 │                                                         │
@@ -320,6 +342,8 @@ The following are explicitly forbidden:
 - **Domain calling external processes.** Domain logic is pure.
 - **Infrastructure depending on CLI.** This would invert the
   dependency direction.
+- **Any package outside `internal/cli` importing Cobra.** The CLI
+  framework is a CLI-layer concern. See § 11.12.
 
 ### 5.4 Rationale
 
@@ -540,6 +564,39 @@ type Output interface {
 }
 ```
 
+### 6.12 Version Service (informal)
+
+The version service does not define an interface. It is a pure
+function with a value type:
+
+```go
+// In internal/app/version:
+type Info struct {
+    Version   string
+    Commit    string
+    BuildDate string
+}
+
+func Get() Info
+func Format(w io.Writer, info Info) error
+```
+
+**Responsibilities:**
+
+- Produce an `Info` value describing the running binary.
+- Render the value to an `io.Writer`.
+
+**Does not:**
+
+- Parse flags.
+- Construct Cobra commands.
+- Read files.
+- Write to process-global streams.
+- Import `internal/cli`.
+
+The service is documented in § 11.12 as the reference implementation
+of the handler / service pattern.
+
 ---
 
 ## 7. Data Flow
@@ -599,6 +656,7 @@ Every Forge command follows the same high-level flow:
 | `forge check` | Rendering, Filesystem (write) |
 | `forge diff` | Filesystem (write) |
 | `forge explain` | Rendering, Filesystem (write) |
+| `forge version` | All of the above; writes fixed metadata to stdout |
 | `forge new` | Configuration (creates new) |
 | `forge init` | Rendering (only writes forge.yaml) |
 | `forge update` | Configuration (reads existing) |
@@ -681,6 +739,21 @@ CLI → parse args
   → Output.WriteHuman(result)
   → Exit code 0 (or 5 for conflicts)
 ```
+
+#### 7.4.4 `forge version`
+
+```text
+CLI → newVersionCmd(deps).RunE
+  → version.Get()      (pure; reads internal/version)
+  → version.Format(deps.Stdout, info)
+  → Exit code 0 (or 1 on write failure)
+```
+
+The version command is the reference implementation of the handler /
+service pattern (§ 11.12). It has no configuration, no blueprint, no
+component resolution, no validation, no rendering, and no filesystem
+write. Its flow is two lines: a pure call, and a formatted write to
+the injected stdout.
 
 ---
 
@@ -953,6 +1026,11 @@ When running in CI (`CI=true` environment variable):
 │  │            │  │            │  │ Engine     │  │ Service    │   │
 │  └─────┬──────┘  └─────┬──────┘  └─────┬──────┘  └─────┬──────┘   │
 │        │               │               │               │          │
+│  ┌─────┴──────┐                                                   │
+│  │ Version    │                                                   │
+│  │ Service    │                                                   │
+│  └────────────┘                                                   │
+│                                                                   │
 └────────┼───────────────┼───────────────┼───────────────┼──────────┘
          │               │               │               │
          └───────────────┴───────────────┴───────────────┘
@@ -999,6 +1077,10 @@ When running in CI (`CI=true` environment variable):
   dependency arrow.
 - **CLI is at the top** — it depends on Application, not the other
   way around.
+- **The Version Service is an Application-layer service** — it is
+  listed alongside Renderer, Validator, and Update Engine because it
+  has the same architectural role: it orchestrates a use case on
+  behalf of a CLI handler.
 
 ### 10.2 Alternative View: By Concern
 
@@ -1014,7 +1096,7 @@ When running in CI (`CI=true` environment variable):
 │                                                                   │
 │  ORCHESTRATION                                                    │
 │  ├── Application services (New, Init, Validate, Check, Diff,      │
-│  │   Update, Explain)                                             │
+│  │   Update, Explain, Version)                                    │
 │  ├── Renderer                                                     │
 │  ├── Validator                                                    │
 │  └── Update Engine                                                │
@@ -1035,7 +1117,8 @@ When running in CI (`CI=true` environment variable):
 │  ├── Process (Git, subprocess)                                    │
 │  ├── Registry (fetch, verify)                                     │
 │  ├── Logging                                                      │
-│  └── Output (formatting)                                          │
+│  ├── Output (formatting)                                          │
+│  └── Version (build metadata)                                     │
 │                                                                   │
 └───────────────────────────────────────────────────────────────────┘
 ```
@@ -1228,8 +1311,8 @@ Both invariants are verified by:
 
 - **Structural tests** in `internal/cli/structure_test.go` and
   `internal/cli/execute_test.go` (white-box package `cli`).
-- **Taskfile targets** `verify:deps` and `verify:two-boundary`, which
-  grep the source tree.
+- **Taskfile targets** `verify:two-boundary` and
+  `verify:handler-boundary`, which grep the source tree.
 - **Code review.**
 
 ### 11.6 What Is Not Tested In Process
@@ -1282,7 +1365,16 @@ to stdout, diagnostics and errors go to stderr.
 | `internal/cli/deps_test.go` | White-box tests for `Dependencies` and its construction. |
 | `internal/cli/execute_test.go` | White-box tests for the process boundary and the transformation. |
 | `internal/cli/exitcodes.go` | Exit code constants and the error-to-code mapping. |
-| `internal/cli/root.go` | The root command constructor. Accepts a `Dependencies` value. |
+| `internal/cli/root.go` | The root command constructor. Accepts a `Dependencies` value and registers subcommands. |
+| `internal/cli/version.go` | The `forge version` handler. Reference implementation of the handler / service pattern (§ 11.12). |
+| `internal/cli/version_test.go` | White-box tests for the version handler, including the structural tests that enforce § 11.12. |
+| `internal/cli/structure_test.go` | Black-box structural tests for the package's shape. |
+| `internal/app/version/service.go` | The version application service. Pure. |
+| `internal/app/version/format.go` | The version formatter. Takes an `io.Writer`. |
+| `internal/app/version/buildinfo.go` | Reads build metadata from `internal/version`. |
+| `internal/app/version/service_test.go` | Unit tests for the version service, without Cobra. |
+| `internal/version/version.go` | The build metadata variables and their accessor. Leaf package; imported by `internal/cli` and `internal/app/version`. |
+| `internal/version/version_test.go` | Unit tests for the metadata accessor. |
 | `cmd/forge/main.go` | The process entry point. Calls `Execute()` and forwards its return to `os.Exit`. |
 | `cmd/forge/binary_integration_test.go` | Process-boundary tests. |
 
@@ -1343,6 +1435,160 @@ architectural principles:
 The two-boundary model does not introduce a new architectural
 principle. It refines the existing principles into a concrete,
 testable, auditable structure.
+
+### 11.12 Handler / Service Boundary
+
+WBS 4.3.1 establishes a boundary between **Cobra handlers** (the
+`RunE` closures in `internal/cli/`) and **application services** (the
+packages under `internal/app/`). The boundary is the operational form
+of the "no business logic in handlers" rule from WBS 4.3.
+
+#### Allowed in a handler
+
+A Cobra handler is permitted to do only the following:
+
+- Parse and validate flags.
+- Collect arguments.
+- Construct an application service.
+- Call the application service.
+- Format the result — and only by delegating to the service's
+  formatter, not by formatting inline.
+- Return an error.
+
+#### Not allowed in a handler
+
+A Cobra handler must not do any of the following:
+
+- Perform filesystem I/O.
+- Perform network I/O.
+- Contain business rules.
+- Contain business logic.
+- Format complex output (that belongs to a formatter in the service
+  package).
+- Call `os.Exit`.
+- Write to `os.Stdout`, `os.Stderr`, or `os.Stdin`.
+- Call `fmt.Println`, `fmt.Printf`, `fmt.Fprintln`, or any other
+  function that writes to a process-global stream.
+
+#### The pattern
+
+For every command, there must be:
+
+1. **A handler.** A thin `RunE` closure in
+   `internal/cli/<name>.go`. Target: under 20 lines of handler body.
+   The handler parses flags, constructs the service, calls it, and
+   returns the error.
+
+2. **An application service.** A package under
+   `internal/app/<name>/`. The service contains the logic, in one
+   or more pure functions. It receives its inputs as parameters and
+   its output writer as a parameter; it never reads a process global.
+
+3. **A result type.** A plain struct that the service returns and the
+   formatter renders. The result type is exported from the service
+   package. It has no methods and no dependencies.
+
+#### Reference implementation
+
+The `forge version` command is the reference implementation. Its
+structure:
+
+| File | Purpose |
+|------|---------|
+| `internal/cli/version.go` | The thin handler. Three lines of body. |
+| `internal/app/version/service.go` | The pure service. `Get() Info`. |
+| `internal/app/version/format.go` | The formatter. `Format(io.Writer, Info) error`. |
+| `internal/app/version/service_test.go` | Unit tests that do not construct a Cobra command. |
+| `internal/version/version.go` | The build metadata variables. Leaf package. |
+| `internal/version/version_test.go` | Unit tests for the accessor. |
+
+The handler body is:
+
+```go
+RunE: func(cmd *cobra.Command, args []string) error {
+    return version.Format(deps.Stdout, version.Get())
+},
+```
+
+Every future command follows this shape. The handler receives a
+`Dependencies` value, reads the collaborators it needs, and delegates
+the work. The service knows nothing about Cobra, flags, or
+`Dependencies`.
+
+#### The build-metadata leaf package
+
+The version service needs three values — `Version`, `Commit`,
+`BuildDate` — that are injected at link time. Before WBS 4.3.1, those
+values lived in `internal/cli`. That created an import cycle:
+
+```text
+internal/cli  ──────►  internal/app/version
+     ▲                        │
+     │                        │
+     └────────────────────────┘
+              (cycle)
+```
+
+`internal/cli` imports `internal/app/version` for the version handler.
+`internal/app/version` would need to import `internal/cli` for the
+build variables. Go rejects the cycle.
+
+WBS 4.3.1 breaks the cycle by relocating the variables to
+`internal/version`, a leaf package that imports nothing from Forge.
+Both `internal/cli` and `internal/app/version` import it. The graph
+becomes a directed acyclic graph:
+
+```text
+internal/cli        internal/app/version
+         \            /
+          v          v
+          internal/version
+```
+
+The relocation is not optional. "Treat the values as internal" is not
+a construct that Go supports; either the import exists or it does
+not, and if it exists, the cycle exists.
+
+#### Enforcement
+
+The boundary is enforced by:
+
+- **Structural tests** in `internal/cli/version_test.go` that assert
+  the handler body contains exactly one service call and no
+  forbidden tokens (`os.Stdout`, `os.Exit`, `fmt.Fprintln`, ...).
+  The tests strip comments before searching, so that the handler's
+  docstring may name the forbidden tokens while explaining that the
+  handler does not use them.
+- **Code review**, using the checklist in
+  [`docs/development.md`](./development.md).
+- **The example itself.** `version.go` is the shortest handler in the
+  codebase, and it is the template every subsequent command copies.
+
+#### Why this boundary
+
+Without it, every command would accumulate its own I/O, formatting,
+and business rules. The CLI package would grow into a monolith. The
+application layer would be empty. Testing a command would require
+constructing a Cobra command and inspecting a buffer, rather than
+calling a pure function.
+
+With the boundary, the application logic is testable in isolation. A
+test calls `version.Get()` and asserts on the returned `Info`; no
+Cobra command is constructed, no buffer is inspected, no flags are
+parsed. This is the property that keeps the test suite fast as the
+command count grows.
+
+#### Relationship to § 4.2.1 and § 4.2.2
+
+This boundary is the concrete shape of two module-level rules:
+
+- **§ 4.2.1 (CLI).** "Does not: contain business logic, read files,
+  render templates." The handler / service split is how that rule is
+  enforced in code.
+
+- **§ 4.2.2 (Application).** "Implements use cases (create project,
+  validate, check, diff, update, explain)." The service package is
+  the concrete shape of an application use case.
 
 ---
 
@@ -1431,7 +1677,8 @@ forge/
 │   │   ├── check/
 │   │   ├── diff/
 │   │   ├── update/
-│   │   └── explain/
+│   │   ├── explain/
+│   │   └── version/  # Version service (WBS 4.3.1)
 │   ├── domain/       # Domain logic (pure)
 │   │   ├── blueprint/
 │   │   ├── template/
@@ -1442,6 +1689,7 @@ forge/
 │   ├── validator/    # Validation engine
 │   ├── update/       # Update engine
 │   ├── state/        # State store
+│   ├── version/      # Build metadata (WBS 4.3.1) — leaf package
 │   └── infra/        # Infrastructure
 │       ├── fs/       # Filesystem
 │       ├── process/  # Process execution
@@ -1464,6 +1712,7 @@ forge/
 | `internal/validator` | Validation rules and engine |
 | `internal/update` | Update planning, merging, application |
 | `internal/state` | Reading and writing `.forge/state.yaml` |
+| `internal/version` | Build metadata (version, commit, build date) |
 | `internal/infra/fs` | Filesystem interface and OS implementation |
 | `internal/infra/logging` | Logger interface and implementation |
 | `internal/infra/output` | Human and JSON output formatters |
@@ -1478,6 +1727,11 @@ forge/
 - `internal/cli` may import `internal/app/*` and `internal/infra/*`.
 - `internal/infra/*` may import `internal/domain/*` (for shared
   types) but not `internal/app/*` or `internal/cli`.
+- `internal/version` may not import any other `internal/*` package.
+  It is a leaf.
+- No package outside `internal/cli` may import
+  `github.com/spf13/cobra`. The CLI framework is a CLI-layer
+  concern.
 
 ---
 
@@ -1538,10 +1792,16 @@ behaviour.
 
 ### 15.1 Adding a New Command
 
-1. Define the command in `internal/cli`
-2. Define the use case in `internal/app/<command>`
-3. Reuse existing domain and infrastructure packages
-4. Add tests
+1. Define the handler in `internal/cli/<name>.go`. It must be thin
+   (under 20 lines of body) and follow the pattern in § 11.12.
+2. Define the use case in `internal/app/<name>/`. The service must
+   be pure (no `os.*`, no Cobra import).
+3. Register the handler in `newRootCmd`'s command list.
+4. Add the handler file to `expectedSourceFiles` in
+   `internal/cli/structure_test.go`.
+5. Add the handler file to `HANDLER_FILES` in `Taskfile.yml`.
+6. Add tests: handler tests in `internal/cli/<name>_test.go`,
+   service tests in `internal/app/<name>/`.
 
 ### 15.2 Adding a New Domain Concept
 
@@ -1577,7 +1837,8 @@ The following are explicitly discouraged.
 ### 16.1 Business Logic in the CLI
 
 The CLI layer is for command parsing and output formatting only. Any
-business logic belongs in the Application or Domain layer.
+business logic belongs in the Application or Domain layer. See § 11.12
+for the operational rule.
 
 ### 16.2 Direct Filesystem Access from Domain
 
@@ -1623,6 +1884,19 @@ for diagnostics.
 Forge behaves the same regardless of environment. Environment
 variables do not change behaviour except through explicit, documented
 configurations.
+
+### 16.11 Cobra Outside the CLI Layer
+
+No package outside `internal/cli` may import
+`github.com/spf13/cobra`. The CLI framework is a CLI-layer concern; an
+application service that imports Cobra has collapsed the boundary
+between the handler and the service.
+
+### 16.12 Build Metadata Outside the Leaf Package
+
+The build metadata variables (`Version`, `Commit`, `BuildDate`) live
+in `internal/version` and only there. Defining them elsewhere would
+recreate the import cycle that WBS 4.3.1 broke. See § 11.12.
 
 ---
 
@@ -1678,3 +1952,4 @@ begins.
 | 0.1.0 | 2026-10-09 | @thapelomagqazana | Initial Phase 1 draft. |
 | 0.2.0 | 2026-10-09 | @thapelomagqazana | Added module list, dependency direction, interface contracts, and data flow. |
 | 0.3.0 | 2026-10-09 | @thapelomagqazana | Refined § 11 to describe the two-boundary execution model introduced by WBS 4.2.2. Added the `Dependencies` struct, the `options`/`Dependencies` split, the transformation, the two testability seams, the two auditable invariants, and the seven rules for extending the model. Renamed § 11 from "The Two-Layer Execution Model" to "The Two-Boundary Execution Model". |
+| 0.4.0 | 2026-10-10 | @thapelomagqazana | Added § 11.12 (Handler / Service Boundary) in response to WBS 4.3.1. Added the reference implementation (`forge version`), the allowed / forbidden table, the enforcement rules, and the rationale for the `internal/version` leaf package. Added § 4.2.2a (Version Service) as a concrete example of the Application module. Updated § 5.3, § 7.2, § 7.4, § 10, § 11.9, § 13, § 16, and the module list to reflect the new service. Added rules for adding a command in § 15.1. |
