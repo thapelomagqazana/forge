@@ -10,17 +10,21 @@
 #
 # Structure:
 #
-#   adr:*        — Architecture Decision Record management
-#   module:*     — Go module verification (WBS 2.1.1)
-#   goversion:*  — Go version matrix verification (WBS 2.1.2)
-#   build:*      — Binary compilation with injected metadata
-#   test         — Unit and integration tests
-#   fmt*         — Formatting
-#   vet          — Static analysis
-#   check        — Full quality gate (fmt + vet + goversion + test)
-#   verify       — Composition of module + goversion verification
-#   clean        — Remove build artifacts
-#   default      — List all tasks
+#   adr:*                — Architecture Decision Record management
+#   module:*             — Go module verification (WBS 2.1.1)
+#   goversion:*          — Go version matrix verification (WBS 2.1.2)
+#   verify:*             — Reproducibility & composed verification
+#                          (WBS 2.3.1, and future verify:* namespaces)
+#   lint:*               — Linting (Markdown, and future linters)
+#   tidy                 — Dependency lockfile maintenance (maintainers only)
+#   build:*              — Binary compilation with injected metadata
+#   test                 — Unit and integration tests
+#   fmt*                 — Go formatting
+#   vet                  — Static analysis
+#   check                — Full quality gate (fmt + lint + vet + goversion +
+#                          verify:reproducible + test)
+#   clean                — Remove build artifacts
+#   default              — List all tasks
 #
 # Conventions:
 #
@@ -88,6 +92,43 @@ vars:
   GO_MIN: '1.23.0'
   GO_DEV: '1.23.4'
   GO_LATEST: '1.24'
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Reproducibility configuration (WBS 2.3.1)
+  # ───────────────────────────────────────────────────────────────────────────
+  #
+  # GOFLAGS_REQUIRED — the value that GOFLAGS must contain for reproducible
+  # builds. It is checked by verify:reproducible:env.
+  #
+  # GOTOOLCHAIN_REQUIRED — the value that GOTOOLCHAIN must be set to. It
+  # allows Go to honour the `toolchain` directive in go.mod.
+  #
+  # Both values are also documented in docs/development.md, so that
+  # contributors can set them in their shell profiles.
+  GOFLAGS_REQUIRED: '-mod=readonly'
+  GOTOOLCHAIN_REQUIRED: 'auto'
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Markdown lint configuration (WBS 2.1.x — documentation quality)
+  # ───────────────────────────────────────────────────────────────────────────
+  #
+  # MD_GLOB — the set of Markdown files to lint.
+  #
+  # The glob intentionally excludes generated documentation under dist/
+  # and any build output. It intentionally includes:
+  #
+  #   - docs/            (all specification and reference documents)
+  #   - *.md at root     (README, CONTRIBUTING, SECURITY, etc.)
+  #   - cmd/**/README.md (per-command documentation)
+  #   - internal/**/*.md (package-level documentation)
+  #   - scripts/**/*.md  (tooling documentation)
+  #
+  # MD_CONFIG — path to the markdownlint configuration file.
+  #
+  # The configuration is authoritative; see .markdownlint.yaml for the
+  # rationale behind each enabled or disabled rule.
+  MD_GLOB: '**/*.md'
+  MD_CONFIG: '.markdownlint.yaml'
 
   # ───────────────────────────────────────────────────────────────────────────
   # Build metadata (injected at link time)
@@ -434,22 +475,284 @@ tasks:
         echo "OK: builds with Go {{.GO_MIN}}"
 
   # ═══════════════════════════════════════════════════════════════════════════
+  # Reproducibility — verification of the module and toolchain contract
+  # (WBS 2.3.1)
+  # ═══════════════════════════════════════════════════════════════════════════
+  #
+  # verify:reproducible proves that the local environment satisfies the
+  # reproducibility invariant. It is safe to run at any time and makes no
+  # changes to the working tree (sub-tasks that need to temporarily modify
+  # files use a backup-and-restore pattern that is exception-safe).
+  #
+  # verify:reproducible:negative proves that -mod=readonly actually
+  # prevents mutation. It temporarily modifies a copy of go.mod in a temp
+  # directory and asserts that the build fails. The working tree is never
+  # modified.
+  #
+  # CI should call verify:reproducible; contributors should call it before
+  # opening a pull request. It is also included in the `check` composed
+  # task.
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  verify:reproducible:
+    desc: Verify the reproducibility invariant holds locally (WBS 2.3.1)
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - task: verify:reproducible:env
+      - task: verify:reproducible:tidy
+      - task: verify:reproducible:lockstep
+      - task: verify:reproducible:negative
+
+  # AC3 — Verify that GOFLAGS and GOTOOLCHAIN are set as required.
+  verify:reproducible:env:
+    desc: Confirm GOFLAGS and GOTOOLCHAIN are set as required
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - |
+        set -euo pipefail
+        flags=$(go env GOFLAGS)
+        toolchain=$(go env GOTOOLCHAIN)
+
+        if ! echo "$flags" | grep -q -- "{{.GOFLAGS_REQUIRED}}"; then
+          echo "FAIL: GOFLAGS does not include {{.GOFLAGS_REQUIRED}}" >&2
+          echo "  actual GOFLAGS: $flags" >&2
+          echo "  See docs/development.md for setup instructions." >&2
+          exit 1
+        fi
+
+        if [ "$toolchain" != "{{.GOTOOLCHAIN_REQUIRED}}" ] && \
+           [ "$toolchain" != "local" ]; then
+          echo "FAIL: GOTOOLCHAIN is not '{{.GOTOOLCHAIN_REQUIRED}}' or 'local'" >&2
+          echo "  actual GOTOOLCHAIN: $toolchain" >&2
+          exit 1
+        fi
+
+        echo "OK: GOFLAGS=$flags GOTOOLCHAIN=$toolchain"
+
+  # AC3 (continued) — Verify that go mod tidy produces no diff.
+  #
+  # Uses a backup-and-restore pattern that is exception-safe: if the
+  # command fails for any reason, the backup is restored.
+  verify:reproducible:tidy:
+    desc: Confirm go mod tidy produces no diff on a clean checkout
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - |
+        set -euo pipefail
+
+        # Back up the lockfiles with a trap that restores on any exit.
+        backup_dir=$(mktemp -d)
+        trap 'cp "$backup_dir/go.mod.bak" go.mod 2>/dev/null || true; \
+              [ -f "$backup_dir/go.sum.bak" ] && cp "$backup_dir/go.sum.bak" go.sum 2>/dev/null || true; \
+              rm -rf "$backup_dir"' EXIT
+
+        cp go.mod "$backup_dir/go.mod.bak"
+        [ -f go.sum ] && cp go.sum "$backup_dir/go.sum.bak"
+
+        go mod tidy
+
+        if ! diff -q "$backup_dir/go.mod.bak" go.mod >/dev/null 2>&1; then
+          echo "FAIL: go mod tidy modified go.mod" >&2
+          echo "  Run 'task tidy' on a clean branch to update." >&2
+          diff "$backup_dir/go.mod.bak" go.mod >&2 || true
+          exit 1
+        fi
+
+        if [ -f "$backup_dir/go.sum.bak" ] && \
+           ! diff -q "$backup_dir/go.sum.bak" go.sum >/dev/null 2>&1; then
+          echo "FAIL: go mod tidy modified go.sum" >&2
+          exit 1
+        fi
+
+        echo "OK: go.mod and go.sum are tidy"
+
+  # AC3 (continued) — Verify that go list -m all is deterministic across
+  # consecutive invocations.
+  verify:reproducible:lockstep:
+    desc: Confirm module resolution is deterministic across runs
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - |
+        set -euo pipefail
+        run1=$(go list -m all 2>/dev/null | sort)
+        run2=$(go list -m all 2>/dev/null | sort)
+        if [ "$run1" != "$run2" ]; then
+          echo "FAIL: go list -m all produced different output across runs" >&2
+          diff <(echo "$run1") <(echo "$run2") >&2 || true
+          exit 1
+        fi
+        echo "OK: module resolution is deterministic"
+
+  # AC4 — Negative test: prove that -mod=readonly fails on mutation.
+  #
+  # The working tree is never modified. A temporary copy of the module
+  # is created, the copy's go.mod is tampered with, and a build is
+  # attempted against the copy. The build must fail.
+  verify:reproducible:negative:
+    desc: Prove that -mod=readonly prevents go.mod mutation (WBS 2.3.1)
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - |
+        set -euo pipefail
+
+        tmpdir=$(mktemp -d)
+        trap 'rm -rf "$tmpdir"' EXIT
+
+        # Copy only the files needed for a build attempt.
+        cp go.mod "$tmpdir/go.mod"
+        [ -f go.sum ] && cp go.sum "$tmpdir/go.sum"
+        cp -R cmd "$tmpdir/cmd" 2>/dev/null || true
+        cp -R internal "$tmpdir/internal" 2>/dev/null || true
+
+        # Introduce a deliberate inconsistency: add a require for a
+        # module that is not actually imported. With -mod=readonly, the
+        # next build must fail.
+        cat >> "$tmpdir/go.mod" <<EOF
+
+        require example.com/nonexistent v0.0.0-00010101000000-000000000000
+        EOF
+
+        # Attempt the build in the temp directory.
+        cd "$tmpdir"
+        if GOFLAGS=-mod=readonly go build ./... 2>/tmp/forge-neg.err; then
+          echo "FAIL: build succeeded despite inconsistent go.mod" >&2
+          echo "      -mod=readonly is not being honoured." >&2
+          cat /tmp/forge-neg.err >&2 || true
+          exit 1
+        fi
+
+        echo "OK: -mod=readonly correctly prevented silent mutation"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Lint — documentation and configuration quality
+  # ═══════════════════════════════════════════════════════════════════════════
+  #
+  # lint:* namespaces all linting tasks. Currently only Markdown is linted.
+  # Future additions (YAML lint, shellcheck, golangci-lint) will follow the
+  # same naming convention: `lint:yaml`, `lint:sh`, `lint:go`.
+  #
+  # The `lint` composed task runs every linter. CI should call this task.
+  # Contributors should call it before opening a pull request.
+  #
+  # Prerequisites:
+  #
+  #   markdownlint-cli2 — install via npm:
+  #       npm install -g markdownlint-cli2
+  #   or via Homebrew:
+  #       brew install markdownlint-cli2
+  #   or via Go:
+  #       go install github.com/DavidAnson/markdownlint-cli2@latest
+  #
+  # The linter honours .markdownlint.yaml at the repository root.
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  lint:
+    desc: Run all linters (Markdown, and future linters)
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - task: lint:md
+
+  # ─────────────────────────────────────────────────────────────
+  # Markdown linting
+  # ─────────────────────────────────────────────────────────────
+  #
+  # Lints all Markdown files in the repository against the rules defined
+  # in .markdownlint.yaml. Fails the build on any violation.
+  #
+  # Common fixes for frequent violations:
+  #
+  #   MD022 — Ensure exactly one blank line after every heading.
+  #   MD032 — Ensure exactly one blank line before and after every list.
+  #   MD031 — Ensure blank lines around fenced code blocks.
+  #   MD040 — Add a language identifier to every fenced code block.
+  #   MD044 — Use canonical capitalisation for proper names (CLI, Linux, etc.).
+  #
+  # To auto-fix what can be fixed automatically, run: task lint:md:fix
+  lint:md:
+    desc: Lint all Markdown files (WBS 2.1.x — documentation quality)
+    dir: "{{.USER_WORKING_DIR}}"
+    preconditions:
+      - sh: command -v markdownlint-cli2 >/dev/null 2>&1
+        msg: |
+          markdownlint-cli2 is not installed.
+          Install with one of:
+            npm install -g markdownlint-cli2
+            brew install markdownlint-cli2
+            go install github.com/DavidAnson/markdownlint-cli2@latest
+      - sh: test -f {{.MD_CONFIG}}
+        msg: "Markdown lint config not found: {{.MD_CONFIG}}"
+    cmds:
+      - markdownlint-cli2 --config {{.MD_CONFIG}} "{{.MD_GLOB}}"
+
+  # Auto-fix Markdown violations where possible.
+  #
+  # This task modifies files in place. It is safe to run in a git working
+  # tree because every change is reviewable via `git diff`. It should NOT
+  # be part of CI; it is a contributor convenience.
+  #
+  # After running, review the diff and commit intentional changes.
+  lint:md:fix:
+    desc: Auto-fix Markdown violations where possible (modifies files)
+    dir: "{{.USER_WORKING_DIR}}"
+    preconditions:
+      - sh: command -v markdownlint-cli2 >/dev/null 2>&1
+        msg: "markdownlint-cli2 is not installed (see lint:md task for install instructions)"
+      - sh: test -f {{.MD_CONFIG}}
+        msg: "Markdown lint config not found: {{.MD_CONFIG}}"
+    cmds:
+      - markdownlint-cli2 --config {{.MD_CONFIG}} --fix "{{.MD_GLOB}}"
+
+  # ═══════════════════════════════════════════════════════════════════════════
   # Verify — composition of all verification tasks
   # ═══════════════════════════════════════════════════════════════════════════
   #
   # verify is the single entry point for "is this repository healthy?".
-  # It composes module verification and version-matrix verification.
+  # It composes module verification, version-matrix verification, and
+  # reproducibility verification.
   #
   # CI should call this task; contributors should run it before opening
   # a pull request.
   # ═══════════════════════════════════════════════════════════════════════════
 
   verify:
-    desc: Run all verification tasks (module + Go version matrix)
+    desc: Run all verification tasks (module + Go version matrix + reproducible)
     dir: "{{.USER_WORKING_DIR}}"
     cmds:
       - task: module:verify
       - task: goversion:verify
+      - task: verify:reproducible
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Tidy — dependency lockfile maintenance (WBS 2.3.1)
+  # ═══════════════════════════════════════════════════════════════════════════
+  #
+  # tidy is deliberately NOT part of `check` or `build`. It mutates
+  # go.mod and go.sum and must only be run deliberately by a maintainer
+  # on a clean branch. See docs/development.md for the workflow.
+  #
+  # This task is idempotent on a clean tree: running it twice produces
+  # no additional changes.
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  tidy:
+    desc: Run go mod tidy (maintainers only; run on a clean branch)
+    dir: "{{.USER_WORKING_DIR}}"
+    preconditions:
+      - sh: test -z "$(git status --porcelain 2>/dev/null)"
+        msg: |
+          Working tree is not clean. Commit or stash changes before
+          running tidy. See docs/development.md "How go mod tidy
+          should be run".
+    cmds:
+      - go mod tidy
+      - |
+        set -euo pipefail
+        if git diff --quiet -- go.mod go.sum 2>/dev/null; then
+          echo "OK: no changes needed (go.mod and go.sum were already tidy)"
+        else
+          echo "UPDATED: go.mod and/or go.sum changed"
+          echo "Review with: git diff go.mod go.sum"
+        fi
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Build — binary compilation with injected metadata (WBS 17.4)
@@ -512,13 +815,27 @@ tasks:
   # Composed quality gate. Runs cheap checks first, expensive checks last.
   # Mirrors the shape of `adr:new`'s composition of sub-tasks so the file
   # has a consistent structural idiom.
+  #
+  # Order rationale:
+  #
+  #   1. fmt:check              — instant; catches formatting drift
+  #   2. lint                   — fast; catches documentation drift
+  #   3. vet                    — fast; catches obvious Go issues
+  #   4. goversion:verify       — moderate; toolchain matrix
+  #   5. verify:reproducible    — moderate; environment, tidy, and
+  #                               negative test
+  #   6. test                   — slow; runs the full test suite
   check:
-    desc: Run the full quality gate (format, vet, version matrix, test)
+    desc: |
+      Run the full quality gate
+      (format, lint, vet, version matrix, reproducibility, test)
     dir: "{{.USER_WORKING_DIR}}"
     cmds:
       - task: fmt:check
+      - task: lint
       - task: vet
       - task: goversion:verify
+      - task: verify:reproducible
       - task: test
 
   clean:

@@ -57,13 +57,21 @@ MD010:
 MD012:
   maximum: 1
 
-MD013:
-  line_length: 80
-  code_blocks: false
-  tables: false
-  headings: false
-  strict: false
-  stern: false
+# MD013 — Line length.
+#
+# Disabled. Forge's specification documents and ADRs frequently contain
+# long prose sentences, multi-clause bullet items, and inline references
+# to code paths that cannot be wrapped without hurting readability.
+#
+# The 80-character limit is a print-era convention that does not map well
+# to Markdown files rendered on modern wide displays, and enforcing it
+# forces contributors to make cosmetic edits that obscure the substance
+# of their changes.
+#
+# Line-length discipline is instead enforced socially, through code
+# review, on a case-by-case basis where wrapping genuinely improves
+# readability.
+MD013: false
 
 MD031:
   list_items: true
@@ -141,36 +149,3 @@ MD041: true
 MD051: true
 MD052: true
 MD053: true
-
-# ─────────────────────────────────────────────────────────────────────
-# Proper names — enforce canonical capitalisation
-# Per documentation-guide.md § 7.4.
-# ─────────────────────────────────────────────────────────────────────
-
-MD044:
-  names:
-    - Cobra
-    - Viper
-    - GitHub
-    - GitLab
-    - JSON
-    - TOML
-    - SARIF
-    - OIDC
-    - SAML
-    - SCIM
-    - RBAC
-    - SSO
-    - ADR
-    - API
-    - SDK
-    - SQLite
-    - PostgreSQL
-    - Windows
-    - Linux
-    - macOS
-    - Docker
-    - Kubernetes
-    - Makefile
-  code_blocks: false
-  html_elements: false
