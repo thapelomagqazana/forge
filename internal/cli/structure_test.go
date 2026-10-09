@@ -22,16 +22,18 @@
 //   - Exit codes.
 //   - Error formatting.
 //
-// Those are tested by the white-box tests in root_test.go and
-// execute_test.go, which live in package cli (not cli_test).
+// Those are tested by the white-box tests in root_test.go,
+// execute_test.go, version_test.go, and deps_test.go, which live in
+// package cli (not cli_test).
 //
 // # Why structural tests
 //
 // The CLI package's design depends on properties that the compiler
 // does not enforce:
 //
-//   - Only one file may import Cobra. If a second file imports it,
-//     the "one entry point" invariant is violated.
+//   - Cobra is imported only under internal/cli. If a second package
+//     imports it, the CLI framework leaks into a layer that should
+//     not know about it.
 //   - Only one function may be exported from the package (Execute).
 //     If a second function becomes exported, downstream packages can
 //     depend on internals, which locks the design in place.
@@ -89,8 +91,8 @@ func packageDir(t *testing.T) string {
 // package directory.
 //
 // Test files are excluded because they may legitimately import Cobra
-// for the purpose of testing it, and are not subject to the "one file
-// imports Cobra" rule.
+// for the purpose of testing it, and are not subject to the Cobra
+// import-scope rule.
 func listGoFiles(t *testing.T) []string {
 	t.Helper()
 
@@ -175,6 +177,12 @@ var expectedSourceFiles = map[string]string{
 	"exitcodes.go": "WBS 2.4.2 — exit code constants and error mapping",
 	"root.go":      "WBS 2.4.2 — root command constructor",
 	"deps.go":      "WBS 4.2.2 — Dependencies injection struct and Logger",
+
+	// WBS 4.3.1 adds the version handler. It is the reference
+	// implementation of the handler / service boundary; the
+	// application logic it delegates to lives in
+	// internal/app/version.
+	"version.go": "WBS 4.3.1 — thin handler for the version command",
 }
 
 // TestExpectedFilesExist verifies that every file this WBS expects is
@@ -231,6 +239,11 @@ const cobraImportPath = `"github.com/spf13/cobra"`
 // TestRootFileImportsCobra verifies that root.go imports Cobra. This
 // is the positive half of the AC6 requirement from WBS 2.4.1: Cobra
 // must be wired in.
+//
+// The test is kept after WBS 4.3.1 because root.go is still the file
+// that constructs the root command. The version handler also imports
+// Cobra (see version.go), which is expected; the test asserts only
+// that root.go is among the importers, not that it is the only one.
 func TestRootFileImportsCobra(t *testing.T) {
 	t.Parallel()
 
@@ -242,50 +255,39 @@ func TestRootFileImportsCobra(t *testing.T) {
 	}
 }
 
-// TestCobraImportedInExactlyOneFile verifies that root.go is the only
-// non-test file in the package that imports Cobra.
+// TestCobraImportedOnlyInCliPackage verifies that Cobra is imported
+// only by files under internal/cli, and never by files outside it.
 //
-// This is the negative half of AC6: no *other* file may import Cobra.
-// If two files import it, the package acquires two coupling points to
-// the framework, and future refactors become harder.
-func TestCobraImportedInExactlyOneFile(t *testing.T) {
-	t.Parallel()
-
-	files := listGoFiles(t)
-
-	var importers []string
-	for _, f := range files {
-		content := readFile(t, f)
-		if strings.Contains(content, cobraImportPath) {
-			importers = append(importers, f)
-		}
-	}
-
-	if len(importers) != 1 {
-		t.Fatalf("expected exactly 1 file to import Cobra; found %d: %v",
-			len(importers), importers)
-	}
-
-	if importers[0] != "root.go" {
-		t.Fatalf("expected Cobra to be imported by root.go; "+
-			"found it imported by %s", importers[0])
-	}
-}
-
-// TestNoCobraImportOutsidePackage verifies that no file in the
-// repository imports Cobra except internal/cli/root.go.
+// # Why the rule is about packages, not files
 //
-// This test is stronger than TestCobraImportedInExactlyOneFile: it
-// walks the entire module, not just the package. If a future package
-// (say internal/blueprint) accidentally imports Cobra, this test
-// fails and forces the author to reconsider the dependency.
-func TestNoCobraImportOutsidePackage(t *testing.T) {
+// Before WBS 4.3.1, the rule was "exactly one file imports Cobra".
+// That was correct when internal/cli/root.go was the only file that
+// constructed commands. WBS 4.3.1 introduces the handler / service
+// pattern: each command's handler lives in its own file, and each
+// handler constructs a *cobra.Command. The number of Cobra importers
+// under internal/cli grows with the number of commands, which is
+// expected.
+//
+// The rule that matters is the package boundary: Cobra is a
+// CLI-layer concern. It must not leak into internal/app (the
+// application layer), internal/domain (the domain layer), or
+// internal/infra (the infrastructure layer). A file under
+// internal/cli may import Cobra; a file outside internal/cli may
+// not.
+//
+// # Why a violation matters
+//
+// If an application service imports Cobra, the boundary between the
+// handler and the service collapses: the service becomes aware of
+// the CLI framework, and a future replacement of Cobra would touch
+// every service. The rule exists to keep the CLI framework at the
+// CLI layer.
+func TestCobraImportedOnlyInCliPackage(t *testing.T) {
 	t.Parallel()
 
 	moduleRoot := findModuleRoot(t)
 
-	// The one allowed non-test importer.
-	allowed := filepath.Join("internal", "cli", "root.go")
+	allowedPrefix := filepath.Join("internal", "cli") + string(filepath.Separator)
 
 	var offenders []string
 
@@ -310,7 +312,7 @@ func TestNoCobraImportOutsidePackage(t *testing.T) {
 		if relErr != nil {
 			return nil
 		}
-		if rel == allowed {
+		if strings.HasPrefix(rel, allowedPrefix) {
 			return nil
 		}
 		data, readErr := os.ReadFile(path)
@@ -327,10 +329,10 @@ func TestNoCobraImportOutsidePackage(t *testing.T) {
 	}
 
 	if len(offenders) > 0 {
-		t.Fatalf("Cobra is imported outside internal/cli/root.go: %v\n"+
-			"Move the affected logic into internal/cli, or add an ADR "+
-			"explaining why the dependency must be imported elsewhere.",
-			offenders)
+		t.Fatalf("Cobra is imported outside internal/cli: %v\n"+
+			"Cobra is a CLI-layer concern. Move the affected code into "+
+			"internal/cli, or add an ADR explaining why the dependency "+
+			"must be imported elsewhere.", offenders)
 	}
 }
 
@@ -410,6 +412,51 @@ func TestStdlibOnlyForExecuteImports(t *testing.T) {
 			"execute.go may only import the standard library and "+
 			"Forge's own packages. Any other import requires updating "+
 			"docs/dependency-policy.md and adding an ADR.", imp)
+	}
+}
+
+// TestStdlibOnlyForVersionImports verifies that version.go imports
+// only standard-library packages, Cobra, and packages under Forge's
+// own module path.
+//
+// version.go is the reference implementation of the handler / service
+// boundary (WBS 4.3.1). Its import set is deliberately narrow: Cobra
+// for the command definition, and internal/app/version for the
+// service it delegates to. Any third-party import in version.go would
+// be a violation of the boundary.
+func TestStdlibOnlyForVersionImports(t *testing.T) {
+	t.Parallel()
+
+	content := readFile(t, "version.go")
+	imports := parseImportPaths(t, content)
+
+	const forgeModulePrefix = "github.com/thapelomagqazana/forge/"
+
+	for _, imp := range imports {
+		// Cobra is explicitly permitted: version.go constructs a
+		// *cobra.Command.
+		if imp == "github.com/spf13/cobra" {
+			continue
+		}
+
+		// Standard library: no dots in the first path segment.
+		firstSegment := imp
+		if idx := strings.Index(imp, "/"); idx > 0 {
+			firstSegment = imp[:idx]
+		}
+		if !strings.Contains(firstSegment, ".") {
+			continue
+		}
+
+		// Forge's own packages are permitted.
+		if strings.HasPrefix(imp, forgeModulePrefix) {
+			continue
+		}
+
+		t.Errorf("forbidden import in version.go: %s\n"+
+			"version.go may only import the standard library, Cobra, "+
+			"and Forge's own packages. Any other import requires "+
+			"updating docs/dependency-policy.md and adding an ADR.", imp)
 	}
 }
 
@@ -523,15 +570,7 @@ var expectedConstants = map[string]string{
 // requires, and nothing more.
 //
 // The exit code constants form a stable vocabulary that downstream
-// code and tests may reference by name. They are:
-//
-//   - ExitSuccess
-//   - ExitFailure
-//   - ExitUsage
-//   - ExitConfig
-//   - ExitFilesystem
-//   - ExitValidation
-//   - ExitSecurity
+// code and tests may reference by name.
 //
 // Adding a new exported constant requires updating the
 // expectedConstants map in this file. The update is a review
@@ -743,15 +782,25 @@ func TestExitCodesHaveDocComment(t *testing.T) {
 //
 // The split is enforced so that a contributor who moves a test file
 // to the wrong package is told immediately why the move is wrong.
+//
+// As of WBS 4.3.1, the package has four test files:
+//
+//   - root_test.go      — white-box tests for the root command.
+//   - execute_test.go   — white-box tests for the execution boundary.
+//   - version_test.go   — white-box tests for the version handler.
+//   - deps_test.go      — white-box tests for the Dependencies struct.
+//   - structure_test.go — black-box structural tests (this file).
 func TestTestFilePackageDeclarations(t *testing.T) {
 	t.Parallel()
 
 	expected := map[string]string{
-		// White-box: needs unexported symbols.
+		// White-box: need unexported symbols.
 		"root_test.go":    "package cli",
 		"execute_test.go": "package cli",
+		"version_test.go": "package cli",
+		"deps_test.go":    "package cli",
 
-		// Black-box: reads source files as data.
+		// Black-box: read source files as data.
 		"structure_test.go": "package cli_test",
 	}
 
@@ -868,7 +917,7 @@ func parseImportPaths(t *testing.T, content string) []string {
 //     integer in table-driven tests.
 //
 // A literal is considered an exit code if its value is one of the
-// known exit code values (0 through 6). The test is deliberately
+// known exit code values (0 through 7). The test is deliberately
 // over-broad: any integer in that range triggers the failure, even
 // if the contributor intended it as something else. Renaming the
 // intended constant clarifies the code.

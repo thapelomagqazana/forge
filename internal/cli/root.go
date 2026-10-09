@@ -32,10 +32,9 @@ import (
 // is stable across phases.
 //
 // The root command itself does not consume the value. It only
-// forwards it to the subcommand constructors. In WBS 4.2.2 there are
-// no subcommands yet, so the value is unused. The signature is
-// nevertheless fixed, because the subcommand constructors added
-// later will require it.
+// forwards it to the subcommand constructors. As of WBS 4.3.1 there
+// is one such subcommand (version); the constructor receives deps and
+// captures it in its handler closure.
 //
 // # Why the root command has a RunE handler
 //
@@ -52,10 +51,10 @@ import (
 //   - No positional arguments: the user requested information.
 //     Print help to stdout and return nil, which maps to ExitSuccess.
 //
-//   - One or more positional arguments: the user typed a command
-//     that does not exist. Return an error. executeWithOptions
-//     prints the error to stderr, and exitCodeFromError maps it to
-//     ExitUsage.
+//   - One or more positional arguments that do not match a registered
+//     subcommand: the user typed a command that does not exist.
+//     Return an error. executeWithOptions prints the error to stderr,
+//     and exitCodeFromError maps it to ExitUsage.
 //
 // This pattern is the standard way to build a Cobra command tree
 // where the root is a dispatcher rather than a runnable command
@@ -86,6 +85,14 @@ import (
 // it is the resolved, injectable set of collaborators that commands
 // consume. executeWithOptions is the single transformation point
 // between the two. This function sees only Dependencies.
+//
+// # Subcommand registration
+//
+// Every subcommand constructor receives the same Dependencies value.
+// The constructor captures the value in its handler closure and never
+// reaches for a global. See docs/architecture.md § 11.12 for the
+// handler / service boundary that every subcommand follows, and
+// internal/cli/version.go for the reference implementation.
 func newRootCmd(deps Dependencies) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "forge",
@@ -124,24 +131,21 @@ func newRootCmd(deps Dependencies) *cobra.Command {
 		Args: cobra.ArbitraryArgs,
 	}
 
-	// The deps value is accepted but not consumed by the root
-	// command. Subcommands added in later WBS items will receive it
-	// through their constructors, which are invoked from here. The
-	// assignment below is intentional and documented: it silences
-	// the "declared and not used" compiler error without changing
-	// the contract.
+	// Register subcommands. Every constructor receives the same
+	// Dependencies value, captures it in its handler closure, and
+	// never reaches for a global.
 	//
-	// When the first subcommand is added (WBS 4.4.1), this line is
-	// replaced by a call to the subcommand constructor:
+	// The order of registration is the order Cobra lists subcommands
+	// in help output when no explicit ordering is applied. Cobra
+	// sorts alphabetically by default; the registration order is
+	// therefore not significant for user-visible output today. It is
+	// kept in the order the commands were introduced, for
+	// readability.
 	//
-	//   root.AddCommand(newInitCmd(deps))
-	//
-	// The constructor receives deps, captures it in the handler
-	// closure, and never reaches for a global.
-	_ = deps
-
-	// No subcommands are registered in WBS 4.2.2. The registry
-	// mechanism is introduced in WBS 4.4.1.
+	// See docs/architecture.md § 11.12 for the handler / service
+	// boundary that newVersionCmd (and every future constructor)
+	// follows.
+	root.AddCommand(newVersionCmd(deps))
 
 	return root
 }
