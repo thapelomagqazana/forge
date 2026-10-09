@@ -162,7 +162,6 @@ MD044:
     - RBAC
     - SSO
     - ADR
-    - CLI
     - API
     - SDK
     - SQLite

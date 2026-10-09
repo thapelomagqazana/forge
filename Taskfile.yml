@@ -1,15 +1,135 @@
+# =============================================================================
+# Taskfile.yml — Forge engineering workflow
+# =============================================================================
+#
+# This is the canonical entry point for every routine operation on the Forge
+# repository. Contributors should not need to memorise raw `go`, `git`, or
+# shell commands; every routine operation has a named task.
+#
+# Run `task --list` to see all available tasks.
+#
+# Structure:
+#
+#   adr:*        — Architecture Decision Record management
+#   module:*     — Go module verification (WBS 2.1.1)
+#   goversion:*  — Go version matrix verification (WBS 2.1.2)
+#   build:*      — Binary compilation with injected metadata
+#   test         — Unit and integration tests
+#   fmt*         — Formatting
+#   vet          — Static analysis
+#   check        — Full quality gate (fmt + vet + goversion + test)
+#   verify       — Composition of module + goversion verification
+#   clean        — Remove build artifacts
+#   default      — List all tasks
+#
+# Conventions:
+#
+#   - Every task sets `dir: "{{.USER_WORKING_DIR}}"` so tasks work from any
+#     subdirectory of the repository.
+#   - Multi-step shell logic uses `set -euo pipefail` to fail fast.
+#   - Verification tasks print `OK:` on success and `FAIL:` on failure so
+#     CI logs are greppable.
+#   - Internal helpers are marked `internal: true` and must not be invoked
+#     directly by contributors.
+# =============================================================================
+
 version: '3'
 
+# =============================================================================
+# Variables
+# =============================================================================
+#
+# These variables are computed once per task invocation. Several shell
+# invocations (`git describe`, `git rev-parse`, `date -u`) tolerate failure
+# by falling back to a default, so that a fresh clone without tags still
+# produces a valid build.
+# =============================================================================
+
 vars:
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # ADR configuration
+  # ───────────────────────────────────────────────────────────────────────────
   ADR_DIR: docs/decisions
   ADR_TEMPLATE: "{{.ADR_DIR}}/template.md"
   ADR_SCRIPTS: scripts/adr
 
+  # ───────────────────────────────────────────────────────────────────────────
+  # Module configuration (WBS 2.1.1)
+  # ───────────────────────────────────────────────────────────────────────────
+  #
+  # MODULE must match go.mod exactly. The `module:verify:path` task enforces
+  # this at CI time. If you change the module path, change it in both places
+  # in the same commit.
+  #
+  # VERSION_PKG is the linker injection target (see WBS 6.1.2). It must
+  # resolve to a real package once `internal/version/` exists.
+  MODULE: 'github.com/thapelomagqazana/forge'
+  VERSION_PKG: '{{.MODULE}}/internal/version'
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Go version matrix (WBS 2.1.2)
+  # ───────────────────────────────────────────────────────────────────────────
+  #
+  # These values mirror the frozen matrix in docs/development.md and
+  # ADR-004-go-version-matrix.md. They are consumed by the
+  # `goversion:verify:*` tasks.
+  #
+  # When the matrix is intentionally changed (via an ADR that supersedes
+  # ADR-004), update these three values, go.mod, and docs/development.md
+  # in the same commit.
+  #
+  #   GO_MIN     — Minimum supported version (the contract)
+  #   GO_DEV     — Current development version (the recommended toolchain)
+  #   GO_LATEST  — Latest supported version (tested in CI)
+  #
+  # Do NOT use `latest` as a value. The policy is to pin exact versions
+  # so that behaviour is reproducible across contributors and CI runs.
+  GO_MIN: '1.23.0'
+  GO_DEV: '1.23.4'
+  GO_LATEST: '1.24'
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Build metadata (injected at link time)
+  # ───────────────────────────────────────────────────────────────────────────
+  #
+  # VERSION: git describe with tags, or "dev" on a fresh clone.
+  # COMMIT:  short SHA of HEAD, or "none" outside a git repository.
+  # BUILD_DATE: RFC 3339 UTC, always safe to compute.
+  # DIRTY:   "true" if the working tree has uncommitted changes, else "false".
+  VERSION:
+    sh: 'git describe --tags --always --dirty 2>/dev/null || echo dev'
+  COMMIT:
+    sh: 'git rev-parse --short HEAD 2>/dev/null || echo none'
+  BUILD_DATE:
+    sh: 'date -u +%Y-%m-%dT%H:%M:%SZ'
+  DIRTY:
+    sh: 'test -n "$(git status --porcelain 2>/dev/null)" && echo true || echo false'
+
+  # Linker flags passed to `go build -ldflags "..."`.
+  LDFLAGS: >-
+    -X {{.VERSION_PKG}}.Value={{.VERSION}}
+    -X {{.VERSION_PKG}}.Commit={{.COMMIT}}
+    -X {{.VERSION_PKG}}.BuildDate={{.BUILD_DATE}}
+    -X {{.VERSION_PKG}}.Dirty={{.DIRTY}}
+
+# =============================================================================
+# Tasks
+# =============================================================================
+
 tasks:
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Default
+  # ───────────────────────────────────────────────────────────────────────────
   default:
     desc: List all available tasks
     cmds:
       - task --list
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ADR — Architecture Decision Record management
+  # ═══════════════════════════════════════════════════════════════════════════
 
   # ─────────────────────────────────────────────────────────────
   # Create a new ADR
@@ -88,3 +208,322 @@ tasks:
     dir: "{{.USER_WORKING_DIR}}"
     cmds:
       - bash {{.ADR_SCRIPTS}}/lint.sh {{.ADR_DIR}}
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Module — verification of go.mod configuration (WBS 2.1.1)
+  # ═══════════════════════════════════════════════════════════════════════════
+  #
+  # module:verify composes every acceptance criterion from WBS 2.1.1 into a
+  # single command. CI should call this task; contributors should call it
+  # before committing changes to go.mod.
+  #
+  # The composed sub-tasks are also callable individually for debugging.
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  module:verify:
+    desc: Verify the Go module is correctly configured (WBS 2.1.1)
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - task: module:verify:exists
+      - task: module:verify:path
+      - task: module:verify:lowercase
+      - task: module:verify:matches-url
+      - task: module:verify:builds
+      - task: module:verify:tidy
+
+  # AC1 — go.mod exists at repository root.
+  module:verify:exists:
+    desc: Confirm go.mod exists at repository root
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - |
+        set -euo pipefail
+        if [ ! -f go.mod ]; then
+          echo "FAIL: go.mod missing at repository root" >&2
+          exit 1
+        fi
+        echo "OK: go.mod exists"
+
+  # AC2 — Module path matches the canonical value declared in Taskfile vars.
+  module:verify:path:
+    desc: Confirm the module directive matches the canonical path
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - |
+        set -euo pipefail
+        actual=$(grep -E '^module ' go.mod | awk '{print $2}')
+        if [ "$actual" != "{{.MODULE}}" ]; then
+          echo "FAIL: module path mismatch" >&2
+          echo "  expected: {{.MODULE}}" >&2
+          echo "  actual:   $actual" >&2
+          exit 1
+        fi
+        echo "OK: module path = $actual"
+
+  # AC3 — Module path contains no uppercase letters.
+  module:verify:lowercase:
+    desc: Confirm the module path contains no uppercase letters
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - |
+        set -euo pipefail
+        path=$(grep -E '^module ' go.mod | awk '{print $2}')
+        if echo "$path" | grep -qE '[A-Z]'; then
+          echo "FAIL: module path contains uppercase letters: $path" >&2
+          exit 1
+        fi
+        echo "OK: module path is lowercase"
+
+  # Soft check — module path versus git remote URL.
+  # This is a warning, not a failure, because the git remote may not yet be
+  # canonical (e.g. before the repository is published to GitHub).
+  module:verify:matches-url:
+    desc: Confirm the module path matches the GitHub repository URL (warning only)
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - |
+        set -euo pipefail
+        mod=$(grep -E '^module ' go.mod | awk '{print $2}')
+        remote=$(git config --get remote.origin.url 2>/dev/null || echo "")
+        remote_normalised=$(echo "$remote" \
+          | sed -E 's#^git@([^:]+):#\1/#' \
+          | sed -E 's#^https?://##' \
+          | sed -E 's#\.git$##')
+        if [ -n "$remote_normalised" ] && [ "$remote_normalised" != "$mod" ]; then
+          echo "WARN: module path ($mod) differs from git remote ($remote_normalised)" >&2
+          echo "      Acceptable if the remote URL is not yet canonical." >&2
+        else
+          echo "OK: module path matches git remote"
+        fi
+
+  # AC4 — go build ./... exits 0.
+  # On a module with no packages, this is a successful no-op.
+  module:verify:builds:
+    desc: Confirm go build ./... succeeds (no-op when no packages exist)
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - go build ./...
+      - echo "OK - go build succeeded"
+
+  # AC5 — go mod tidy produces no diff on a clean checkout.
+  # On a module with no dependencies, this is a no-op.
+  module:verify:tidy:
+    desc: Confirm go mod tidy produces no diff on a clean checkout
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - |
+        set -euo pipefail
+        go mod tidy
+        if ! git diff --quiet -- go.mod go.sum 2>/dev/null; then
+          echo "FAIL: go mod tidy produced changes" >&2
+          git diff -- go.mod go.sum
+          exit 1
+        fi
+        echo "OK: go.mod is tidy"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Go version matrix — verification (WBS 2.1.2)
+  # ═══════════════════════════════════════════════════════════════════════════
+  #
+  # goversion:verify composes every acceptance criterion from WBS 2.1.2 into
+  # a single command. CI should call this task; contributors should call it
+  # before committing changes to go.mod or docs/development.md.
+  #
+  # The composed sub-tasks are also callable individually for debugging.
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  goversion:verify:
+    desc: Verify the Go version matrix is documented and enforced (WBS 2.1.2)
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - task: goversion:verify:go-directive
+      - task: goversion:verify:toolchain-directive
+      - task: goversion:verify:no-latest
+      - task: goversion:verify:matrix-documented
+      - task: goversion:verify:minimum-builds
+
+  # AC1 — go.mod contains an explicit `go` directive matching the frozen
+  # minimum supported version (GO_MIN).
+  goversion:verify:go-directive:
+    desc: Confirm go.mod contains an explicit go directive
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - |
+        set -euo pipefail
+        if ! grep -qE '^go [0-9]+\.[0-9]+(\.[0-9]+)?$' go.mod; then
+          echo "FAIL: go.mod has no valid 'go' directive" >&2
+          exit 1
+        fi
+        actual=$(grep -E '^go ' go.mod | awk '{print $2}')
+        if [ "$actual" != "{{.GO_MIN}}" ]; then
+          echo "FAIL: go directive does not match frozen minimum" >&2
+          echo "  expected: {{.GO_MIN}}" >&2
+          echo "  actual:   $actual" >&2
+          exit 1
+        fi
+        echo "OK: go directive = $actual"
+
+  # AC1 (companion) — go.mod contains an explicit `toolchain` directive
+  # matching the frozen development version (GO_DEV).
+  goversion:verify:toolchain-directive:
+    desc: Confirm go.mod contains an explicit toolchain directive
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - |
+        set -euo pipefail
+        if ! grep -qE '^toolchain go[0-9]+\.[0-9]+(\.[0-9]+)?$' go.mod; then
+          echo "FAIL: go.mod has no valid 'toolchain' directive" >&2
+          exit 1
+        fi
+        actual=$(grep -E '^toolchain ' go.mod | awk '{print $2}')
+        expected="go{{.GO_DEV}}"
+        if [ "$actual" != "$expected" ]; then
+          echo "FAIL: toolchain directive does not match frozen development version" >&2
+          echo "  expected: $expected" >&2
+          echo "  actual:   $actual" >&2
+          exit 1
+        fi
+        echo "OK: toolchain directive = $actual"
+
+  # AC2 — no use of `latest` anywhere in go.mod.
+  goversion:verify:no-latest:
+    desc: Confirm go.mod does not use 'latest' anywhere
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - |
+        set -euo pipefail
+        if grep -qE 'latest' go.mod; then
+          echo "FAIL: go.mod contains 'latest' (forbidden)" >&2
+          grep -n 'latest' go.mod >&2
+          exit 1
+        fi
+        echo "OK: no 'latest' in go.mod"
+
+  # AC3 — docs/development.md documents all three version roles.
+  goversion:verify:matrix-documented:
+    desc: Confirm docs/development.md documents the three-tier version matrix
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - |
+        set -euo pipefail
+        file="docs/development.md"
+        if [ ! -f "$file" ]; then
+          echo "FAIL: $file is missing" >&2
+          exit 1
+        fi
+        for phrase in "Minimum supported" "Current development" "Latest supported"; do
+          if ! grep -q "$phrase" "$file"; then
+            echo "FAIL: $file does not document '$phrase'" >&2
+            exit 1
+          fi
+        done
+        echo "OK: version matrix documented in $file"
+
+  # AC5 — the minimum supported version can build the module.
+  # On a module with no packages, this is a successful no-op. On a module
+  # with packages, this ensures no feature from a newer Go version has
+  # leaked into the source.
+  goversion:verify:minimum-builds:
+    desc: Confirm the minimum supported Go version builds the module
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - |
+        set -euo pipefail
+        echo "Building with GOTOOLCHAIN=go{{.GO_MIN}} ..."
+        GOTOOLCHAIN=go{{.GO_MIN}} go build ./...
+        echo "OK: builds with Go {{.GO_MIN}}"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Verify — composition of all verification tasks
+  # ═══════════════════════════════════════════════════════════════════════════
+  #
+  # verify is the single entry point for "is this repository healthy?".
+  # It composes module verification and version-matrix verification.
+  #
+  # CI should call this task; contributors should run it before opening
+  # a pull request.
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  verify:
+    desc: Run all verification tasks (module + Go version matrix)
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - task: module:verify
+      - task: goversion:verify
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Build — binary compilation with injected metadata (WBS 17.4)
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  build:
+    desc: Build the Forge binary with injected metadata
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - go build -trimpath -ldflags "{{.LDFLAGS}}" -o forge ./cmd/forge
+    sources:
+      - '**/*.go'
+      - 'go.mod'
+      - 'go.sum'
+    generates:
+      - forge
+
+  build:debug:
+    desc: Build the Forge binary with debug symbols (no trimpath)
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - go build -ldflags "{{.LDFLAGS}}" -o forge ./cmd/forge
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Development — tests, formatting, static analysis
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  test:
+    desc: Run all tests with race detector
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - go test -race -count=1 ./...
+
+  fmt:
+    desc: Format all Go source files
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - gofmt -w .
+
+  fmt:check:
+    desc: Verify all Go files are formatted (fails if not)
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - |
+        set -euo pipefail
+        unformatted=$(gofmt -l .)
+        if [ -n "$unformatted" ]; then
+          echo "FAIL: unformatted files:" >&2
+          echo "$unformatted" >&2
+          exit 1
+        fi
+        echo "OK: all files formatted"
+
+  vet:
+    desc: Run go vet across all packages
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - go vet ./...
+
+  # Composed quality gate. Runs cheap checks first, expensive checks last.
+  # Mirrors the shape of `adr:new`'s composition of sub-tasks so the file
+  # has a consistent structural idiom.
+  check:
+    desc: Run the full quality gate (format, vet, version matrix, test)
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - task: fmt:check
+      - task: vet
+      - task: goversion:verify
+      - task: test
+
+  clean:
+    desc: Remove build artifacts
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - rm -f forge forge.exe
+      - rm -rf dist/
