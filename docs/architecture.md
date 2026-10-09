@@ -2,11 +2,11 @@
 
 - **Document type:** Model
 - **Status:** Draft
-- **Version:** 0.2.0
+- **Version:** 0.3.0
 - **Author:** @thapelomagqazana
 - **Created:** 2026-10-09
 - **Last Updated:** 2026-10-09
-- **Supersedes:** —
+- **Supersedes:** 0.2.0
 - **Superseded by:** —
 
 ---
@@ -43,7 +43,7 @@ other specification documents. This document defines **structure**.
 - Dependency direction rules
 - Interface contracts between modules
 - End-to-end data flow
-- The two-layer execution boundary
+- The two-boundary execution model
 - Error architecture
 - Logging architecture
 - Architecture diagram
@@ -1042,20 +1042,26 @@ When running in CI (`CI=true` environment variable):
 
 ---
 
-## 11. The Two-Layer Execution Model
+## 11. The Two-Boundary Execution Model
 
 ### 11.1 Overview
 
-The Forge CLI is structured as two layers.
+The Forge CLI is structured around **two boundaries** and **two
+structs**, each serving a distinct purpose:
 
-| Layer | Function | Visibility | Purpose |
-|-------|----------|------------|---------|
-| **Public entry point** | `Execute() int` | Exported | Contract with `cmd/forge/main.go` |
-| **Injectable implementation** | `executeWithOptions(opts options) int` | Unexported | Contract with tests |
+| Layer | Type | Visibility | Purpose |
+|-------|------|------------|---------|
+| Public entry point | `Execute() int` | Exported | Contract with `cmd/forge/main.go` |
+| Injectable implementation | `executeWithOptions(opts options) int` | Unexported | Contract with tests |
+| Process boundary | `options` | Unexported | Raw `os.*` values |
+| Command boundary | `Dependencies` | Unexported | Resolved collaborators |
 
 The two functions live in
-[`internal/cli/execute.go`](../internal/cli/execute.go). The first is
-a one-line wrapper around the second:
+[`internal/cli/execute.go`](../internal/cli/execute.go). The two
+structs live in `execute.go` and
+[`internal/cli/deps.go`](../internal/cli/deps.go) respectively.
+
+The public entry point is a one-line wrapper:
 
 ```go
 func Execute() int {
@@ -1067,9 +1073,12 @@ Every behaviour a user can observe is implemented in
 `executeWithOptions` or below it. `Execute` exists only to establish
 the contract with the process entry point.
 
-### 11.2 The `options` Struct
+### 11.2 The Two Structs
 
-The boundary between the two layers is the `options` struct:
+Forge's injectable environment is described by two structs, one per
+boundary.
+
+#### 11.2.1 `options` — The Process Boundary
 
 ```go
 type options struct {
@@ -1094,44 +1103,136 @@ Each field captures one class of side effect the CLI may perform.
 | `rootPath` | Directory for relative path resolution. | `os.Getwd` |
 
 The struct is deliberately small: six fields, each a primitive or an
-interface. No nested structs, no pointers to structs, no maps. The
-small size is a design decision:
+interface. No nested structs, no pointers to structs, no maps.
 
-- It is easy to reason about. A reader can read the six fields and
-  understand the entire injected environment.
-- It is easy to construct in tests.
-- It is easy to extend. Adding a field is a two-line change (the
-  field and its assignment in `defaultOptions`).
+`options` is constructed by:
 
-### 11.3 The Boundary
+- `defaultOptions()` in production, which reads the process's actual
+  `os.*` values.
+- A test, which constructs a synthetic environment.
 
-The two layers exist to separate two concerns:
+#### 11.2.2 `Dependencies` — The Command Boundary
 
-1. **The public entry point is stable.** Its signature is frozen. It
-   is the contract with `cmd/forge/main.go`.
-2. **The injectable implementation is testable.** Its inputs are
-   explicit. Every test reaches the CLI's behaviour through it.
+```go
+type Dependencies struct {
+    Config *config.Config
+    Logger Logger
+    FS     filesystem.FS
+    Stdout io.Writer
+    Stderr io.Writer
+    Env    func(string) string
+}
+```
 
-The boundary between the two is the `options` struct. Everything
-above the boundary (the process) reads from the operating system.
-Everything below the boundary (the command tree) reads from the
-struct.
+Each field is a resolved collaborator that a command may use.
 
-### 11.4 Why This Design
+| Field | Purpose | Phase 2 placeholder |
+|-------|---------|---------------------|
+| `Config` | Resolved configuration for this invocation. | `&config.Config{}` |
+| `Logger` | Diagnostic logger. | `newLogger(stderr)` (slog-backed). |
+| `FS` | Filesystem abstraction. | `filesystem.NewOSFS(rootPath)`. |
+| `Stdout` | Destination for successful output. | `opts.stdout`. |
+| `Stderr` | Destination for diagnostics. | `opts.stderr`. |
+| `Env` | Environment variable lookup. | `opts.env`. |
 
-Without this separation, testing the CLI would require spawning a
-subprocess for every test case. Subprocess tests are slow
-(milliseconds per case instead of microseconds), brittle (they
-depend on the test binary being built), and inconvenient (they
-cannot inspect internal state).
+`Dependencies` is constructed by `buildDependencies(opts)` — **exactly
+once per invocation**, from `executeWithOptions`.
 
-With this separation, 90% or more of the CLI's behaviour is
-testable in-process. The remaining cases — process-level concerns
-like exit code propagation through `main.go` — are tested in
-`cmd/forge/binary_integration_test.go` behind the `integration`
-build tag.
+The field list above is the **Phase 2 shape**. Future phases extend
+it as new subsystems land (blueprint, template, renderer, policy,
+registry). Adding a field is a two-line change: one line in the
+struct definition, one line in `buildDependencies`. No command
+constructor signature changes. This is the property that makes
+`Dependencies` a stable boundary across phases.
 
-### 11.5 What Is Not Tested in Process
+### 11.3 The Transformation
+
+`executeWithOptions` is the single transformation point between the
+two boundaries:
+
+```text
+process ──► options ──► buildDependencies ──► Dependencies ──► commands
+```
+
+The transformation is one-directional and pure:
+
+- **One-directional:** There is no path from `Dependencies` back to
+  `options`, and no path from a command back to the process.
+- **Pure:** Given the same `options`, `buildDependencies` always
+  produces the same `Dependencies`. It reads only its argument,
+  allocates a new value, and returns it. It does not touch the
+  filesystem, the environment, or any global state.
+
+The transformation is performed in exactly one place:
+
+```go
+func executeWithOptions(opts options) int {
+    deps := buildDependencies(opts)   // the single transformation
+    root := newRootCmd(deps)          // Dependencies, not options
+    root.SetArgs(opts.args)
+    root.SetIn(opts.stdin)
+    root.SetOut(opts.stdout)
+    root.SetErr(opts.stderr)
+    // ...
+}
+```
+
+### 11.4 Why Two Boundaries
+
+Without the two-boundary split, testing the CLI would require spawning
+a subprocess for every test case. Subprocess tests are slow
+(milliseconds per case instead of microseconds), brittle (they depend
+on the test binary being built), and inconvenient (they cannot
+inspect internal state).
+
+With the split, the CLI has **two testability seams**:
+
+1. **The `options` seam.** A test constructs an `options` value with
+   synthetic inputs, calls `executeWithOptions`, and asserts on the
+   captured output. This tests the entire CLI end-to-end without a
+   subprocess.
+
+2. **The `Dependencies` seam.** A test constructs a `Dependencies`
+   value directly and passes it to a subcommand constructor. This
+   tests an individual command in isolation, without going through
+   `options` at all.
+
+The two seams serve different purposes:
+
+| Seam | Tests | Cost | When to use |
+|------|-------|------|-------------|
+| `options` | The whole CLI, from argument parsing to output. | Higher (constructs the full command tree). | Integration tests. |
+| `Dependencies` | A single command's behaviour. | Lower (bypasses the tree). | Unit tests. |
+
+Both seams are supported by the same struct definitions. Neither
+requires touching `os.*`.
+
+### 11.5 The Single `os.*` Reader and the Single Construction Site
+
+Two invariants make the two-boundary model auditable:
+
+1. **`defaultOptions` is the only function that reads `os.Args`,
+   `os.Stdin`, `os.Stdout`, `os.Stderr`, `os.Getenv`, or `os.Getwd`.**
+   Every other function receives these values through the `options`
+   struct, and every command receives them through the `Dependencies`
+   struct.
+
+2. **`buildDependencies` is called exactly once in production code,
+   from `executeWithOptions`.** No other function constructs a
+   `Dependencies` value. A future refactor that constructs
+   `Dependencies` in `newRootCmd`, or in a subcommand constructor, or
+   in a test helper outside the package, would violate this
+   invariant.
+
+Both invariants are verified by:
+
+- **Structural tests** in `internal/cli/structure_test.go` and
+  `internal/cli/execute_test.go` (white-box package `cli`).
+- **Taskfile targets** `verify:deps` and `verify:two-boundary`, which
+  grep the source tree.
+- **Code review.**
+
+### 11.6 What Is Not Tested In Process
 
 A few behaviours are only observable at the process boundary:
 
@@ -1141,13 +1242,14 @@ A few behaviours are only observable at the process boundary:
   code.
 - Signal handling (not yet implemented).
 
-These are covered by integration tests. They are the exception, not
-the rule: most of the CLI is testable in-process.
+These are covered by integration tests in
+`cmd/forge/binary_integration_test.go`, behind the `integration`
+build tag. They are the exception: most of the CLI is testable
+in-process.
 
-### 11.6 The Error Path
+### 11.7 The Error Path
 
-When the command tree returns a non-nil error,
-`executeWithOptions`:
+When the command tree returns a non-nil error, `executeWithOptions`:
 
 1. Formats the error via `formatError`.
 2. Writes the formatted string to `opts.stderr`, followed by a
@@ -1162,42 +1264,85 @@ The two functions called here are documented in
 [`docs/development.md`](./development.md) (exit codes) and in
 [`docs/cli-ux-spec.md`](./cli-ux-spec.md) § 7 (exit code contract).
 
-### 11.7 The Output Path
+### 11.8 The Output Path
 
 Successful output is written by the command tree itself, to
-`opts.stdout`. `executeWithOptions` does not write to `opts.stdout`;
-it only wires it to the command tree.
+`opts.stdout` (which is `deps.Stdout`). `executeWithOptions` does not
+write to `opts.stdout`; it only wires it to the command tree.
 
 This preserves the standard Unix convention: successful output goes
 to stdout, diagnostics and errors go to stderr.
 
-### 11.8 Related Files
+### 11.9 Related Files
 
 | File | Purpose |
 |------|---------|
-| `internal/cli/execute.go` | Both layers, plus `options` and `formatError`. |
-| `internal/cli/execute_test.go` | White-box tests for the boundary. |
+| `internal/cli/execute.go` | `Execute`, `executeWithOptions`, `options`, `defaultOptions`, `formatError`. |
+| `internal/cli/deps.go` | `Dependencies`, `Logger`, `slogLogger`, `noopLogger`, `newLogger`, `buildDependencies`. |
+| `internal/cli/deps_test.go` | White-box tests for `Dependencies` and its construction. |
+| `internal/cli/execute_test.go` | White-box tests for the process boundary and the transformation. |
 | `internal/cli/exitcodes.go` | Exit code constants and the error-to-code mapping. |
-| `internal/cli/root.go` | The root command constructor. It accepts an `options` value. |
+| `internal/cli/root.go` | The root command constructor. Accepts a `Dependencies` value. |
 | `cmd/forge/main.go` | The process entry point. Calls `Execute()` and forwards its return to `os.Exit`. |
 | `cmd/forge/binary_integration_test.go` | Process-boundary tests. |
 
-### 11.9 Rules for Extending the Model
+### 11.10 Rules for Extending the Model
 
 1. **`Execute` remains a one-line wrapper.** Its body must not grow.
    Every new behaviour belongs in `executeWithOptions` or below.
+
 2. **`executeWithOptions` reads only from `opts`.** It must not read
    `os.Args`, `os.Stdin`, `os.Stdout`, `os.Stderr`, or `os.Getenv`.
-   This invariant is enforced by a source-code test
+   This invariant is enforced by a structural test
    (`TestExecuteWithOptions_NoProcessStreamsReferenced`) in
    `execute_test.go`.
-3. **`formatError` and `exitCodeFromError` remain separate.** The
+
+3. **`buildDependencies` is the only function that constructs a
+   `Dependencies` value.** A struct literal of the form
+   `Dependencies{...}` must not appear outside `deps.go` in
+   production code. This invariant is enforced by a structural test
+   (`TestExecuteWithOptions_DoesNotConstructDependenciesByHand`) in
+   `execute_test.go`.
+
+4. **`newRootCmd` accepts `Dependencies`, not `options`.** A wrapper
+   with the old signature must not be added: it would create a second
+   construction path and violate rule 3.
+
+5. **`formatError` and `exitCodeFromError` remain separate.** The
    first renders an error; the second classifies it. Merging them
-   would couple error presentation to error classification, which
-   are distinct concerns.
-4. **Adding a field to `options` is a breaking change to the test
+   would couple error presentation to error classification, which are
+   distinct concerns.
+
+6. **Adding a field to `options` is a breaking change to the test
    suite.** Every test that constructs an `options` value must be
    updated. The change is small, but it must be deliberate.
+
+7. **Adding a field to `Dependencies` is the intended extension
+   mechanism.** The field is added to the struct, constructed in
+   `buildDependencies`, and consumed by commands that want it. No
+   command constructor signature changes. This is the property that
+   makes `Dependencies` a stable boundary across phases.
+
+### 11.11 Relationship to § 5 and § 16
+
+The two-boundary model is the CLI's implementation of two
+architectural principles:
+
+- **§ 5.1 — Dependencies point inward.** The `Dependencies` struct is
+  the CLI's inward-facing surface. Commands depend on resolved
+  collaborators, not on raw process inputs. The transformation from
+  `options` to `Dependencies` is the CLI's single point of contact
+  with the outside world.
+
+- **§ 16.4 — No global state.** Commands do not read `os.Args`,
+  `os.Getenv`, or any other global. Every effect flows through
+  `Dependencies`. The `options` struct exists only so that tests can
+  inject the process environment; production code reads it once, in
+  `defaultOptions`.
+
+The two-boundary model does not introduce a new architectural
+principle. It refines the existing principles into a concrete,
+testable, auditable structure.
 
 ---
 
@@ -1523,3 +1668,13 @@ implementation:
 
 These questions will be addressed in Phase 2 as implementation
 begins.
+
+---
+
+## 19. Document History
+
+| Version | Date | Author | Change |
+|---------|------|--------|--------|
+| 0.1.0 | 2026-10-09 | @thapelomagqazana | Initial Phase 1 draft. |
+| 0.2.0 | 2026-10-09 | @thapelomagqazana | Added module list, dependency direction, interface contracts, and data flow. |
+| 0.3.0 | 2026-10-09 | @thapelomagqazana | Refined § 11 to describe the two-boundary execution model introduced by WBS 4.2.2. Added the `Dependencies` struct, the `options`/`Dependencies` split, the transformation, the two testability seams, the two auditable invariants, and the seven rules for extending the model. Renamed § 11 from "The Two-Layer Execution Model" to "The Two-Boundary Execution Model". |
