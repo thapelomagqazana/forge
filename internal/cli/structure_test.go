@@ -55,6 +55,7 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -513,6 +514,7 @@ var expectedConstants = map[string]string{
 	"ExitFilesystem": "WBS 2.4.2 — filesystem failure exit code (reserved)",
 	"ExitValidation": "WBS 2.4.2 — validation failure exit code (reserved)",
 	"ExitSecurity":   "WBS 2.4.2 — security failure exit code (reserved)",
+	"ExitConflict":   "WBS 4.1.2 — update conflict exit code (reserved)",
 }
 
 // TestOnlyExpectedConstantsAreExported verifies that the package
@@ -841,4 +843,141 @@ func parseImportPaths(t *testing.T, content string) []string {
 	}
 
 	return paths
+}
+
+// =============================================================================
+// Exit code invariants
+// =============================================================================
+
+// TestNoRawExitCodeLiterals verifies that no file in the package
+// (other than exitcodes.go) contains a bare integer literal that
+// matches an exit code.
+//
+// The invariant is: exit codes are defined in exactly one file, and
+// every other file refers to them by name. This makes the mapping
+// auditable: a reader who wants to know what exit code a command
+// returns can search for the constant's name rather than for the
+// integer value.
+//
+// The test uses go/ast to inspect integer literals in the syntax
+// tree. It ignores:
+//
+//   - exitcodes.go, where the constants are defined.
+//   - test files, which may legitimately reference exit codes by
+//     integer in table-driven tests.
+//
+// A literal is considered an exit code if its value is one of the
+// known exit code values (0 through 6). The test is deliberately
+// over-broad: any integer in that range triggers the failure, even
+// if the contributor intended it as something else. Renaming the
+// intended constant clarifies the code.
+func TestNoRawExitCodeLiterals(t *testing.T) {
+	t.Parallel()
+
+	dir := packageDir(t)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read package directory: %v", err)
+	}
+
+	// The set of integers that are reserved as exit codes.
+	reserved := map[int64]string{
+		0: "ExitSuccess",
+		1: "ExitFailure",
+		2: "ExitUsage",
+		3: "ExitConfig",
+		4: "ExitFilesystem",
+		5: "ExitValidation",
+		6: "ExitSecurity",
+		7: "ExitConflict",
+	}
+
+	fset := token.NewFileSet()
+
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".go") {
+			continue
+		}
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		if name == "exitcodes.go" {
+			continue
+		}
+
+		path := filepath.Join(dir, name)
+		parsed, parseErr := parser.ParseFile(fset, path, nil, 0)
+		if parseErr != nil {
+			t.Fatalf("parse %s: %v", name, parseErr)
+		}
+
+		ast.Inspect(parsed, func(n ast.Node) bool {
+			// We look for two specific node shapes:
+			//
+			//   return <int-literal>
+			//   os.Exit(<int-literal>)
+			//
+			// A bare integer literal anywhere else in the file is
+			// legitimate: slice indices, length comparisons, loop bounds,
+			// array sizes. Only these two shapes indicate an exit code.
+
+			switch node := n.(type) {
+			case *ast.ReturnStmt:
+				// A return statement with exactly one result that is an
+				// integer literal.
+				if len(node.Results) != 1 {
+					return true
+				}
+				lit, ok := node.Results[0].(*ast.BasicLit)
+				if !ok || lit.Kind != token.INT {
+					return true
+				}
+				value, convErr := strconv.ParseInt(lit.Value, 0, 64)
+				if convErr != nil {
+					return true
+				}
+				if constName, ok := reserved[value]; ok {
+					pos := fset.Position(lit.Pos())
+					t.Errorf("%s:%d:%d: raw exit code literal in return "+
+						"statement: %d\n"+
+						"  Use the named constant %s instead.\n"+
+						"  Exit codes are defined only in exitcodes.go.",
+						name, pos.Line, pos.Column, value, constName)
+				}
+
+			case *ast.CallExpr:
+				// A call to os.Exit with an integer literal argument.
+				sel, ok := node.Fun.(*ast.SelectorExpr)
+				if !ok || sel.Sel.Name != "Exit" {
+					return true
+				}
+				ident, ok := sel.X.(*ast.Ident)
+				if !ok || ident.Name != "os" {
+					return true
+				}
+				if len(node.Args) != 1 {
+					return true
+				}
+				lit, ok := node.Args[0].(*ast.BasicLit)
+				if !ok || lit.Kind != token.INT {
+					return true
+				}
+				value, convErr := strconv.ParseInt(lit.Value, 0, 64)
+				if convErr != nil {
+					return true
+				}
+				if constName, ok := reserved[value]; ok {
+					pos := fset.Position(lit.Pos())
+					t.Errorf("%s:%d:%d: raw exit code literal in os.Exit "+
+						"call: %d\n"+
+						"  Use the named constant %s instead.\n"+
+						"  Exit codes are defined only in exitcodes.go.",
+						name, pos.Line, pos.Column, value, constName)
+				}
+			}
+
+			return true
+		})
+	}
 }
