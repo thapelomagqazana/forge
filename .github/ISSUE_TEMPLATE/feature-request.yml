@@ -1,0 +1,161 @@
+# =============================================================================
+# .github/ISSUE_TEMPLATE/feature-request.yml
+# =============================================================================
+#
+# Structured template for feature requests. Uses GitHub's YAML form
+# syntax to enforce the problem-first pattern: describe the problem
+# before proposing a solution.
+#
+# The template prioritises:
+#
+#   1. The problem the feature solves.
+#   2. Who experiences the problem and how often.
+#   3. The current workaround (if any).
+#   4. A proposed solution (which may be one of several).
+#
+# This structure is derived from the "jobs-to-be-done" approach to
+# product development: understand the user's job before designing the
+# tool.
+# =============================================================================
+
+name: Feature request
+description: Suggest a new capability for Forge.
+title: "[Feature]: "
+labels:
+  - "enhancement"
+  - "needs-triage"
+assignees:
+  - thapelomagqazana
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting a feature. Feature requests that begin
+        with a clear problem are easier to evaluate than requests that
+        begin with a proposed solution.
+
+        Before submitting:
+        - Search the existing issues and discussions for similar ideas.
+        - Read the roadmap in the project brief to see what is planned.
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Problem
+  # ─────────────────────────────────────────────────────────────────────
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: |
+        What problem are you trying to solve? Describe the situation
+        you are in, not the solution you have in mind.
+      placeholder: |
+        When I run `forge check` on a repository that has been
+        modified by another tool, the output does not tell me which
+        changes came from the other tool and which came from my own
+        edits.
+    validations:
+      required: true
+
+  - type: textarea
+    id: frequency
+    attributes:
+      label: How often does this problem occur?
+      description: |
+        Is this a daily problem? Weekly? Once per project? The
+        frequency affects the priority.
+      placeholder: |
+        I encounter this whenever I run `forge check` after using a
+        code formatter, which is several times per day.
+    validations:
+      required: true
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Current workaround
+      description: |
+        Is there any way to work around the problem today? Even an
+        imperfect workaround tells us something about the priority.
+      placeholder: |
+        I run `git diff` alongside `forge check` and compare the two
+        outputs manually. This works but is slow and error-prone.
+    validations:
+      required: true
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Proposed solution
+  # ─────────────────────────────────────────────────────────────────────
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: |
+        If you have a specific solution in mind, describe it. If not,
+        leave this blank; the maintainers can propose one.
+      placeholder: |
+        Add a `--show-source` flag to `forge check` that annotates
+        each finding with the tool that produced the underlying
+        change, when that information is available.
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: |
+        What other approaches did you consider? What did you reject,
+        and why?
+    validations:
+      required: false
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Scope
+  # ─────────────────────────────────────────────────────────────────────
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      description: |
+        Which part of Forge does this feature touch? Choosing the
+        correct scope helps route the request to the right discussion.
+      options:
+        - CLI commands
+        - Configuration
+        - Templates
+        - Blueprint engine
+        - Validation and policies
+        - Drift detection
+        - Update engine
+        - Documentation
+        - Other (describe in the Proposed solution field)
+    validations:
+      required: true
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Additional context
+  # ─────────────────────────────────────────────────────────────────────
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: |
+        Anything else: links to similar features in other tools,
+        screenshots, mockups, references.
+    validations:
+      required: false
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Checklist
+  # ─────────────────────────────────────────────────────────────────────
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-submission checklist
+      options:
+        - label: I have searched existing issues and discussions for similar requests.
+          required: true
+        - label: I have described the problem, not just a proposed solution.
+          required: true
+        - label: I have read the roadmap to see whether this feature is already planned.
+          required: true

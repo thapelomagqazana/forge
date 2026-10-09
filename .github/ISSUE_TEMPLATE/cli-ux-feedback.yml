@@ -1,0 +1,125 @@
+# =============================================================================
+# .github/ISSUE_TEMPLATE/cli-ux-feedback.yml
+# =============================================================================
+#
+# Structured template for CLI UX feedback. This is neither a bug report
+# nor a feature request; it is feedback on how the CLI feels to use.
+#
+# The template prioritises:
+#
+#   1. The specific interaction the contributor is giving feedback on.
+#   2. What the contributor expected or wanted to feel.
+#   3. What actually happened.
+#   4. Whether the contributor has a specific suggestion.
+#
+# This template exists because UX feedback is often lost in the noise
+# between bug reports and feature requests. Making it a first-class
+# template ensures it is captured.
+# =============================================================================
+
+name: CLI UX feedback
+description: Share feedback on the feel of the Forge CLI.
+title: "[UX]: "
+labels:
+  - "ux"
+  - "needs-triage"
+assignees:
+  - thapelomagqazana
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for sharing UX feedback. Good UX is a core part of
+        Forge's design. Feedback on how the CLI feels to use helps
+        shape future refinements.
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Interaction
+  # ─────────────────────────────────────────────────────────────────────
+  - type: input
+    id: interaction
+    attributes:
+      label: Interaction
+      description: |
+        Which command or interaction is this feedback about? Include
+        the exact command you ran.
+      placeholder: "forge check on a repository with many findings"
+    validations:
+      required: true
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Feedback type
+  # ─────────────────────────────────────────────────────────────────────
+  - type: dropdown
+    id: feedback-type
+    attributes:
+      label: Feedback type
+      description: What kind of feedback is this?
+      options:
+        - Confusing (something was unclear)
+        - Too verbose (something was noisier than necessary)
+        - Too terse (something was less informative than necessary)
+        - Slow (something felt slower than expected)
+        - Unfamiliar (something did not match common CLI conventions)
+        - Pleasing (something worked especially well)
+        - Other (describe below)
+    validations:
+      required: true
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Description
+  # ─────────────────────────────────────────────────────────────────────
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: |
+        Describe the experience. What did you expect? What actually
+        happened? How did it feel?
+      placeholder: |
+        When `forge check` finds many issues, the output is hard to
+        scan. I wanted to know the top three things to fix first, but
+        the findings were listed in the order they were discovered
+        rather than in order of severity.
+    validations:
+      required: true
+
+  - type: textarea
+    id: desired-outcome
+    attributes:
+      label: What would have felt better?
+      description: |
+        If you have a specific improvement in mind, describe it here.
+        If not, describe the feeling you wanted but did not get.
+      placeholder: |
+        I would have liked the findings grouped by severity, with the
+        most severe group first, so I could see at a glance which
+        issues to prioritise.
+    validations:
+      required: false
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Additional context
+  # ─────────────────────────────────────────────────────────────────────
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: |
+        Anything else: screenshots of the output, examples of how
+        other CLIs handle the same situation, references.
+    validations:
+      required: false
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Checklist
+  # ─────────────────────────────────────────────────────────────────────
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-submission checklist
+      options:
+        - label: I have searched the existing issues for similar feedback.
+          required: true
+        - label: This is UX feedback, not a bug report or feature request.
+          required: true

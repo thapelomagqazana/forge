@@ -1,0 +1,187 @@
+#!/usr/bin/env sh
+# =============================================================================
+# .githooks/pre-push — slow checks before each push
+# =============================================================================
+#
+# This hook runs before every `git push`. It performs the slow checks
+# from the quality gate so that test failures, integration regressions,
+# and reproducibility problems are caught before they reach CI.
+#
+# Runtime budget: a minute or two on a warm cache. The checks are
+# deliberately chosen to be the ones that are most expensive to debug
+# in CI.
+#
+# Checks performed:
+#
+#   1. module:verify        Go module is configured correctly.
+#   2. goversion:verify     Go version matrix is documented.
+#   3. verify:cobra         Cobra is pinned, wired, and documented.
+#   4. verify:reproducible  Reproducibility invariant holds.
+#   5. test                 Unit tests pass.
+#   6. test:integration     Process-boundary integration tests pass.
+#
+# The hook does not repeat the fast checks from pre-commit. If a
+# contributor bypassed pre-commit, those checks would be missed. This
+# is intentional: the pre-push hook is the last line of defence before
+# CI, and it focuses on the checks that pre-commit does not run.
+#
+# To bypass this hook for a single push:
+#
+#   git push --no-verify
+#
+# Bypassing is discouraged. The checks are the same ones CI will run.
+# =============================================================================
+
+set -eu
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Setup
+# ─────────────────────────────────────────────────────────────────────────────
+
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root"
+
+# shellcheck source=lib/common.sh
+. "$repo_root/.githooks/lib/common.sh"
+
+hook_header "pre-push"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Prerequisite: task must be installed
+# ─────────────────────────────────────────────────────────────────────────────
+
+if ! hook_require_task; then
+    exit 1
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Check whether anything actually changed
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# The pre-push hook receives the remote name and URL on stdin, plus the
+# local and remote refs. We do not need to parse this in detail; we
+# simply check whether any commits will be pushed. If the push is a
+# no-op (everything is up to date), skip the checks.
+#
+# The comparison is between the local branch and its upstream. If there
+# is no upstream (first push), the checks run.
+#
+upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || echo "")
+
+if [ -n "$upstream" ]; then
+    pending=$(git rev-list --count "$upstream"..HEAD 2>/dev/null || echo "0")
+    if [ "$pending" = "0" ]; then
+        hook_info "no commits to push; skipping"
+        exit 0
+    fi
+    hook_info "pushing $pending commit(s)"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Determine what changed since the upstream
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# The set of files changed across all pending commits determines which
+# checks are necessary. If only Markdown changed, running the test
+# suite is wasteful.
+#
+# When there is no upstream (first push), assume everything changed.
+#
+if [ -n "$upstream" ]; then
+    changed=$(git diff --name-only "$upstream"..HEAD 2>/dev/null || echo "")
+else
+    changed=$(git ls-files)
+fi
+
+has_go=0
+has_deps=0
+has_cmd=0
+has_internal=0
+
+for file in $changed; do
+    case "$file" in
+        *.go)
+            has_go=1
+            ;;
+        go.mod|go.sum)
+            has_deps=1
+            ;;
+        cmd/*)
+            has_cmd=1
+            ;;
+        internal/*)
+            has_internal=1
+            ;;
+    esac
+done
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Run the selected checks
+# ─────────────────────────────────────────────────────────────────────────────
+
+HOOK_FAILED=0
+
+# Module verification: always run. It is fast and catches a common
+# class of problem.
+if ! hook_run_task "module:verify" "Go module"; then
+    HOOK_FAILED=1
+fi
+
+# Version matrix: only meaningful when go.mod or docs changed.
+if [ "$has_deps" -eq 1 ] || [ "$has_go" -eq 1 ]; then
+    if ! hook_run_task "goversion:verify" "Go version matrix"; then
+        HOOK_FAILED=1
+    fi
+else
+    hook_info "no Go files changed; skipping goversion:verify"
+fi
+
+# Cobra pin and wiring: only meaningful when dependency files or
+# internal/cli changed.
+if [ "$has_deps" -eq 1 ] || [ "$has_internal" -eq 1 ]; then
+    if ! hook_run_task "verify:cobra" "Cobra pin and wiring"; then
+        HOOK_FAILED=1
+    fi
+else
+    hook_info "no dependency or internal changes; skipping verify:cobra"
+fi
+
+# Reproducibility: only meaningful when go.mod changed.
+if [ "$has_deps" -eq 1 ]; then
+    if ! hook_run_task "verify:reproducible" "Reproducibility"; then
+        HOOK_FAILED=1
+    fi
+else
+    hook_info "no dependency changes; skipping verify:reproducible"
+fi
+
+# Tests: only meaningful when Go files changed.
+if [ "$has_go" -eq 1 ]; then
+    if ! hook_run_task "test" "Unit tests"; then
+        HOOK_FAILED=1
+    fi
+
+    # Integration tests: only meaningful when the entry point or CLI
+    # changed. Running them on a documentation-only change is wasteful.
+    if [ "$has_cmd" -eq 1 ] || [ "$has_internal" -eq 1 ]; then
+        if ! hook_run_task "test:integration" "Integration tests"; then
+            HOOK_FAILED=1
+        fi
+    else
+        hook_info "no cmd or internal changes; skipping integration tests"
+    fi
+else
+    hook_info "no Go files changed; skipping tests"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Result
+# ─────────────────────────────────────────────────────────────────────────────
+
+if [ "$HOOK_FAILED" -ne 0 ]; then
+    hook_summarise "push"
+    exit 1
+fi
+
+hook_ok "pre-push checks passed"
+exit 0

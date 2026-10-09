@@ -1,0 +1,153 @@
+# =============================================================================
+# .github/ISSUE_TEMPLATE/template-request.yml
+# =============================================================================
+#
+# Structured template for requesting a new project template. Templates
+# are a specific kind of feature; this template collects the extra
+# information maintainers need to evaluate a template proposal.
+#
+# The template prioritises:
+#
+#   1. The technology stack the template would cover.
+#   2. The engineering foundation the template would encode.
+#   3. Existing templates the contributor has tried.
+#   4. Whether the contributor would maintain the template.
+# =============================================================================
+
+name: Template request
+description: Request a new project template (FastAPI, Django, Go API, etc.).
+title: "[Template]: "
+labels:
+  - "template"
+  - "enhancement"
+  - "needs-triage"
+assignees:
+  - thapelomagqazana
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for requesting a template. Templates encode engineering
+        foundations, so the maintainers need to understand the
+        foundation you have in mind, not just the technology stack.
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Technology stack
+  # ─────────────────────────────────────────────────────────────────────
+  - type: input
+    id: language
+    attributes:
+      label: Language
+      description: Which programming language would the template use?
+      placeholder: "Python, Go, TypeScript, Rust, Java, ..."
+    validations:
+      required: true
+
+  - type: input
+    id: framework
+    attributes:
+      label: Framework
+      description: |
+        Which framework, if any? Leave blank for a language-only
+        template.
+      placeholder: "FastAPI, Django, Chi, Express, React, ..."
+    validations:
+      required: false
+
+  - type: dropdown
+    id: project-type
+    attributes:
+      label: Project type
+      description: What kind of project would the template create?
+      options:
+        - API service
+        - CLI tool
+        - Web application
+        - Library
+        - Worker or background service
+        - Monorepo
+        - Other (describe in the foundation field)
+    validations:
+      required: true
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Engineering foundation
+  # ─────────────────────────────────────────────────────────────────────
+  - type: textarea
+    id: foundation
+    attributes:
+      label: Engineering foundation
+      description: |
+        What should the template include beyond the basics? Consider:
+        testing framework, CI configuration, containerisation,
+        documentation, linting, security defaults, observability.
+      placeholder: |
+        - Testing: pytest with coverage reporting
+        - CI: GitHub Actions running tests and lint
+        - Container: Dockerfile with multi-stage build
+        - Documentation: README, ARCHITECTURE.md
+        - Linting: ruff
+        - Security: .gitignore with secrets excluded, dependency
+          scanning in CI
+    validations:
+      required: true
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Alternatives
+  # ─────────────────────────────────────────────────────────────────────
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Templates you have tried
+      description: |
+        Have you tried any of the existing templates? If so, why do
+        they not fit your needs?
+      placeholder: |
+        I have tried `python-fastapi`, which is close, but it does not
+        include OpenTelemetry or a Makefile for common tasks.
+    validations:
+      required: false
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Contribution
+  # ─────────────────────────────────────────────────────────────────────
+  - type: dropdown
+    id: contribution
+    attributes:
+      label: Would you be willing to contribute the template?
+      description: |
+        Forge is a community project. If you can create the template
+        yourself, the maintainers can help you get it merged.
+      options:
+        - "Yes, I can create the initial template"
+        - "Yes, with guidance from a maintainer"
+        - "No, but I can test the template once it exists"
+        - "No, I am only requesting the template"
+    validations:
+      required: true
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Additional context
+  # ─────────────────────────────────────────────────────────────────────
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: |
+        Anything else: links to reference implementations, examples of
+        the foundation you have in mind, related issues.
+    validations:
+      required: false
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Checklist
+  # ─────────────────────────────────────────────────────────────────────
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-submission checklist
+      options:
+        - label: I have checked the existing templates and this one would be distinct.
+          required: true
+        - label: I have described the engineering foundation, not just the technology.
+          required: true

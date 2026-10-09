@@ -1,0 +1,174 @@
+#!/usr/bin/env sh
+# =============================================================================
+# .githooks/pre-commit — fast checks before each commit
+# =============================================================================
+#
+# This hook runs before every `git commit`. It performs the fast checks
+# from the quality gate so that formatting, documentation, and dependency
+# issues are caught before they enter the commit history.
+#
+# Runtime budget: a few seconds on a warm cache. The checks are
+# deliberately chosen to stay fast; slower checks live in pre-push.
+#
+# Checks performed:
+#
+#   1. fmt:check            Go formatting is canonical.
+#   2. lint                 Markdown lints cleanly.
+#   3. vet                  Go vet passes.
+#   4. verify:deps          Dependency policy is respected.
+#
+# The hook does not run tests. Tests run in pre-push.
+#
+# To bypass this hook for a single commit:
+#
+#   git commit --no-verify
+#
+# Bypassing is discouraged. The checks are the same ones CI will run.
+# If a check is failing and you do not know why, run it manually:
+#
+#   task fmt:check
+#   task lint
+#   task vet
+#   task verify:deps
+# =============================================================================
+
+set -eu
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Setup
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# The hook must work regardless of where `git` is invoked from. The
+# `git rev-parse --show-toplevel` command gives the repository root,
+# which is where `task` expects to run.
+#
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root"
+
+# Source shared helpers.
+# shellcheck source=lib/common.sh
+. "$repo_root/.githooks/lib/common.sh"
+
+hook_header "pre-commit"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Prerequisite: task must be installed
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# If task is missing, we cannot run any checks. Fail the commit with a
+# clear message rather than silently skipping the checks.
+#
+if ! hook_require_task; then
+    exit 1
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Determine what changed
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# The hook is smarter if it knows which files are staged. Running the
+# Markdown linter when only Go files changed is wasteful; running the
+# dependency policy check when no dependency file changed is wasteful
+# too.
+#
+# The `git diff --cached --name-only --diff-filter=ACMR` command lists
+# staged files that are Added, Copied, Modified, or Renamed. Deleted
+# files are excluded.
+#
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+
+if [ -z "$staged" ]; then
+    hook_info "no staged files; skipping"
+    exit 0
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Check selection
+# ─────────────────────────────────────────────────────────────────────────────
+
+has_go=0
+has_md=0
+has_deps=0
+has_taskfile=0
+
+for file in $staged; do
+    case "$file" in
+        *.go)
+            has_go=1
+            ;;
+        *.md)
+            has_md=1
+            ;;
+        go.mod|go.sum)
+            has_deps=1
+            ;;
+        Taskfile.yml)
+            has_taskfile=1
+            ;;
+    esac
+done
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Run the selected checks
+# ─────────────────────────────────────────────────────────────────────────────
+
+HOOK_FAILED=0
+
+# Formatting: only meaningful when Go files changed.
+if [ "$has_go" -eq 1 ]; then
+    if ! hook_run_task "fmt:check" "Go formatting"; then
+        HOOK_FAILED=1
+    fi
+else
+    hook_info "no Go files staged; skipping fmt:check"
+fi
+
+# Markdown lint: only meaningful when Markdown files changed.
+if [ "$has_md" -eq 1 ]; then
+    if ! hook_run_task "lint:md" "Markdown lint"; then
+        HOOK_FAILED=1
+    fi
+else
+    hook_info "no Markdown files staged; skipping lint:md"
+fi
+
+# Go vet: only meaningful when Go files changed.
+if [ "$has_go" -eq 1 ]; then
+    if ! hook_run_task "vet" "Go vet"; then
+        HOOK_FAILED=1
+    fi
+else
+    hook_info "no Go files staged; skipping vet"
+fi
+
+# Dependency policy: only meaningful when dependency files changed.
+if [ "$has_deps" -eq 1 ]; then
+    if ! hook_run_task "verify:deps" "Dependency policy"; then
+        HOOK_FAILED=1
+    fi
+else
+    hook_info "no dependency files staged; skipping verify:deps"
+fi
+
+# Taskfile changes: the taskfile itself is a dependency-bearing artifact.
+# A change to Taskfile.yml can alter the meaning of the verify:* tasks,
+# so we verify them.
+if [ "$has_taskfile" -eq 1 ]; then
+    if ! hook_run_task "verify" "Full verification"; then
+        HOOK_FAILED=1
+    fi
+else
+    hook_info "Taskfile.yml unchanged; skipping full verify"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Result
+# ─────────────────────────────────────────────────────────────────────────────
+
+if [ "$HOOK_FAILED" -ne 0 ]; then
+    hook_summarise "commit"
+    exit 1
+fi
+
+hook_ok "pre-commit checks passed"
+exit 0

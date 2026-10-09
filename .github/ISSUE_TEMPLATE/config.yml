@@ -1,0 +1,66 @@
+# =============================================================================
+# .github/ISSUE_TEMPLATE/config.yml
+# =============================================================================
+#
+# This file configures the issue template chooser — the page that
+# appears when a contributor clicks "New issue" on the repository's
+# Issues tab.
+#
+# It serves two purposes:
+#
+#   1. It disables the blank issue template. Every issue must start
+#      from one of the structured templates in this directory.
+#
+#   2. It provides contact links for questions and security reports,
+#      which do not belong in the issue tracker.
+#
+# See: https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests
+# =============================================================================
+
+# Disable the blank issue template. Contributors must choose one of
+# the structured templates below. This ensures every issue contains
+# the information maintainers need to triage it.
+blank_issues_enabled: false
+
+contact_links:
+  # ─────────────────────────────────────────────────────────────────────
+  # Security reports
+  # ─────────────────────────────────────────────────────────────────────
+  #
+  # Security vulnerabilities must not be reported publicly. The
+  # repository's SECURITY.md describes the private reporting process.
+  # This link routes contributors there.
+  - name: Report a security vulnerability
+    url: https://github.com/thapelomagqazana/forge/security/advisories/new
+    about: |
+      Do not open a public issue for a security vulnerability. Use
+      GitHub's private advisory reporting instead. See SECURITY.md
+      for details.
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Questions and discussions
+  # ─────────────────────────────────────────────────────────────────────
+  #
+  # Questions that are not bugs or feature requests belong in
+  # Discussions, not the issue tracker. Discussions provide a better
+  # threading model and do not pollute the issue list.
+  - name: Ask a question
+    url: https://github.com/thapelomagqazana/forge/discussions
+    about: |
+      Questions about usage, configuration, or design belong in
+      GitHub Discussions. The issue tracker is reserved for
+      actionable bug reports and feature requests.
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Documentation
+  # ─────────────────────────────────────────────────────────────────────
+  #
+  # The documentation is published from the docs/ directory. A link
+  # to it helps contributors verify they are looking at the latest
+  # version before filing a documentation issue.
+  - name: Read the documentation
+    url: https://github.com/thapelomagqazana/forge/tree/main/docs
+    about: |
+      Before filing a documentation issue, check whether the
+      documentation has already been updated. The docs/ directory
+      in the repository is the source of truth.

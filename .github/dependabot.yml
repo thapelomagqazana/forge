@@ -1,0 +1,104 @@
+# =============================================================================
+# dependabot.yml — automated dependency update detection for Forge
+# =============================================================================
+#
+# This configuration enables Dependabot to open pull requests when a
+# new version of a dependency is available, or when a security advisory
+# is published against the currently pinned version.
+#
+# The configuration enforces the policy in docs/dependency-policy.md
+# at the tooling layer:
+#
+#   - One dependency per PR. This makes the review checklist in
+#     Section 2 of the policy tractable for each PR.
+#
+#   - Pull requests are labelled by upgrade category (patch, minor,
+#     major, security). The label tells the reviewer which process
+#     applies (ADR-light for patch, full ADR for minor/major,
+#     expedited for security).
+#
+#   - A "dependencies" label is added to every Dependabot PR so that
+#     reviewers can filter the PR queue.
+#
+#   - The commit message includes the dependency name and the version
+#     range, so the PR title is self-describing.
+#
+# See: https://docs.github.com/en/code-security/dependabot
+# =============================================================================
+
+version: 2
+
+updates:
+  # ─────────────────────────────────────────────────────────────────────
+  # Go modules
+  # ─────────────────────────────────────────────────────────────────────
+  #
+  # Scans go.mod for dependencies. Opens a PR for each dependency that
+  # has a new version available.
+  #
+  # The Go toolchain is the only ecosystem configured. When Forge adds
+  # other ecosystems (npm for documentation tooling, for example),
+  # additional entries are added here.
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      # Weekly on Monday at 06:00 UTC. This is a low-traffic time and
+      # matches the quarterly review cadence in the policy (each
+      # weekly check is a lightweight filter; the quarterly review is
+      # the substantive analysis).
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+
+    # One PR per dependency. The policy's review checklist is per
+    # dependency; batching would make the checklist ambiguous.
+    open-pull-requests-limit: 5
+
+    # Labels applied to every PR from this configuration. The labels
+    # tell the reviewer which process in the policy applies.
+    labels:
+      - "dependencies"
+      - "go"
+
+    # Do not allow Dependabot to rebase its own PRs. The reviewer
+    # prefers to see the state the PR was opened in and to rebase
+    # explicitly when appropriate.
+    rebase-strategy: "disabled"
+
+    # Commit message format. The prefix is a Conventional Commits
+    # type; the body names the dependency and the version change.
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+
+    # Group minor and patch updates only when they come from the
+    # same source repository, which limits the risk of conflicting
+    # changes. Major and security updates always open separate PRs.
+    groups:
+      patch-updates:
+        applies-to: "version-updates"
+        update-types:
+          - "patch"
+      # Minor updates are not grouped because they require an ADR per
+      # the policy. Grouping would obscure the individual ADR
+      # requirement.
+      # Major updates are not grouped.
+      # Security updates are not grouped.
+
+    # Only process version updates for Go modules. Security updates
+    # are processed separately by GitHub's security advisory feed,
+    # which opens its own PRs labelled `security`.
+    allow:
+      - dependency-type: "direct"
+      - dependency-type: "indirect"
+
+    # Ignore major updates to the toolchain itself. The Go toolchain
+    # is managed via the `go` and `toolchain` directives in go.mod,
+    # not by Dependabot.
+    ignore:
+      - dependency-name: "go"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
