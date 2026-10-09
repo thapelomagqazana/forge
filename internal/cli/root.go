@@ -8,52 +8,69 @@ import (
 
 // newRootCmd constructs the root Cobra command.
 //
-// It is unexported because no package outside internal/cli is permitted
-// to depend on the command tree. Tests within the package may call it
-// directly.
+// It is unexported because no package outside internal/cli is
+// permitted to depend on the command tree. Tests within the package
+// may call it directly.
 //
-// The root command's metadata is deliberately minimal in WBS 2.4.2.
+// The root command's metadata is deliberately minimal in WBS 4.2.1.
 // WBS 5.1.1 freezes the final values (Use, Short, Long) and adds
 // acceptance tests for them.
 //
+// # Why the constructor accepts options
+//
+// Subcommands added in later WBS items need access to the injectable
+// environment: the stdin, stdout, stderr, env, and rootPath fields
+// of the options struct. The cleanest way to provide that access is
+// to pass the options value down the command tree at construction
+// time.
+//
+// The root command itself does not consume the value. It only
+// forwards it to the subcommand constructors. In WBS 4.2.1 there are
+// no subcommands yet, so the value is unused. The signature is
+// nevertheless fixed, because the subcommand constructors added
+// later will require it.
+//
 // # Why the root command has a RunE handler
 //
-// Cobra's default behaviour when a command has subcommands but no RunE
-// handler is to print the command's help to stdout and exit 0, even
-// when the invocation contains unrecognised arguments. That behaviour
-// is wrong for Forge, because it silently swallows unknown commands and
-// prints the help text to stdout instead of an error to stderr.
+// Cobra's default behaviour when a command has subcommands but no
+// RunE handler is to print the command's help to stdout and exit 0,
+// even when the invocation contains unrecognised arguments. That
+// behaviour is wrong for Forge, because it silently swallows
+// unknown commands and prints the help text to stdout instead of an
+// error to stderr.
 //
-// The RunE handler below distinguishes the two cases the root command
-// must handle:
+// The RunE handler distinguishes the two cases the root command must
+// handle:
 //
-//   - No positional arguments: the user requested information. Print
-//     help to stdout and return nil, which maps to ExitSuccess (0).
+//   - No positional arguments: the user requested information.
+//     Print help to stdout and return nil, which maps to ExitSuccess.
 //
-//   - One or more positional arguments: the user typed a command that
-//     does not exist. Return an error. executeWithOptions prints the
-//     error to stderr, and exitCodeFromError maps it to ExitUsage (2).
+//   - One or more positional arguments: the user typed a command
+//     that does not exist. Return an error. executeWithOptions
+//     prints the error to stderr, and exitCodeFromError maps it to
+//     ExitUsage.
 //
-// This pattern is the standard way to build a Cobra command tree where
-// the root is a dispatcher rather than a runnable command itself.
+// This pattern is the standard way to build a Cobra command tree
+// where the root is a dispatcher rather than a runnable command
+// itself.
 //
 // # Cobra configuration
 //
 // SilenceUsage and SilenceErrors are set to true, so that Forge
-// controls error formatting and exit codes. Without these flags, Cobra
-// prints usage on every error and writes errors to stdout, both of
-// which break the CLI UX contract.
+// controls error formatting and exit codes. Without these flags,
+// Cobra prints usage on every error and writes errors to stdout,
+// both of which break the CLI UX contract.
 //
 // TraverseChildren is left at its default (false). This will be
-// revisited in WBS 4.4 when the full command tree is added.
+// revisited in WBS 4.4.1 when the full command tree is added.
 //
 // # No I/O
 //
 // The function performs no I/O of its own. It does not read os.Args,
-// does not write to any stream, and does not touch the filesystem. The
-// handler is delegated to Cobra, which uses the streams bound by
+// does not write to any stream, and does not touch the filesystem.
+// The handler is delegated to Cobra, which uses the streams bound by
 // executeWithOptions.
-func newRootCmd() *cobra.Command {
+func newRootCmd(opts options) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "forge",
 		Short:         "Forge — Engineering Foundations as Code",
@@ -72,15 +89,15 @@ func newRootCmd() *cobra.Command {
 		// error. The handler distinguishes them by inspecting args.
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
-				// No arguments: the user wants help. Print to stdout
-				// and return nil, which maps to ExitSuccess.
+				// No arguments: the user wants help. Print to
+				// stdout and return nil, which maps to
+				// ExitSuccess.
 				return cmd.Help()
 			}
 
-			// One or more unknown arguments. Cobra's error message
-			// format is "unknown command %q for %q", where the first
-			// is the offending token and the second is the parent
-			// command name.
+			// One or more unknown arguments. Return an error,
+			// which maps to ExitUsage via the default case in
+			// exitCodeFromError.
 			return fmt.Errorf("unknown command %q for %q",
 				args[0], cmd.Name())
 		},
@@ -91,7 +108,12 @@ func newRootCmd() *cobra.Command {
 		Args: cobra.ArbitraryArgs,
 	}
 
-	// No subcommands are registered in WBS 2.4.2. The registry
+	// The opts value is accepted but not consumed by the root
+	// command. Subcommands added in later WBS items will receive it
+	// through their constructors, which are invoked from here.
+	_ = opts
+
+	// No subcommands are registered in WBS 4.2.1. The registry
 	// mechanism is introduced in WBS 4.4.1.
 
 	return root

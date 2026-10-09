@@ -23,7 +23,6 @@
 package cli
 
 import (
-	"bytes"
 	"strings"
 	"testing"
 )
@@ -42,44 +41,6 @@ type cliRun struct {
 
 	// stderr is the content written to the injected stderr writer.
 	stderr string
-}
-
-// runCLI invokes the CLI with the given arguments and returns the
-// captured observable result.
-//
-// The helper:
-//
-//   - Constructs an injectable environment with the given args.
-//   - Uses empty readers and buffers for stdin, stdout, and stderr.
-//   - Returns the exit code and the contents of stdout and stderr.
-//
-// Environment variable lookups are not supported by this helper in
-// WBS 2.4.2. When WBS 8.x introduces configuration, the helper will
-// be extended to accept an env map.
-//
-// The helper is deliberately unexported and unparameterised beyond
-// args. Tests that need to inject additional state should construct
-// the options struct directly; this is rarely necessary in Phase 2.
-func runCLI(t *testing.T, args ...string) cliRun {
-	t.Helper()
-
-	var stdout, stderr bytes.Buffer
-
-	opts := options{
-		args:   args,
-		stdin:  strings.NewReader(""),
-		stdout: &stdout,
-		stderr: &stderr,
-		env:    func(string) string { return "" },
-	}
-
-	code := executeWithOptions(opts)
-
-	return cliRun{
-		exitCode: code,
-		stdout:   stdout.String(),
-		stderr:   stderr.String(),
-	}
 }
 
 // =============================================================================
