@@ -28,7 +28,7 @@
 // The file depends on exactly two packages:
 //
 //   - os:           for os.Exit, which is the only way to set the
-//                   process exit code.
+//     process exit code.
 //   - internal/cli: for cli.Execute, which owns the entire CLI.
 //
 // No other import is permitted. If a new import seems necessary, the

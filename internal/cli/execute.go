@@ -8,51 +8,39 @@ import (
 
 // options captures the injectable environment of a CLI invocation.
 //
-// It is the boundary between the process and the CLI's behaviour. Every
-// side effect a command may perform — reading arguments, reading stdin,
-// writing stdout, writing stderr, reading environment variables — flows
-// through this struct.
+// It is the boundary between the process and the CLI's behaviour.
+// Every side effect a command may perform — reading arguments,
+// reading stdin, writing stdout, writing stderr, reading environment
+// variables — flows through this struct.
 //
 // Tests construct an options value with synthetic inputs, call
-// executeWithOptions, and assert on the captured output. This is what
-// makes every command testable in-process, without spawning a
-// subprocess.
-//
-// The struct is unexported. It is an implementation detail of the
-// execution layer. Downstream packages interact with the CLI only
-// through Execute.
+// executeWithOptions, and assert on the captured output.
 type options struct {
-	// args are the command-line arguments, excluding the program name.
-	// In a normal process invocation, this is os.Args[1:].
+	// args are the command-line arguments, excluding the program
+	// name.
 	args []string
 
-	// stdin is the reader from which the CLI may read interactive input.
-	// In a normal process invocation, this is os.Stdin.
+	// stdin is the reader from which the CLI may read interactive
+	// input.
 	stdin io.Reader
 
-	// stdout is the writer to which the CLI writes successful output.
-	// In a normal process invocation, this is os.Stdout.
+	// stdout is the writer to which the CLI writes successful
+	// output.
 	stdout io.Writer
 
 	// stderr is the writer to which the CLI writes diagnostics and
-	// errors. In a normal process invocation, this is os.Stderr.
+	// errors.
 	stderr io.Writer
 
-	// env reads environment variables by name. It is a function rather
-	// than a map so that tests can inject a lookup without
-	// materialising the entire environment. In a normal process
-	// invocation, this is os.Getenv.
+	// env reads environment variables by name.
 	env func(string) string
 }
 
-// defaultOptions returns an options value bound to the current process.
+// defaultOptions returns an options value bound to the current
+// process.
 //
 // It is the only place in the package that reads os.Args, os.Stdin,
-// os.Stdout, os.Stderr, or os.Getenv directly. Every other function
-// receives these values through the options struct.
-//
-// This is the pattern that makes the package testable in-process.
-// Tests construct options directly, bypassing this function entirely.
+// os.Stdout, os.Stderr, or os.Getenv directly.
 func defaultOptions() options {
 	return options{
 		args:   os.Args[1:],
@@ -73,12 +61,7 @@ func defaultOptions() options {
 //
 //	func Execute() int
 //
-// Adding parameters would break the contract with main.go. Testability
-// is provided by the unexported executeWithOptions function, which
-// accepts an injectable environment.
-//
-// Execute is a thin wrapper over executeWithOptions. It supplies the
-// default environment and returns the resulting exit code.
+// Execute is a thin wrapper over executeWithOptions.
 func Execute() int {
 	return executeWithOptions(defaultOptions())
 }
@@ -86,8 +69,8 @@ func Execute() int {
 // executeWithOptions runs the CLI with the given options and returns
 // the process exit code.
 //
-// It is unexported because it is an implementation detail. Tests within
-// the package call it directly. Downstream packages must not.
+// It is unexported because it is an implementation detail. Tests
+// within the package call it directly.
 //
 // The function:
 //
@@ -97,9 +80,8 @@ func Execute() int {
 //  4. Maps any returned error to an exit code.
 //  5. Prints the error to the injected stderr, if any.
 //
-// It performs no I/O of its own beyond what the injected streams
-// dictate. In particular, it does not read os.Args, os.Stdin, or
-// os.Getenv.
+// The exit code is derived by exitCodeFromError, which is the single
+// point in the package where errors are classified.
 func executeWithOptions(opts options) int {
 	root := newRootCmd()
 	root.SetArgs(opts.args)
@@ -109,9 +91,8 @@ func executeWithOptions(opts options) int {
 
 	err := root.Execute()
 	if err != nil {
-		// Print the error to the injected stderr. Format: the error's
-		// own message. In WBS 10.0, when the structured error model
-		// arrives, this becomes a call to formatError.
+		// Print the error to the injected stderr. Format: the
+		// error's own message.
 		fmt.Fprintln(opts.stderr, err)
 	}
 

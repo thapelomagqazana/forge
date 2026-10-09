@@ -858,66 +858,182 @@ Dry-run is **optional** for:
 ## 7. Exit Codes
 
 Forge uses stable exit codes so that scripts and CI systems can
-interpret results.
+interpret results without parsing output. The codes are part of
+Forge's public contract: a code, once shipped, is never renumbered.
 
-| Code | Meaning |
-|------|---------|
-| 0 | Success |
-| 1 | Validation failure or operation failure |
-| 2 | Invalid usage or invalid input |
-| 3 | Filesystem failure |
-| 4 | Security violation |
-| 5 | Update conflict (Phase 14+) |
+### 7.1 The codes
 
-### 7.1 Exit Code Semantics
+| Code | Constant          | Meaning                                                             |
+|------|-------------------|---------------------------------------------------------------------|
+| 0    | `ExitSuccess`     | The command completed successfully.                                 |
+| 1    | `ExitFailure`     | A general failure not covered by a more specific code.              |
+| 2    | `ExitUsage`       | The command was invoked incorrectly: unknown command, unknown flag, malformed argument. |
+| 3    | `ExitConfig`      | Configuration loading or validation failed.                         |
+| 4    | `ExitFilesystem`  | A filesystem operation failed.                                      |
+| 5    | `ExitValidation`  | A validation failure from a check or diff operation.                |
+| 6    | `ExitSecurity`    | A security boundary was violated.                                   |
+| 7    | `ExitConflict`    | An update could not be applied without overwriting developer changes. |
 
-**0 — Success**
-Command completed successfully. No findings of severity ERROR.
+The constants are defined in
+[`internal/cli/exitcodes.go`](../internal/cli/exitcodes.go). They are
+exported from that package.
 
-**1 — Validation Failure or Operation Failure**
-The command ran but a required condition was not satisfied:
+### 7.2 Semantics
 
-- Validation found ERROR-level findings
-- A required file was missing
-- A required command was not configured
-- A policy required by the foundation was violated
+#### 0 — Success
 
-**2 — Invalid Usage or Invalid Input**
+The command completed successfully. No findings of severity `ERROR`.
+
+#### 1 — General failure
+
+The command ran but failed for a reason that does not fall into a
+more specific category. This is the default for unclassified errors.
+
+Typical causes:
+
+- An internal error that has not been categorised.
+- A future error category that is not yet recognised by the exit
+  code mapping.
+
+#### 2 — Usage error
+
 Forge could not interpret the command:
 
-- Unknown command or subcommand
-- Missing required argument
-- Invalid flag value
-- Malformed `forge.yaml`
-- Ambiguous foundation selection in non-interactive mode
+- Unknown command or subcommand.
+- Unknown flag.
+- Missing required argument.
+- Invalid flag value.
+- Malformed `forge.yaml` (a syntax error, not a semantic error).
+- Ambiguous foundation selection in non-interactive mode.
 
-**3 — Filesystem Failure**
-Forge was unable to read or write required files:
+This is the default for any error that does not carry a category.
+Cobra's own errors (unknown command, unknown flag) are always
+classified as `ExitUsage`.
 
-- Permission denied
-- Disk full
-- Target directory already exists
-- Path traversal attempted (in some contexts)
+#### 3 — Configuration failure
 
-**4 — Security Violation**
-Forge refused to perform an operation due to a security rule:
+A configuration file failed to load, parse, or validate:
 
-- Template attempts path traversal
-- Template attempts to escape target directory
-- Template requests hooks without opt-in
-- Symlink escape attempted
+- `forge.yaml` missing when required.
+- `forge.yaml` semantically invalid (a field is the wrong type, a
+  required field is missing).
+- Environment variable that overrides configuration is invalid.
 
-**5 — Update Conflict (Phase 14+)**
+See WBS 8.x for the configuration subsystem specification.
+
+#### 4 — Filesystem failure
+
+Forge was unable to read or write a required file:
+
+- Permission denied.
+- Disk full.
+- Target directory already exists.
+- Read-only file system.
+
+See WBS 13.x for the filesystem subsystem specification.
+
+#### 5 — Validation failure
+
+The command ran a validation and one or more required conditions
+were not satisfied:
+
+- `forge check` found ERROR-level findings.
+- `forge diff` detected actionable drift.
+- `forge validate` found ERROR-level findings.
+
+See WBS 7.x and WBS 9.x for the validation and drift subsystem
+specifications.
+
+#### 6 — Security violation
+
+Forge refused to perform an operation because of a security rule:
+
+- A template attempted path traversal.
+- A template attempted to escape the target directory.
+- A template requested hooks without opt-in.
+- A symlink escape was attempted.
+- A secret leak was detected.
+
+See WBS 13.x for the security subsystem specification.
+
+#### 7 — Update conflict
+
 An update could not be applied without overwriting developer changes:
 
-- Conflicting modification
-- Both Forge and developer changed the same region
-- Manual resolution required
+- Both Forge and the developer modified the same region.
+- A file was deleted by the developer and modified by Forge.
+- A merge could not be performed automatically.
+
+See WBS 14.x for the update subsystem specification.
 
 ### 7.2 Exit Code Stability
 
 These codes are part of Forge's public contract. Changing them requires
 an ADR.
+
+### 7.3 The mapping
+
+Errors are mapped to exit codes by the function
+`exitCodeFromError`, defined in `internal/cli/exitcodes.go`. It is
+the only function in the package that derives an exit code from an
+error.
+
+The mapping is:
+
+| Error condition                                    | Exit code         |
+|----------------------------------------------------|-------------------|
+| No error                                           | `ExitSuccess`     |
+| Error with `Category() == "config"`                | `ExitConfig`      |
+| Error with `Category() == "filesystem"`            | `ExitFilesystem`  |
+| Error with `Category() == "validation"`            | `ExitValidation`  |
+| Error with `Category() == "security"`              | `ExitSecurity`    |
+| Error with `Category() == "conflict"`              | `ExitConflict`    |
+| Error with an unrecognised category                | `ExitFailure`     |
+| Error without a category (Cobra's usage errors)    | `ExitUsage`       |
+
+An error "carries a category" if it implements the
+`CategorizedError` interface defined in
+`internal/cli/exitcodes.go`. The interface has one method,
+`Category() string`. The values shown in the table above are the
+recognised values. Any other value falls through to `ExitFailure`.
+
+### 7.4 Stability
+
+A code, once shipped in a release, is never renumbered. If a new
+failure category is introduced in a later phase, a new constant is
+added at the next available integer. Existing codes retain their
+meaning.
+
+This is the same rule that applies to error codes in
+`internal/forgeerr` (WBS 10.0). Both change by addition, never by
+renumbering.
+
+### 7.5 Scripting
+
+Scripts that invoke Forge should check the exit code to determine
+the outcome. For example:
+
+```sh
+if forge check; then
+    echo "Foundation intact"
+else
+    case "$?" in
+        5) echo "Validation failed" ;;
+        6) echo "Security boundary violated" ;;
+        7) echo "Update conflict" ;;
+        *) echo "Unexpected failure" ;;
+    esac
+fi
+```
+
+### 7.6 Reserved integers
+
+Integers 8 and above are reserved for future categories. They are
+not assigned to any constant. A future WBS that introduces a new
+failure category allocates the next available integer.
+
+The reservation is deliberate: it prevents a future category from
+being assigned a value that collides with an existing code.
 
 ---
 
