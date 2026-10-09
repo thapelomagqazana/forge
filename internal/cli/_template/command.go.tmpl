@@ -1,0 +1,133 @@
+// Package cli implements the Forge command-line interface.
+//
+// This file is the template for a new Forge command. To use it:
+//
+//  1. Copy this file to internal/cli/<name>.go (no underscore).
+//  2. Replace every occurrence of "xxx" with the new command's name.
+//  3. Replace every occurrence of "Xxx" with the new command's name in
+//     TitleCase (for the constructor function name).
+//  4. Implement the handler in the RunE closure. It must be thin:
+//     parse flags, call the application service, delegate formatting,
+//     return an error. It must not perform I/O, must not format output
+//     inline, and must not call os.Exit.
+//  5. Add newXxxCmd to the registry slice in internal/cli/registry.go
+//     in the correct alphabetical position.
+//  6. Add internal/cli/<name>.go to expectedSourceFiles in
+//     internal/cli/structure_test.go.
+//  7. Add internal/cli/<name>_test.go following the reference in
+//     internal/cli/version_test.go. Include at least one positive
+//     test and one negative test.
+//  8. Run `task check`.
+//
+// The contract this file implements is documented in
+// docs/architecture.md § 11.14. The handler / service boundary the
+// RunE closure must follow is documented in § 11.12.
+//
+// Do not modify this template file. If the contract changes, the
+// change is documented in a new ADR (see docs/decisions/README.md)
+// and this template is updated in the same commit.
+package cli
+
+import (
+	"github.com/spf13/cobra"
+)
+
+// newXxxCmd constructs the `forge xxx` command.
+//
+// # What this command does
+//
+// One paragraph describing the command's purpose and the user-facing
+// outcome. This paragraph is the basis for the Long description
+// below.
+//
+// # The handler / service pattern
+//
+// This handler follows the boundary defined by WBS 4.3.1 and
+// documented in docs/architecture.md § 11.12. It:
+//
+//   - Parses flags (none yet).
+//   - Collects arguments (none allowed).
+//   - Constructs the application service (or calls a package-level
+//     service function).
+//   - Calls the service.
+//   - Formats the result by delegating to the service's formatter.
+//   - Returns an error; never calls os.Exit.
+//
+// It does not:
+//
+//   - Read or write files.
+//   - Access the network.
+//   - Contain business rules.
+//   - Contain business logic.
+//   - Write to os.Stdout or os.Stderr directly.
+//   - Print formatted output with fmt.Fprintln or similar.
+//
+// The handler is deliberately short. The target is under 20 lines of
+// body. If a future change pushes it over, the change is almost
+// certainly business logic that belongs in the service package.
+//
+// # Error path
+//
+// The handler returns errors to Cobra; executeWithOptions formats them
+// and maps them to exit codes. The handler does not touch os.Exit.
+//
+// # Signature contract
+//
+// This constructor has the signature required by the command
+// registry:
+//
+//	func newXxxCmd(deps Dependencies) *cobra.Command
+//
+// The signature is frozen. A test in contract_test.go verifies that
+// every constructor in the registry matches it.
+func newXxxCmd(deps Dependencies) *cobra.Command {
+	return &cobra.Command{
+		// Use is the command's name, lowercase. It must not contain
+		// spaces, uppercase letters, or punctuation. If the command
+		// takes arguments, append them after the name with a space
+		// (for example, "foo <bar>").
+		Use: "xxx",
+
+		// Short is a one-line description. It must be 60 characters
+		// or fewer. It is the text that appears next to the command
+		// name in `forge --help`.
+		Short: "One-line description of xxx (<= 60 chars)",
+
+		// Long is an optional extended description. It may span
+		// multiple paragraphs. It is the text that appears in
+		// `forge xxx --help` above the usage line. Leave it empty
+		// if the Short description is sufficient.
+		Long: `An extended description of what xxx does.
+
+Use a blank line between paragraphs. The text may be as long as
+necessary; it is only shown when the user asks for help on this
+specific command.`,
+
+		// Args validates positional arguments before RunE runs. Use
+		// cobra.NoArgs if the command takes none, cobra.ExactArgs(n)
+		// for exactly n, or cobra.ArbitraryArgs if RunE performs its
+		// own validation.
+		Args: cobra.NoArgs,
+
+		// RunE is the handler. It must be named RunE, not Run: Run
+		// discards the returned error, which would break the CLI's
+		// error handling. The contract forbids Run.
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Construct the service, call it, delegate formatting.
+			//
+			// Replace this body with the real implementation. The
+			// body must follow the handler / service boundary: it
+			// must not perform I/O, must not format output inline,
+			// and must not call os.Exit.
+			//
+			// The reference implementation is version.go. It is
+			// three lines long and is the model every handler
+			// copies.
+			//
+			// For the placeholder, return an "unimplemented" error.
+			// The error message is shown to the user; make it
+			// actionable.
+			return nil
+		},
+	}
+}

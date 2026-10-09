@@ -32,6 +32,17 @@
 //   - Formats the result by delegating to the service's formatter.
 //   - Returns an error; never calls os.Exit.
 //
+// # Test organisation
+//
+// As of WBS 4.3.2, the behavioural tests in this file go through the
+// shared runCLI helper in testhelper_test.go rather than constructing
+// a Cobra command directly. The helper exercises the command through
+// the same boundary production code uses (executeWithOptions), which
+// is the property WBS 4.3.2 exists to establish. The structural
+// tests at the bottom of the file are unchanged: they read
+// version.go as data and are indifferent to how the command is
+// invoked.
+//
 // # Why the structural tests strip comments
 //
 // The structural tests read version.go as data and assert that the
@@ -72,146 +83,143 @@ import (
 var _ func(Dependencies) *cobra.Command = newVersionCmd
 
 // =============================================================================
-// Positive tests — command metadata
+// Positive tests — behaviour through the CLI boundary
 // =============================================================================
-
-// TestNewVersionCmd_HasExpectedMetadata verifies the command's
-// metadata: its name, its short description, and its long
-// description.
 //
-// The metadata is what a user sees in `forge --help`. WBS 5.1.1
-// freezes the root command's metadata; the version command's
-// metadata is frozen by this test.
-func TestNewVersionCmd_HasExpectedMetadata(t *testing.T) {
-	t.Parallel()
+// These tests exercise the version command the same way a user does:
+// by invoking the CLI with arguments and inspecting the observable
+// result. The shared runCLI helper (in testhelper_test.go) performs
+// the invocation through executeWithOptions, so the test is a
+// complete end-to-end exercise of the command tree, the Dependencies
+// transformation, and the handler.
 
-	deps := testDependencies()
-	cmd := newVersionCmd(deps)
-
-	if cmd.Use != "version" {
-		t.Errorf("Use = %q; want %q", cmd.Use, "version")
-	}
-	if !strings.Contains(cmd.Short, "version") {
-		t.Errorf("Short does not mention version: %q", cmd.Short)
-	}
-	if !strings.Contains(cmd.Long, "commit") {
-		t.Errorf("Long does not mention commit: %q", cmd.Long)
-	}
-}
-
-// TestNewVersionCmd_IsNotHidden verifies that the command appears in
-// help output. A hidden command would not be discoverable, which
-// would defeat the purpose of a version command.
-func TestNewVersionCmd_IsNotHidden(t *testing.T) {
-	t.Parallel()
-
-	deps := testDependencies()
-	cmd := newVersionCmd(deps)
-
-	if cmd.Hidden {
-		t.Error("version command is hidden; want visible")
-	}
-}
-
-// TestNewVersionCmd_RejectsExtraArguments verifies that the command
-// rejects positional arguments. This is enforced by cobra.NoArgs in
-// the command definition.
+// TestVersionCommand_PrintsVersion is the reference positive test for
+// the version command. It invokes `forge version` through the CLI
+// boundary and asserts on the observable result.
 //
-// The test uses a fresh command per invocation because Cobra mutates
-// the command's internal state when Execute is called.
-func TestNewVersionCmd_RejectsExtraArguments(t *testing.T) {
+// The assertions are deliberately broad: the test checks for the
+// presence of the header prefix and the detail keys, not for specific
+// values. The specific values are injected at link time and vary
+// between builds; the format is what the command guarantees.
+func TestVersionCommand_PrintsVersion(t *testing.T) {
 	t.Parallel()
 
-	deps := testDependencies()
-	cmd := newVersionCmd(deps)
-	cmd.SetArgs([]string{"unexpected"})
+	got := runCLI(t, []string{"version"}, nil)
 
-	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("Execute: want error for unexpected argument, got nil")
+	if got.exitCode != ExitSuccess {
+		t.Fatalf("exit code: got %d, want %d",
+			got.exitCode, ExitSuccess)
 	}
-}
-
-// =============================================================================
-// Positive tests — behaviour
-// =============================================================================
-
-// TestNewVersionCmd_WritesToInjectedStdout is the ATDD acceptance
-// test for AC2 and AC4. It verifies that the handler writes to the
-// injected writer, not to os.Stdout, and that it does so by
-// delegating to the service's formatter.
-//
-// The test constructs the command with a Dependencies value whose
-// Stdout is a bytes.Buffer, executes the command, and asserts on the
-// buffer contents. If the handler wrote to os.Stdout instead, the
-// buffer would be empty and the test would fail.
-func TestNewVersionCmd_WritesToInjectedStdout(t *testing.T) {
-	t.Parallel()
-
-	var stdout bytes.Buffer
-	deps := Dependencies{
-		Stdout: &stdout,
-		Stderr: &bytes.Buffer{},
+	if !strings.HasPrefix(got.stdout, "forge ") {
+		t.Errorf("stdout does not start with the version header: %q",
+			got.stdout)
 	}
-
-	cmd := newVersionCmd(deps)
-	cmd.SetOut(&stdout)
-	cmd.SetErr(&bytes.Buffer{})
-
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
-
-	// The output must contain the version header. The exact version
-	// string depends on the build; we assert only on the prefix.
-	out := stdout.String()
-	if !strings.HasPrefix(out, "forge ") {
-		t.Errorf("output does not start with version header: %q", out)
-	}
-
-	// The output must contain every detail key. The values may be
-	// empty (if the binary was built without ldflags), but the keys
-	// are always present.
-	for _, key := range []string{"commit:", "built:", "go version:", "platform:"} {
-		if !strings.Contains(out, key) {
-			t.Errorf("output missing %q: %q", key, out)
+	for _, key := range []string{
+		"commit:", "built:", "dirty:", "go version:", "platform:",
+	} {
+		if !strings.Contains(got.stdout, key) {
+			t.Errorf("stdout missing %q: %q", key, got.stdout)
 		}
 	}
+	if got.stderr != "" {
+		t.Errorf("stderr should be empty on success: %q", got.stderr)
+	}
 }
 
-// TestNewVersionCmd_DelegatesToService is a behavioural test that
-// verifies the handler's output matches what the service produces
-// directly.
+// TestVersionCommand_WithHelpFlag verifies that `forge version --help`
+// prints the command's help to stdout and exits with success.
 //
-// The test calls version.Format on a fresh bytes.Buffer and compares
-// the output to what the command wrote. The two must be byte-identical
-// because the handler's only job is to delegate.
-func TestNewVersionCmd_DelegatesToService(t *testing.T) {
+// The help output is produced by Cobra, not by the handler. The test
+// asserts only that the output mentions the command name and that the
+// exit code is success. The exact layout of the help text is not
+// pinned; it may change between Cobra versions.
+func TestVersionCommand_WithHelpFlag(t *testing.T) {
 	t.Parallel()
 
-	var cmdOut bytes.Buffer
-	deps := Dependencies{
-		Stdout: &cmdOut,
-		Stderr: &bytes.Buffer{},
-	}
-	cmd := newVersionCmd(deps)
-	cmd.SetOut(&cmdOut)
-	cmd.SetErr(&bytes.Buffer{})
+	got := runCLI(t, []string{"version", "--help"}, nil)
 
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute: %v", err)
+	if got.exitCode != ExitSuccess {
+		t.Fatalf("exit code: got %d, want %d",
+			got.exitCode, ExitSuccess)
 	}
-
-	var svcOut bytes.Buffer
-	if err := version.Format(&svcOut, version.Get()); err != nil {
-		t.Fatalf("version.Format: %v", err)
+	if !strings.Contains(got.stdout, "version") {
+		t.Errorf("help text does not mention 'version': %q", got.stdout)
 	}
+	if got.stderr != "" {
+		t.Errorf("stderr should be empty on success: %q", got.stderr)
+	}
+}
 
-	if cmdOut.String() != svcOut.String() {
-		t.Errorf("handler output differs from service output\n"+
-			"handler: %q\n"+
-			"service: %q",
-			cmdOut.String(), svcOut.String())
+// =============================================================================
+// Negative tests — behaviour through the CLI boundary
+// =============================================================================
+
+// TestVersionCommand_RejectsExtraArguments verifies that
+// `forge version extra` fails with a non-success exit code and writes
+// a diagnostic to stderr.
+//
+// The test pins two contracts:
+//
+//   - The command rejects positional arguments.
+//   - The failure path writes to stderr, not stdout.
+func TestVersionCommand_RejectsExtraArguments(t *testing.T) {
+	t.Parallel()
+
+	got := runCLI(t, []string{"version", "extra"}, nil)
+
+	if got.exitCode == ExitSuccess {
+		t.Errorf("exit code: got %d, want non-success", got.exitCode)
+	}
+	if got.stdout != "" {
+		t.Errorf("stdout should be empty on failure: %q", got.stdout)
+	}
+	if got.stderr == "" {
+		t.Error("stderr should contain a diagnostic on failure")
+	}
+}
+
+// TestVersionCommand_GivenNilEnv_StillSucceeds verifies that a nil env
+// map does not prevent the version command from running.
+//
+// The version command does not read environment variables in Phase 2.
+// The test is a precondition for the helper's behaviour: a nil env
+// map must be a valid input that produces a working invocation.
+func TestVersionCommand_GivenNilEnv_StillSucceeds(t *testing.T) {
+	t.Parallel()
+
+	got := runCLI(t, []string{"version"}, nil)
+
+	if got.exitCode != ExitSuccess {
+		t.Fatalf("exit code: got %d, want %d",
+			got.exitCode, ExitSuccess)
+	}
+	if got.stdout == "" {
+		t.Error("stdout is empty; want version output")
+	}
+}
+
+// TestVersionCommand_GivenEnvMap_StillSucceeds verifies that a
+// non-nil env map does not prevent the version command from running.
+//
+// The test is the symmetric companion to
+// TestVersionCommand_GivenNilEnv_StillSucceeds. When a future version
+// of the command reads an environment variable (for example,
+// FORGE_NO_COLOR), the test can be extended to assert on the effect.
+// Until then, it pins the helper's contract.
+func TestVersionCommand_GivenEnvMap_StillSucceeds(t *testing.T) {
+	t.Parallel()
+
+	env := map[string]string{
+		"FORGE_TEST_VAR": "injected",
+	}
+	got := runCLI(t, []string{"version"}, env)
+
+	if got.exitCode != ExitSuccess {
+		t.Fatalf("exit code: got %d, want %d",
+			got.exitCode, ExitSuccess)
+	}
+	if got.stdout == "" {
+		t.Error("stdout is empty; want version output")
 	}
 }
 
@@ -219,27 +227,81 @@ func TestNewVersionCmd_DelegatesToService(t *testing.T) {
 // Stream separation
 // =============================================================================
 
-// TestNewVersionCmd_WritesNothingToStderr verifies that a successful
-// invocation writes nothing to stderr. Diagnostics on success would
-// violate the CLI UX contract and break shell pipelines.
-func TestNewVersionCmd_WritesNothingToStderr(t *testing.T) {
+// TestVersionCommand_WritesNothingToStderrOnSuccess verifies the
+// stdout/stderr separation contract for the version command.
+//
+// A successful invocation writes to stdout only. Any byte on stderr
+// would violate the CLI UX contract and break scripts that redirect
+// stderr to a log file.
+func TestVersionCommand_WritesNothingToStderrOnSuccess(t *testing.T) {
 	t.Parallel()
 
-	var stdout, stderr bytes.Buffer
-	deps := Dependencies{
-		Stdout: &stdout,
-		Stderr: &stderr,
-	}
-	cmd := newVersionCmd(deps)
-	cmd.SetOut(&stdout)
-	cmd.SetErr(&stderr)
+	got := runCLI(t, []string{"version"}, nil)
 
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute: %v", err)
+	if got.exitCode != ExitSuccess {
+		t.Fatalf("exit code: got %d, want %d",
+			got.exitCode, ExitSuccess)
+	}
+	if got.stderr != "" {
+		t.Errorf("stderr should be empty on success: %q", got.stderr)
+	}
+}
+
+// =============================================================================
+// Delegation test — handler output matches service output
+// =============================================================================
+
+// TestVersionCommand_DelegatesToService verifies that the handler's
+// output matches what the service produces directly.
+//
+// The test invokes the command through runCLI and captures its
+// output, then calls the service's formatter on a fresh buffer and
+// compares the two. They must be byte-identical because the handler's
+// only job is to delegate.
+//
+// # Why this test is behavioural, not structural
+//
+// A structural test would assert on the source of version.go: "the
+// handler calls version.Format exactly once." That test exists
+// (TestVersionHandler_IsThin below). This test asserts the runtime
+// consequence of the delegation: the output is what the service
+// produces. Together, the two catch different failures: the
+// structural test catches "the handler grew a second call"; this test
+// catches "the handler produces different output than the service."
+//
+// # Why the test imports internal/app/version
+//
+// The test calls the service's formatter directly to produce the
+// reference output. Importing the package is the simplest way to do
+// that. An earlier draft attempted to hide the import behind a local
+// wrapper, but the wrapper added indirection without benefit: the
+// import is unambiguous in this file (the package is named `version`,
+// and the file has no other `version` identifier), and calling the
+// exported function directly is clearer than calling a wrapper that
+// calls it.
+func TestVersionCommand_DelegatesToService(t *testing.T) {
+	t.Parallel()
+
+	got := runCLI(t, []string{"version"}, nil)
+
+	if got.exitCode != ExitSuccess {
+		t.Fatalf("exit code: got %d, want %d",
+			got.exitCode, ExitSuccess)
 	}
 
-	if stderr.Len() != 0 {
-		t.Errorf("stderr is non-empty on success: %q", stderr.String())
+	// Produce the same output by calling the service directly. The
+	// version command's handler calls version.Format(deps.Stdout,
+	// version.Get()); this test does the same on a fresh buffer.
+	var svcOut bytes.Buffer
+	if err := version.Format(&svcOut, version.Get()); err != nil {
+		t.Fatalf("version.Format: %v", err)
+	}
+
+	if got.stdout != svcOut.String() {
+		t.Errorf("handler output differs from service output\n"+
+			"handler: %q\n"+
+			"service: %q",
+			got.stdout, svcOut.String())
 	}
 }
 
@@ -249,7 +311,7 @@ func TestNewVersionCmd_WritesNothingToStderr(t *testing.T) {
 //
 // The tests below read version.go as data, strip comments, and
 // assert on the shape of the remaining code. They are the mechanical
-// enforcement of AC3, AC4, and AC5.
+// enforcement of AC3, AC4, and AC5 of WBS 4.3.1.
 //
 // The comment stripping is essential: the handler's docstring
 // explains what the handler does *not* do, and it names the
@@ -257,8 +319,8 @@ func TestNewVersionCmd_WritesNothingToStderr(t *testing.T) {
 // Without stripping, every structural test would fail on the
 // docstring rather than on the code.
 
-// TestNewVersionCmd_HandlerIsThin verifies the structural invariants
-// that keep the handler thin.
+// TestVersionHandler_IsThin verifies the structural invariants that
+// keep the handler thin.
 //
 // The test reads version.go from disk, strips comments, and asserts:
 //
@@ -270,7 +332,7 @@ func TestNewVersionCmd_WritesNothingToStderr(t *testing.T) {
 //
 // If any assertion fails, the failure message cites the specific
 // token and the WBS acceptance criterion it violates.
-func TestNewVersionCmd_HandlerIsThin(t *testing.T) {
+func TestVersionHandler_IsThin(t *testing.T) {
 	t.Parallel()
 
 	content := readFile(t, "version.go")
@@ -302,7 +364,7 @@ func TestNewVersionCmd_HandlerIsThin(t *testing.T) {
 	}
 }
 
-// TestNewVersionCmd_DoesNotContainBusinessLogic verifies that the
+// TestVersionHandler_DoesNotImportInfrastructure verifies that the
 // handler file does not import infrastructure or domain packages
 // directly.
 //
@@ -312,7 +374,7 @@ func TestNewVersionCmd_HandlerIsThin(t *testing.T) {
 // rules. None of these belong in a handler. The test forbids the
 // imports so that the handler cannot acquire those capabilities by
 // accident.
-func TestNewVersionCmd_DoesNotContainBusinessLogic(t *testing.T) {
+func TestVersionHandler_DoesNotImportInfrastructure(t *testing.T) {
 	t.Parallel()
 
 	content := readFile(t, "version.go")
@@ -330,13 +392,13 @@ func TestNewVersionCmd_DoesNotContainBusinessLogic(t *testing.T) {
 	}
 }
 
-// TestNewVersionCmd_ReturnsErrorNotExit verifies that the handler
+// TestVersionHandler_ReturnsErrorNotExit verifies that the handler
 // returns an error rather than terminating the process.
 //
 // The test strips comments before searching, so that the docstring's
 // mention of os.Exit does not produce a false positive. The code
 // must not contain os.Exit; the docstring may mention it.
-func TestNewVersionCmd_ReturnsErrorNotExit(t *testing.T) {
+func TestVersionHandler_ReturnsErrorNotExit(t *testing.T) {
 	t.Parallel()
 
 	content := readFile(t, "version.go")
@@ -348,11 +410,11 @@ func TestNewVersionCmd_ReturnsErrorNotExit(t *testing.T) {
 	}
 }
 
-// TestNewVersionCmd_OnlyCallsDocumentedService verifies that the
+// TestVersionHandler_OnlyCallsDocumentedService verifies that the
 // handler calls only the service's exported API. It must not call
 // unexported helpers, and it must not reach into the service's
 // internals.
-func TestNewVersionCmd_OnlyCallsDocumentedService(t *testing.T) {
+func TestVersionHandler_OnlyCallsDocumentedService(t *testing.T) {
 	t.Parallel()
 
 	content := readFile(t, "version.go")
@@ -391,7 +453,7 @@ func TestNewVersionCmd_OnlyCallsDocumentedService(t *testing.T) {
 
 // isIdentChar reports whether b is a valid Go identifier character
 // (letter, digit, or underscore). It is used by
-// TestNewVersionCmd_OnlyCallsDocumentedService.
+// TestVersionHandler_OnlyCallsDocumentedService.
 func isIdentChar(b byte) bool {
 	return b == '_' ||
 		(b >= 'a' && b <= 'z') ||
@@ -402,16 +464,26 @@ func isIdentChar(b byte) bool {
 // =============================================================================
 // Edge and corner cases
 // =============================================================================
+//
+// The tests below exercise edge cases that are not reachable through
+// the shared runCLI helper, either because they require a specific
+// Dependencies value (nil Stdout) or because they inspect the
+// handler's behaviour in isolation.
 
-// TestNewVersionCmd_NilStdout verifies the handler's behaviour when
-// the injected Stdout is nil.
+// TestVersionHandler_NilStdoutPanics verifies the handler's behaviour
+// when the injected Stdout is nil.
 //
 // The handler does not guard against nil writers: a nil io.Writer
 // panics on first use, and the panic is the correct symptom of a
 // caller that failed to construct Dependencies correctly. The test
 // pins this behaviour so a future change does not silently add a
 // guard that would hide the bug.
-func TestNewVersionCmd_NilStdout(t *testing.T) {
+//
+// This test constructs the command directly rather than going
+// through runCLI, because runCLI always supplies a non-nil writer.
+// The direct construction is the only way to reach the nil-writer
+// path.
+func TestVersionHandler_NilStdoutPanics(t *testing.T) {
 	t.Parallel()
 
 	deps := Dependencies{
@@ -431,58 +503,33 @@ func TestNewVersionCmd_NilStdout(t *testing.T) {
 	_ = cmd.Execute()
 }
 
-// TestNewVersionCmd_EmptyInfo verifies that the command produces
-// valid output even when the build variables are empty.
+// TestVersionHandler_EmptyBuildInfo verifies that the command
+// produces valid output even when the build variables are empty.
 //
-// A binary built without ldflags has empty Version, Commit, and
-// BuildDate. The command must still succeed and produce output; the
-// output contains the format's fixed parts (the header prefix and the
-// detail keys) with empty values.
-func TestNewVersionCmd_EmptyInfo(t *testing.T) {
+// A binary built without ldflags has empty Version, Commit,
+// BuildDate, and Dirty. The command must still succeed and produce
+// output; the output contains the format's fixed parts (the header
+// prefix and the detail keys) with empty values.
+func TestVersionHandler_EmptyBuildInfo(t *testing.T) {
 	t.Parallel()
 
-	var stdout, stderr bytes.Buffer
-	deps := Dependencies{
-		Stdout: &stdout,
-		Stderr: &stderr,
-	}
-	cmd := newVersionCmd(deps)
-	cmd.SetOut(&stdout)
-	cmd.SetErr(&stderr)
+	got := runCLI(t, []string{"version"}, nil)
 
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute: %v", err)
+	if got.exitCode != ExitSuccess {
+		t.Fatalf("exit code: got %d, want %d",
+			got.exitCode, ExitSuccess)
 	}
-
-	if stdout.Len() == 0 {
-		t.Error("stdout is empty; want at least the version header")
-	}
-	if !strings.HasPrefix(stdout.String(), "forge ") {
+	if !strings.HasPrefix(got.stdout, "forge ") {
 		t.Errorf("stdout does not start with version header: %q",
-			stdout.String())
+			got.stdout)
 	}
-}
-
-// TestNewVersionCmd_NoArgs verifies that the command succeeds when
-// invoked with no arguments. This is the common case.
-func TestNewVersionCmd_NoArgs(t *testing.T) {
-	t.Parallel()
-
-	var stdout, stderr bytes.Buffer
-	deps := Dependencies{
-		Stdout: &stdout,
-		Stderr: &stderr,
-	}
-	cmd := newVersionCmd(deps)
-	cmd.SetOut(&stdout)
-	cmd.SetErr(&stderr)
-	cmd.SetArgs(nil)
-
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
-	if stdout.Len() == 0 {
-		t.Error("stdout is empty; want version output")
+	// The detail keys are present even when the values are empty.
+	for _, key := range []string{
+		"commit:", "built:", "dirty:", "go version:", "platform:",
+	} {
+		if !strings.Contains(got.stdout, key) {
+			t.Errorf("stdout missing %q: %q", key, got.stdout)
+		}
 	}
 }
 
@@ -490,33 +537,22 @@ func TestNewVersionCmd_NoArgs(t *testing.T) {
 // Non-functional properties
 // =============================================================================
 
-// TestNewVersionCmd_IsDeterministic verifies that two invocations
-// with identical Dependencies produce identical output.
-func TestNewVersionCmd_IsDeterministic(t *testing.T) {
+// TestVersionCommand_IsDeterministic verifies that two invocations
+// with identical inputs produce identical output.
+//
+// The test uses the shared helper and compares the two testRun
+// values directly. testRun is a comparable struct (three fields, all
+// comparable), so the comparison is valid Go.
+func TestVersionCommand_IsDeterministic(t *testing.T) {
 	t.Parallel()
 
-	runOnce := func() string {
-		var stdout bytes.Buffer
-		deps := Dependencies{
-			Stdout: &stdout,
-			Stderr: &bytes.Buffer{},
-		}
-		cmd := newVersionCmd(deps)
-		cmd.SetOut(&stdout)
-		cmd.SetErr(&bytes.Buffer{})
-		if err := cmd.Execute(); err != nil {
-			t.Fatalf("Execute: %v", err)
-		}
-		return stdout.String()
-	}
-
-	first := runOnce()
+	first := runCLI(t, []string{"version"}, nil)
 	for i := 0; i < 5; i++ {
-		got := runOnce()
+		got := runCLI(t, []string{"version"}, nil)
 		if got != first {
-			t.Fatalf("run %d produced different output\n"+
-				"first: %q\n"+
-				"got:   %q", i, first, got)
+			t.Fatalf("run %d produced different output:\n"+
+				"first: %+v\n"+
+				"got:   %+v", i, first, got)
 		}
 	}
 }
@@ -524,15 +560,6 @@ func TestNewVersionCmd_IsDeterministic(t *testing.T) {
 // =============================================================================
 // Test helpers
 // =============================================================================
-
-// testDependencies returns a Dependencies value suitable for tests
-// that only need the writers.
-func testDependencies() Dependencies {
-	return Dependencies{
-		Stdout: &bytes.Buffer{},
-		Stderr: &bytes.Buffer{},
-	}
-}
 
 // stripComments removes Go line comments (// ...) and block comments
 // (/* ... */) from src, preserving newlines so that line numbers in

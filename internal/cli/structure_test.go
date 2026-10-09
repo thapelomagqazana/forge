@@ -182,7 +182,9 @@ var expectedSourceFiles = map[string]string{
 	// implementation of the handler / service boundary; the
 	// application logic it delegates to lives in
 	// internal/app/version.
-	"version.go": "WBS 4.3.1 — thin handler for the version command",
+	"version.go":  "WBS 4.3.1 — thin handler for the version command",
+	"registry.go": "WBS 4.4.1 — central command registry",
+	"config.go":   "WBS 4.4.1 — hidden placeholder for `forge config`",
 }
 
 // TestExpectedFilesExist verifies that every file this WBS expects is

@@ -101,51 +101,34 @@ func newRootCmd(deps Dependencies) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 
-		// The handler runs only when Cobra has not dispatched to a
-		// subcommand. That happens in two cases:
-		//
-		//  1. The invocation has no arguments at all.
-		//  2. The invocation's first argument does not match any
-		//     registered subcommand.
-		//
-		// Case 1 is a request for information; case 2 is a usage
-		// error. The handler distinguishes them by inspecting args.
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
-				// No arguments: the user wants help. Print to
-				// stdout and return nil, which maps to
-				// ExitSuccess.
 				return cmd.Help()
 			}
-
-			// One or more unknown arguments. Return an error,
-			// which maps to ExitUsage via the default case in
-			// exitCodeFromError.
 			return fmt.Errorf("unknown command %q for %q",
 				args[0], cmd.Name())
 		},
 
-		// Args is set to ArbitraryArgs so that Cobra passes the
-		// positional arguments to RunE instead of rejecting them
-		// before RunE runs. RunE is responsible for validating them.
 		Args: cobra.ArbitraryArgs,
 	}
 
-	// Register subcommands. Every constructor receives the same
-	// Dependencies value, captures it in its handler closure, and
-	// never reaches for a global.
+	// Register every subcommand in the central registry. The
+	// registry is defined in registry.go and is the single place
+	// where the command tree's shape is declared. Adding a command
+	// means appending to the registry; this loop does not change.
 	//
-	// The order of registration is the order Cobra lists subcommands
-	// in help output when no explicit ordering is applied. Cobra
-	// sorts alphabetically by default; the registration order is
-	// therefore not significant for user-visible output today. It is
-	// kept in the order the commands were introduced, for
-	// readability.
+	// The order of registration is the order of the slice. Cobra
+	// sorts subcommands alphabetically in help output by default,
+	// but the registry order is still visible to any code that
+	// iterates root.Commands() and is the order a reader of
+	// registry.go sees when looking for "where do I add a command".
 	//
-	// See docs/architecture.md § 11.12 for the handler / service
-	// boundary that newVersionCmd (and every future constructor)
-	// follows.
-	root.AddCommand(newVersionCmd(deps))
+	// See docs/architecture.md § 11.13 for the command-registration
+	// rules and registry.go for the four-step procedure to add a
+	// command.
+	for _, ctor := range registry {
+		root.AddCommand(ctor(deps))
+	}
 
 	return root
 }
