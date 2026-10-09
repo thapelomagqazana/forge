@@ -1,0 +1,236 @@
+# # =============================================================================
+# # .github/workflows/ci.yml — Forge continuous integration
+# # =============================================================================
+# #
+# # This workflow runs the full quality gate on every push and pull
+# # request. It is the authoritative definition of "what CI runs" for
+# # the Forge repository.
+# #
+# # # Structure
+# #
+# # The workflow has three jobs, ordered by fast-fail priority:
+# #
+# #   drift       — Detects go.mod / go.sum drift. Runs in seconds.
+# #   verify      — Runs the reproducibility and integrity checks.
+# #                 Runs in a minute or two.
+# #   test        — Runs the unit and integration tests. Runs in a
+# #                 few minutes.
+# #
+# # A failure in an earlier job prevents later jobs from running.
+# # This is the fast-fail ordering specified in WBS 3.3.1.
+# #
+# # # Platform matrix
+# #
+# # The drift job runs only on ubuntu-latest, because drift is
+# # deterministic across operating systems. The verify and test jobs
+# # run on the full matrix (ubuntu-latest, macos-latest,
+# # windows-latest) to catch platform-specific issues.
+# #
+# # # Go version matrix
+# #
+# # The verify and test jobs run against both the minimum supported
+# # Go version and the current development version, per the version
+# # matrix defined in WBS 2.1.2. The drift job runs only against the
+# # canonical version, because drift detection is a single-target
+# # check.
+# #
+# # # Caching
+# #
+# # The Go module cache is cached between runs, keyed on go.sum. This
+# # reduces the time to resolve dependencies from minutes to seconds
+# # on subsequent runs.
+# #
+# # # Required status checks
+# #
+# # The drift job is a required status check for merging to main. See
+# # the branch protection specification in
+# # docs/development.md "Detecting Dependency Drift".
+# # =============================================================================
+
+# name: CI
+
+# # ─────────────────────────────────────────────────────────────────────
+# # Triggers
+# # ─────────────────────────────────────────────────────────────────────
+# #
+# # The workflow runs on:
+# #
+# #   - Every push to main.
+# #   - Every pull request targeting main.
+# #   - Manual dispatch, for ad-hoc verification.
+# #
+# # It does not run on every push to feature branches. Contributors
+# # who want CI on a feature branch can open a draft pull request.
+
+# on:
+#   push:
+#     branches: [main]
+#   pull_request:
+#     branches: [main]
+#   workflow_dispatch:
+
+# # ─────────────────────────────────────────────────────────────────────
+# # Permissions
+# # ─────────────────────────────────────────────────────────────────────
+# #
+# # The workflow requests the minimum permissions it needs. It reads
+# # the repository contents and writes nothing.
+# #
+# # The principle of least privilege applies: a compromised workflow
+# # file cannot push commits, create releases, or modify issues.
+
+# permissions:
+#   contents: read
+
+# # ─────────────────────────────────────────────────────────────────────
+# # Environment
+# # ─────────────────────────────────────────────────────────────────────
+# #
+# # Every job inherits these environment variables. They are the
+# # canonical values from docs/dependency-policy.md, section "Module
+# # resolution policy".
+# #
+# # Setting them at the workflow level ensures that every job uses the
+# # same environment, regardless of the runner's defaults.
+
+# env:
+#   GOFLAGS: -mod=readonly
+#   GOTOOLCHAIN: auto
+#   GOPROXY: https://proxy.golang.org,direct
+#   GOSUMDB: sum.golang.org
+
+# jobs:
+
+#   # ═══════════════════════════════════════════════════════════════════
+#   # Job 1 — Dependency drift detection
+#   # ═══════════════════════════════════════════════════════════════════
+#   #
+#   # The fast-fail job. Runs in seconds. Detects the five drift types
+#   # defined in WBS 3.3.1:
+#   #
+#   #   D1  go.sum is missing entries required by go.mod.
+#   #   D2  go.sum has extra entries not referenced by go.mod.
+#   #   D3  go.mod is not tidy.
+#   #   D4  go.mod requires a newer Go version than the pinned toolchain.
+#   #   D5  Unpinned dependency version.
+#   #
+#   # Runs only on ubuntu-latest and only against the canonical Go
+#   # version, because drift is deterministic across platforms and
+#   # versions. Running it on the full matrix would waste CI compute
+#   # without providing additional coverage.
+
+#   drift:
+#     name: Dependency drift
+#     runs-on: ubuntu-latest
+#     timeout-minutes: 5
+
+#     steps:
+#       - name: Check out repository
+#         uses: actions/checkout@v4
+
+#       - name: Set up Go
+#         uses: actions/setup-go@v5
+#         with:
+#           go-version-file: go.mod
+#           cache: true
+
+#       - name: Detect drift
+#         run: sh scripts/deps/detect-drift.sh
+
+#   # ═══════════════════════════════════════════════════════════════════
+#   # Job 2 — Verification
+#   # ═══════════════════════════════════════════════════════════════════
+#   #
+#   # Runs the verification checks: module configuration, version
+#   # matrix, reproducibility invariant, Cobra pin and wiring,
+#   # dependency policy, and script tests.
+#   #
+#   # Runs on the full OS matrix because some checks (path handling,
+#   # file permissions) may behave differently on different
+#   # platforms. Runs against both the minimum and current Go
+#   # versions because language features may behave differently.
+
+#   verify:
+#     name: Verify (${{ matrix.os }}, Go ${{ matrix.go }})
+#     needs: drift
+#     runs-on: ${{ matrix.os }}
+#     timeout-minutes: 15
+
+#     strategy:
+#       fail-fast: false
+#       matrix:
+#         os: [ubuntu-latest, macos-latest, windows-latest]
+#         go: ['1.23.0', '1.23.4']
+#         include:
+#           # Add the latest supported Go version on ubuntu only, as
+#           # a forward-compatibility check.
+#           - os: ubuntu-latest
+#             go: '1.24'
+
+#     steps:
+#       - name: Check out repository
+#         uses: actions/checkout@v4
+
+#       - name: Set up Go
+#         uses: actions/setup-go@v5
+#         with:
+#           go-version: ${{ matrix.go }}
+#           cache: true
+
+#       - name: Install Task
+#         uses: arduino/setup-task@v2
+#         with:
+#           version: 3.x
+#           repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+#       - name: Install markdownlint-cli2
+#         run: npm install -g markdownlint-cli2
+
+#       - name: Run verification
+#         run: task verify
+
+#       - name: Run script tests
+#         run: task test:scripts
+
+#   # ═══════════════════════════════════════════════════════════════════
+#   # Job 3 — Tests
+#   # ═══════════════════════════════════════════════════════════════════
+#   #
+#   # Runs the unit and integration tests. This is the slowest job.
+#   # It runs after verification because the verification checks are
+#   # cheaper and more likely to fail.
+
+#   test:
+#     name: Test (${{ matrix.os }}, Go ${{ matrix.go }})
+#     needs: verify
+#     runs-on: ${{ matrix.os }}
+#     timeout-minutes: 20
+
+#     strategy:
+#       fail-fast: false
+#       matrix:
+#         os: [ubuntu-latest, macos-latest, windows-latest]
+#         go: ['1.23.0', '1.23.4']
+
+#     steps:
+#       - name: Check out repository
+#         uses: actions/checkout@v4
+
+#       - name: Set up Go
+#         uses: actions/setup-go@v5
+#         with:
+#           go-version: ${{ matrix.go }}
+#           cache: true
+
+#       - name: Install Task
+#         uses: arduino/setup-task@v2
+#         with:
+#           version: 3.x
+#           repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+#       - name: Run unit tests
+#         run: task test
+
+#       - name: Run integration tests
+#         run: task test:integration
+#         if: matrix.os == 'ubuntu-latest'

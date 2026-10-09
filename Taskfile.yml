@@ -886,10 +886,107 @@ tasks:
     desc: Verify the dependency policy is respected (WBS 2.5.1)
     dir: "{{.USER_WORKING_DIR}}"
     cmds:
+      - task: verify:deps:env-policy
+      - task: verify:deps:integrity
+      - task: verify:deps:drift
       - task: verify:deps:pin
       - task: verify:deps:single
       - task: verify:deps:documented
       - task: verify:deps:no-unused
+      - task: verify:deps:pr-check
+
+  # AC1–AC5 (WBS 3.3.2) — pull request dependency policy.
+  #
+  # Detects the four mechanically detectable violation types
+  # (V1, V2, V3, V4) defined in docs/dependency-policy.md, section
+  # "Dependency change detection".
+  #
+  # V1 is reported as a warning (the script cannot determine whether
+  # an addition is justified). V2, V3, V4 are errors.
+  #
+  # The implementation lives in scripts/deps/check-pr-deps.sh.
+  # When invoked without a base revision, only V2, V3, V4 are
+  # checked. When invoked with --base=<revision>, V1 is also
+  # checked.
+  verify:deps:pr-check:
+    desc: Detect PR dependency violations (WBS 3.3.2)
+    dir: "{{.ROOT}}"
+    cmds:
+      - sh scripts/deps/check-pr-deps.sh
+
+  # AC1–AC8 (WBS 3.3.1) — dependency drift detection.
+  #
+  # Detects the five drift types defined in WBS 3.3.1:
+  #
+  #   D1  go.sum missing entries required by go.mod.
+  #   D2  go.sum extra entries not referenced by go.mod.
+  #   D3  go.mod not tidy.
+  #   D4  go.mod inconsistent with the pinned toolchain.
+  #   D5  Unpinned dependency version.
+  #
+  # The implementation lives in scripts/deps/detect-drift.sh.
+  verify:deps:drift:
+    desc: Detect go.mod / go.sum drift (WBS 3.3.1)
+    dir: "{{.ROOT}}"
+    cmds:
+      - sh scripts/deps/detect-drift.sh
+  
+  # AC1–AC7 (WBS 3.2.2) — module resolution policy.
+  #
+  # Verifies that the running environment conforms to the module
+  # resolution policy documented in docs/dependency-policy.md,
+  # section "Module resolution policy".
+  #
+  # The implementation lives in scripts/deps/verify-env-policy.sh.
+  verify:deps:env-policy:
+    desc: Verify the environment conforms to the module resolution policy (WBS 3.2.2)
+    dir: "{{.ROOT}}"
+    cmds:
+      - sh scripts/deps/verify-env-policy.sh
+  
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Reproducibility — module resolution (WBS 3.2.1)
+  # ═══════════════════════════════════════════════════════════════════════════
+  #
+  # verify:resolution proves the module resolution reproducibility
+  # invariant: given the same commit and pinned toolchain, two
+  # independent clean environments resolve identical module trees.
+  #
+  # This is distinct from verify:reproducible, which verifies the
+  # environment-level reproducibility of the current working tree.
+  # The two checks have different scopes:
+  #
+  #   - verify:reproducible   — is *this* environment consistent?
+  #   - verify:resolution     — do *any* two environments agree?
+  #
+  # The implementation lives in
+  # scripts/reproducible/verify-resolution.sh. See that file for the
+  # formal invariant and the definition of "clean environment".
+  #
+  # CI should call this task; contributors should run it before
+  # opening a pull request. It is composed into `verify` and `check`.
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  verify:resolution:
+    desc: Verify module resolution is reproducible across environments (WBS 3.2.1)
+    dir: "{{.ROOT}}"
+    cmds:
+      - sh scripts/reproducible/verify-resolution.sh
+  
+  # AC1–AC4 (WBS 3.1.1) — go.sum integrity against go.mod.
+  #
+  # Verifies that:
+  #   - go.sum exists and is tracked by git.
+  #   - go.mod and go.sum are clean (no uncommitted changes).
+  #   - go mod tidy produces no diff.
+  #   - A corrupted go.sum fails the build with a checksum error.
+  #
+  # The implementation lives in scripts/deps/verify-integrity.sh.
+  verify:deps:integrity:
+    desc: Verify go.sum integrity against go.mod (WBS 3.1.1)
+    dir: "{{.ROOT}}"
+    cmds:
+      - sh scripts/deps/verify-integrity.sh
 
   # Every direct dependency must be pinned to an exact semantic
   # version. Ranges, branches, pseudo-versions, and +incompatible
@@ -1035,6 +1132,7 @@ tasks:
       - task: module:verify
       - task: goversion:verify
       - task: verify:reproducible
+      - task: verify:resolution
       - task: verify:cobra
       - task: verify:deps
 
@@ -1174,6 +1272,7 @@ tasks:
       - task: vet
       - task: goversion:verify
       - task: verify:reproducible
+      - task: verify:resolution
       - task: verify:cobra
       - task: verify:deps
       - task: test

@@ -31,3 +31,35 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# ─────────────────────────────────────────────────────────────────────
+# Vendoring
+# ─────────────────────────────────────────────────────────────────────
+#
+# The module resolution policy (docs/dependency-policy.md, section
+# "Module resolution policy") forbids vendoring. The rules below are
+# a safety net: if a contributor accidentally runs `go mod vendor`,
+# the resulting directory is not committed.
+#
+# See WBS 3.2.2 for the rationale.
+vendor/
+
+# ─────────────────────────────────────────────────────────────────────
+# Module cache overrides
+# ─────────────────────────────────────────────────────────────────────
+#
+# A contributor who overrides GOMODCACHE to a project-local
+# directory should not accidentally commit it.
+.cache/
+.modcache/
+
+# ─────────────────────────────────────────────────────────────────────
+# Reproducibility temporary directories
+# ─────────────────────────────────────────────────────────────────────
+#
+# The scripts in scripts/reproducible/ create temporary directories
+# with a specific prefix. If a script crashes before its EXIT trap
+# runs, the directory may remain. The rules below ensure it does not
+# get committed.
+forge-repro-*/
+forge-resolution-*/
