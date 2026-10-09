@@ -13,9 +13,9 @@ The template has three parts:
   2. Verification — what the contributor did to verify it works.
   3. Checklists — the mechanical rules that apply to every PR.
 
-The checklist section includes a dependency policy checklist that
-applies only when the PR modifies go.mod or go.sum. See
-docs/dependency-policy.md for the policy it enforces.
+The dependency checklist is mandatory for any PR that modifies
+go.mod or go.sum. See docs/dependency-policy.md, section
+"Dependency change detection" for the policy it enforces.
 
 If a section does not apply, write "N/A" rather than deleting it.
 Reviewers use the section structure to navigate the PR.
@@ -121,7 +121,7 @@ Every PR must satisfy these before it can be merged.
 - [ ] My commit messages follow the Conventional Commits format.
 - [ ] I have signed off my commits if required by the project.
 
-## Checklist — Dependency policy
+## Checklist — Dependency changes
 
 <!--
 This section applies only if the PR modifies go.mod or go.sum.
@@ -129,25 +129,46 @@ This section applies only if the PR modifies go.mod or go.sum.
 If the PR does NOT change dependencies, mark the first box and skip
 the rest.
 
-The checklist mirrors docs/dependency-policy.md, Section 2 "Addition
-criteria". Every box must be checked. If a box does not apply, explain
-why in the "Additional notes" field below.
+The checklist mirrors the violation types (V1–V5) defined in
+docs/dependency-policy.md, section "Dependency change detection".
+Every box that applies must be checked. If a box does not apply,
+explain why in the "Additional notes" field below.
 -->
 
 - [ ] This PR does **not** modify `go.mod` or `go.sum` — skip the rest of this section.
 
-If the PR **does** modify dependencies:
+If the PR **does** modify dependencies, confirm each of the following:
 
-- [ ] I have documented why the standard library cannot satisfy the requirement.
-- [ ] The dependency has had a commit in the last 12 months, or its maintenance status is documented.
-- [ ] The dependency's license is compatible with Apache-2.0 (MIT, BSD, Apache-2.0, ISC, MPL-2.0).
-- [ ] The dependency's module path matches its canonical repository URL.
-- [ ] The dependency is pinned to an exact version (`vX.Y.Z`), never `latest` or a range.
-- [ ] I have reviewed the transitive dependency tree and its licenses.
-- [ ] I have added an entry to Section 7 of `docs/dependency-policy.md`.
-- [ ] I have created an ADR for this addition if it is non-trivial.
+### V1 — New direct dependency
+
+- [ ] If this PR adds a new direct dependency, I have created an ADR documenting the addition.
+- [ ] The new dependency has an entry in Section 7 (the registry) of `docs/dependency-policy.md`.
 - [ ] I have run `task verify:deps` and it passes.
-- [ ] I have run `task verify:cobra` if the dependency interacts with Cobra.
+
+### V2 — Version pin
+
+- [ ] Every `require` directive in `go.mod` is pinned to an exact semantic version (`vX.Y.Z`).
+- [ ] No `require` directive uses a range (`>= vX.Y.Z`, `^vX.Y`, or a branch name).
+
+### V3 — `+incompatible` marker
+
+- [ ] No `require` directive contains a `+incompatible` marker.
+- [ ] If a `+incompatible` marker is present, I have created an ADR explaining why it is necessary and documenting the migration plan.
+
+### V4 — Pseudo-version
+
+- [ ] No direct dependency in `go.mod` uses a pseudo-version (`v0.0.0-YYYYMMDDHHMMSS-<hash>`).
+- [ ] If a pseudo-version is present, I have documented the commit hash and the reason for pinning to it.
+
+### V5 — License
+
+- [ ] I have verified that every new or upgraded dependency has a license compatible with Apache-2.0.
+- [ ] The licenses are recorded in Section 7 (the registry) of `docs/dependency-policy.md`.
+
+### General
+
+- [ ] The transitive dependency tree is reviewed in the ADR (for new dependencies).
+- [ ] The dependency policy in `docs/dependency-policy.md` is respected.
 
 ## Additional notes
 
