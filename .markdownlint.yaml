@@ -149,13 +149,11 @@ MD053: true
 
 MD044:
   names:
-    - Forge
     - Go
     - Cobra
     - Viper
     - GitHub
     - GitLab
-    - YAML
     - JSON
     - TOML
     - SARIF

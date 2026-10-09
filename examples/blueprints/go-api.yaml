@@ -1,0 +1,31 @@
+forge:
+  blueprint: go-api
+  version: 1
+
+project:
+  name: inventory-api
+  type: service
+
+language:
+  name: go
+  version: "1.22"
+
+framework:
+  name: chi
+
+database:
+  name: postgres
+  version: "16"
+
+testing:
+  enabled: true
+
+container:
+  enabled: true
+  runtime: docker
+
+ci:
+  provider: github-actions
+
+security:
+  baseline: standard

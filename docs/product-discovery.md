@@ -2,7 +2,7 @@
 
 - **Document type:** Report
 - **Status:** Draft
-- **Version:** 0.1.0
+- **Version:** 0.2.0
 - **Author:** @thapelomagqazana
 - **Created:** 2026-10-09
 - **Last Updated:** 2026-10-09
@@ -37,6 +37,7 @@ thesis that Phase 2 can build against.
 - The lifecycle within which the problem occurs
 - The current alternatives users rely on
 - Explicit problem hypotheses to be tested
+- The product promise and boundary
 - Explicit separation of assumptions from facts
 
 **Out of scope:**
@@ -45,16 +46,18 @@ thesis that Phase 2 can build against.
 - Architecture (see [`docs/architecture.md`](./architecture.md))
 - Specification of Blueprint, Template, Component, Policy (see their
   respective `*-spec.md` documents)
-- Recorded findings (see [`docs/research/findings.md`](./research/findings.md))
+- Recorded findings (see
+  [`docs/research/findings.md`](./research/findings.md))
 
 ---
 
 ## 3. Problem Statement
 
-Software teams repeatedly establish engineering standards for their
-repositories — testing, CI, security configuration, documentation,
-structure — but those standards are not maintained consistently as
-repositories evolve.
+### 3.1 Problem
+
+Engineering foundations are established once but not maintained as
+repositories evolve. There is no lightweight way to define, verify,
+explain, and safely evolve them.
 
 Six months after creation, a repository may still work correctly while
 no longer matching the engineering foundation the team intended.
@@ -89,6 +92,135 @@ one-time setup task rather than a maintained artifact.
 > repositories evolve. There is no lightweight way to define,
 > verify, explain, and safely evolve them.
 
+### 3.2 Affected Users
+
+| Persona | Experiences problem | Frequency |
+|---------|---------------------|-----------|
+| USER-001 Individual Developer | Repetition; forgotten setup | Episodic |
+| USER-002 Software Engineer | Standards invisible; guessing | Continuous |
+| USER-003 Tech Lead | Drift across repositories | Weekly–monthly |
+| USER-004 Platform Engineer | No organisation-wide visibility | Continuous |
+| USER-005 Engineering Manager | No compliance evidence | Monthly–quarterly |
+| USER-006 Student or Learner | Doesn't know good practices | Episodic |
+
+See § 4 for full persona definitions.
+
+### 3.3 Current Alternatives
+
+Users rely on a mix of existing tools. None addresses the full
+lifecycle.
+
+| Category | Examples | Gap |
+|----------|----------|-----|
+| Repository templates | GitHub templates | No updates; no validation |
+| Templating tools | Cookiecutter, Copier, Yeoman | Generation-focused |
+| Framework generators | `create-next-app`, `cargo new` | Single-framework |
+| Platform scaffolder | Backstage | Heavy platform investment |
+| Verification tools | Dependabot, Snyk, CodeQL | Narrow scope |
+| Manual approaches | Copy-paste, custom scripts | Not sustainable |
+
+See [`docs/competitive-analysis.md`](./competitive-analysis.md) for the
+full analysis.
+
+### 3.4 Observed Pain
+
+The following pain points are observed (from the brief and personal
+experience) but **not yet validated by interviews**:
+
+- Developers forget setup items when starting new repositories
+- Team standards are defined once and eroded over time
+- Drift is detected by chance (review, incident, audit), not
+  systematically
+- Retrofitting standards onto existing repositories is manual
+- There is no lightweight way to check whether a repository still
+  satisfies its standards
+- Existing update tools are limited (Cookiecutter has none; Copier
+  requires adoption)
+
+Each pain point maps to a hypothesis in § 7.
+
+### 3.5 Impact
+
+Pain impacts depend on persona:
+
+| Persona | Impact type | Severity |
+|---------|-------------|----------|
+| USER-001 | Wasted time; inconsistent personal projects | Low–Medium |
+| USER-002 | Rework; unclear expectations | Medium |
+| USER-003 | Maintenance burden; surprise failures | Medium–High |
+| USER-004 | Organisational risk; compliance gaps | High |
+| USER-005 | Lack of defensible evidence | High |
+| USER-006 | Learning bad habits | Low |
+
+Severity is provisional and must be validated by interviews.
+
+### 3.6 Existing Workarounds
+
+Users cope through:
+
+- Copy-pasting from existing repositories
+- Personal or team templates
+- Framework-specific generators
+- Manual setup from memory
+- Custom scripts (often unmaintained)
+- Code review (partial)
+- Documentation (often stale)
+
+None of these workarounds:
+
+- Scale across many repositories
+- Detect drift continuously
+- Safely update repositories without destroying changes
+- Provide visibility into foundation state
+
+### 3.7 Forge Hypothesis
+
+If HYP-001 through HYP-006 are supported by evidence, Forge addresses
+the problem by:
+
+- Representing engineering foundations as declarative, versioned
+  artifacts
+- Generating repositories from these foundations
+- Continuously verifying that repositories still satisfy them
+- Detecting drift between expected and actual state
+- Explaining the reason for every finding
+- Safely evolving foundations when they change
+
+See § 9 for the full product thesis.
+
+### 3.8 Evidence
+
+Evidence status at the time of writing:
+
+| Source | Status |
+|--------|--------|
+| Personal experience | Anecdotal |
+| Observation of existing tools | Documentary |
+| Developer interviews | **Not yet conducted** |
+| Market validation | **Not yet conducted** |
+
+This document is a hypothesis until interview evidence is collected
+via
+[`docs/research/interview-protocol.md`](./research/interview-protocol.md).
+
+### 3.9 Unknowns
+
+The following questions remain open:
+
+- Is foundation drift painful enough that developers will adopt new
+  tooling?
+- Does the update problem (HYP-005) materially differentiate Forge
+  from Copier?
+- Will teams centralise their foundation definitions via a
+  lightweight CLI, or is Backstage-style investment required?
+- Is the CLI-first approach viable for platform engineers, or do they
+  require a hosted dashboard?
+- Does the "Engineering Foundation" vocabulary resonate with
+  developers?
+
+Each unknown is addressed by specific interview questions. See
+[`docs/research/interview-protocol.md`](./research/interview-protocol.md).
+
 ---
 
 ## 4. Target Users
@@ -107,7 +239,7 @@ Each persona is recorded with:
 - **Adoption power** — whether they adopt, influence, or pay
 - **Persona role** — Experiencer | Champion | Buyer | Learner
 
-### Persona Roles
+### 4.1 Persona Roles
 
 | Role | Meaning |
 |------|---------|
@@ -120,7 +252,7 @@ A single tool cannot serve all personas equally. The MVP targets one
 primary persona and one secondary persona. Others are served in later
 phases.
 
-### MVP Persona Priority
+### 4.2 MVP Persona Priority
 
 | Persona | Priority | Rationale |
 |---------|----------|-----------|
@@ -131,9 +263,7 @@ phases.
 | USER-005 Engineering Manager | Phase 18+ | Influences budget; not a direct user |
 | USER-006 Student or Learner | Phase 5+ | Community and feedback value; not a buyer |
 
----
-
-### USER-001 — Individual Developer
+### 4.3 USER-001 — Individual Developer
 
 **Persona role:** Experiencer
 **MVP priority:** Primary
@@ -184,9 +314,7 @@ tools without needing team approval, provide direct feedback, and are
 the natural seed for later team and organisational adoption. Their
 adoption is also what makes Forge credible as an open-source project.
 
----
-
-### USER-002 — Software Engineer (Team Member)
+### 4.4 USER-002 — Software Engineer (Team Member)
 
 **Persona role:** Experiencer
 **MVP priority:** Phase 5+
@@ -236,9 +364,7 @@ This persona cannot adopt Forge independently. They reach Forge
 *through* their team. Designing for them is valuable long-term, but
 they cannot be the first adopters.
 
----
-
-### USER-003 — Tech Lead
+### 4.5 USER-003 — Tech Lead
 
 **Persona role:** Champion
 **MVP priority:** Secondary
@@ -293,9 +419,7 @@ Forge, tech leads are the natural next step — they bring Forge from
 one project to many. Designing for them is essential by Phase 7, when
 `forge check` and `forge diff` become valuable.
 
----
-
-### USER-004 — Platform Engineer
+### 4.6 USER-004 — Platform Engineer
 
 **Persona role:** Buyer
 **MVP priority:** Phase 17+
@@ -353,9 +477,7 @@ in Phase 1–5. Their problems are real but cannot be addressed until
 Forge has proven value for individuals and teams. Designing for this
 persona before validating the individual case would be premature.
 
----
-
-### USER-005 — Engineering Manager
+### 4.7 USER-005 — Engineering Manager
 
 **Persona role:** Buyer
 **MVP priority:** Phase 18+
@@ -409,9 +531,7 @@ in Phase 1 would distort Forge toward reporting and dashboards, at
 the expense of the CLI-first foundation that makes the product
 credible.
 
----
-
-### USER-006 — Student or Learner
+### 4.8 USER-006 — Student or Learner
 
 **Persona role:** Learner
 **MVP priority:** Phase 5+
@@ -461,9 +581,7 @@ targets. They benefit most from `forge new` and `forge explain`, and
 less from `forge diff` and `forge update`. Their inclusion is
 strategically important but not central to the MVP.
 
----
-
-### User Relationships
+### 4.9 User Relationships
 
 ```text
                         ┌────────────────────┐
@@ -512,9 +630,7 @@ The arrows show influence, adoption, and payment flows — not
 hierarchy. USER-001 and USER-006 are outside the team structure and
 adopt independently.
 
----
-
-### Cross-Persona Comparison
+### 4.10 Cross-Persona Comparison
 
 | Persona | Problem | Frequency | Role | Adopts at |
 |---------|---------|-----------|------|-----------|
@@ -529,9 +645,7 @@ The problems are **distinct**. No two personas share the same stated
 problem. This confirms the design principle that Forge cannot serve
 all personas with the same feature set.
 
----
-
-### Personas and Hypotheses
+### 4.11 Personas and Hypotheses
 
 Each persona is linked to specific hypotheses from § 7:
 
@@ -549,9 +663,7 @@ contribution to hypothesis validation. See
 [`docs/research/interview-protocol.md`](./research/interview-protocol.md)
 § 3.3 for the recruitment plan.
 
----
-
-### What This Persona Set Is Not
+### 4.12 What This Persona Set Is Not
 
 This persona set is deliberately narrow. It excludes:
 
@@ -563,9 +675,9 @@ This persona set is deliberately narrow. It excludes:
 - **Open-source maintainers** — they share some characteristics with
   USER-003, but their problems are more about contribution workflows
   than engineering foundations.
-- **Non-technical stakeholders** — Forge is a developer tool. Non-
-  technical personas reach it only through aggregate reports, which
-  are a Phase 18+ concern.
+- **Non-technical stakeholders** — Forge is a developer tool.
+  Non-technical personas reach it only through aggregate reports,
+  which are a Phase 18+ concern.
 
 Adding personas requires justification in an ADR. The narrowness is
 intentional: it keeps Phase 1 focused on validating the core thesis
@@ -622,7 +734,7 @@ Idea
 └──────────────────────┘
 ```
 
-### Where the problem occurs
+### 5.1 Where the Problem Occurs
 
 | Lifecycle stage | Foundation state | Problem visibility |
 |-----------------|------------------|-------------------|
@@ -635,7 +747,7 @@ Idea
 | Architecture change | Foundation no longer fits | Visible but deferred |
 | Maintenance | Drift has accumulated | Visible when it causes problems |
 
-### The drift window
+### 5.2 The Drift Window
 
 The critical observation is the **drift window** between foundation
 establishment (T = 0) and foundation failure (T = N):
@@ -647,6 +759,77 @@ establishment (T = 0) and foundation failure (T = N):
 
 Forge's value proposition is to **close the drift window** by making
 foundation state continuously verifiable.
+
+### 5.3 Capability Lifecycle
+
+Beyond the repository lifecycle, Forge's capabilities follow their own
+lifecycle. Each capability maps to a verb in the CREATE → VERIFY →
+EXPLAIN → EVOLVE loop.
+
+| Stage | Capability | Purpose | MVP? |
+|-------|------------|---------|------|
+| **DEFINE** | Blueprint authoring | Declare what a project should be | ✓ |
+| **CREATE** | `forge new` | Generate a repository from a foundation | ✓ |
+| **ADOPT** | `forge init` | Attach a foundation to an existing repository | ✓ |
+| **VERIFY** | `forge validate` | Check foundation conformance | ✓ |
+| **VERIFY** | `forge check` | Continuous foundation verification | Phase 7 |
+| **EXPLAIN** | `forge explain` | Describe why something is required | ✓ |
+| **EXPLAIN** | `forge diff` | Show drift between expected and actual | Phase 9 |
+| **EVOLVE** | `forge update` | Safely apply foundation changes | Phase 14 |
+| **EVOLVE** | `forge add` / `forge remove` | Compose foundations | Phase 12 |
+| **DISTRIBUTE** | `forge template` | Manage templates | ✓ (list) |
+| **DISTRIBUTE** | `forge template install` | Install remote templates | Phase 16 |
+| **GOVERN** | `forge policy` | Configure foundation policies | Phase 8 |
+| **GOVERN** | `forge check --format sarif` | CI integration | Phase 10 |
+
+### 5.4 MVP Scope
+
+The MVP (Phase 5) includes exactly:
+
+| Command | Verb | Reason |
+|---------|------|--------|
+| `forge new` | CREATE | Core value: generate from foundation |
+| `forge init` | ADOPT | Expand TAM: adopt existing repos |
+| `forge validate` | VERIFY | Foundation conformance |
+| `forge explain` | EXPLAIN | Trust and transparency |
+| `forge template list` | DISTRIBUTE | Discover available foundations |
+
+The MVP deliberately excludes:
+
+- `forge check` (foundation drift detection) — Phase 7
+- `forge diff` (drift reporting) — Phase 9
+- `forge update` (safe evolution) — Phase 14
+- `forge add` / `forge remove` (composition) — Phase 12
+- `forge template install` (registry) — Phase 16
+- Any team or organisation features — Phase 17+
+
+This boundary is recorded in
+[`docs/mvp-scope.md`](./mvp-scope.md) and is binding on Phase 5.
+
+### 5.5 Future Capabilities
+
+Capabilities that are planned but not yet specified:
+
+| Capability | Phase | Purpose |
+|------------|-------|---------|
+| `forge check` | 7 | Continuous foundation verification |
+| Policies | 8 | Configurable foundation rules |
+| `forge diff` | 9 | Drift detection between expected and actual |
+| CI-native Forge | 10 | Run in CI, produce annotations |
+| `forge explain` (extended) | 11 | Foundation provenance and metadata |
+| Components | 12 | Composable foundation capabilities |
+| Certification | 13 | Verified template/component quality |
+| `forge update` | 14 | Safe foundation evolution |
+| `forge init` (extended) | 15 | Repository adoption at scale |
+| Registry | 16 | Distribution of foundations |
+| Team foundations | 17 | Shared team standards |
+| Organisation foundations | 18 | Centralised organisational standards |
+| Drift intelligence | 19 | Organisation-wide visibility |
+| Enterprise governance | 20 | SSO, RBAC, audit, integrations |
+| Foundation platform | 21 | Unified lifecycle platform |
+
+Each phase is specified in its own WBS document. This list is
+informational, not a commitment.
 
 ---
 
@@ -729,7 +912,9 @@ No widely adopted tool:
 - Does all of this via a lightweight, cross-platform CLI
 
 This gap is Forge's opportunity. Whether it is a *real* opportunity
-is the central question of Phase 1.
+is the central question of Phase 1. A full competitive analysis is
+recorded in
+[`docs/competitive-analysis.md`](./competitive-analysis.md).
 
 ---
 
@@ -760,9 +945,7 @@ Status values:
 
 All hypotheses begin as `Unknown`.
 
----
-
-### HYP-001 — Foundation drift is a real, recurring problem
+### 7.1 HYP-001 — Foundation drift is a real, recurring problem
 
 **Statement**
 Developers and teams struggle not only to create software
@@ -805,9 +988,7 @@ Unknown
 Initial: Medium. Based on observation and personal experience, not
 on measured evidence.
 
----
-
-### HYP-002 — Project setup is repetitive
+### 7.2 HYP-002 — Project setup is repetitive
 
 **Statement**
 Starting a new software project requires repeating the same
@@ -847,9 +1028,7 @@ Unknown
 Initial: High. This is the most obviously true hypothesis, but also
 the least differentiated from existing tools.
 
----
-
-### HYP-003 — Teams duplicate repository configuration
+### 7.3 HYP-003 — Teams duplicate repository configuration
 
 **Statement**
 Engineering teams duplicate repository configuration across multiple
@@ -888,9 +1067,7 @@ Unknown
 **Confidence**
 Initial: Medium. Strong intuition, but requires confirmation.
 
----
-
-### HYP-004 — Engineering standards drift after repository creation
+### 7.4 HYP-004 — Engineering standards drift after repository creation
 
 **Statement**
 Once a repository has been created, its engineering standards drift
@@ -932,11 +1109,10 @@ Unknown
 
 **Confidence**
 Initial: High. This is the central hypothesis for Forge's product
-identity per [ADR-001](./decisions/ADR-001-forge-as-foundation-manager.md).
+identity per
+[ADR-001](./decisions/ADR-001-forge-as-foundation-manager.md).
 
----
-
-### HYP-005 — Existing template tooling handles updates poorly
+### 7.5 HYP-005 — Existing template tooling handles updates poorly
 
 **Statement**
 Existing project template and scaffolding tools (Cookiecutter,
@@ -979,9 +1155,7 @@ Unknown
 Initial: Medium. The Copier comparison weakens this hypothesis; more
 evidence is needed.
 
----
-
-### HYP-006 — Teams lack visibility into repository foundation state
+### 7.6 HYP-006 — Teams lack visibility into repository foundation state
 
 **Statement**
 Engineering leaders and platform teams lack a lightweight way to see
@@ -1026,9 +1200,7 @@ Unknown
 Initial: Medium. Requires validation with platform engineering
 interviews specifically.
 
----
-
-### Hypothesis Relationships
+### 7.7 Hypothesis Relationships
 
 The hypotheses are not independent. They form a chain:
 
@@ -1081,7 +1253,140 @@ that constrain the design space.
 
 ## 9. Product Thesis
 
-If HYP-001 through HYP-006 are supported, the product thesis is:
+### 9.1 Product Promise
+
+> **Forge helps developers define and maintain reproducible
+> engineering foundations for software repositories.**
+
+This is the promise. It is deliberately narrow. Forge does **not**
+promise to replace existing tools, to make projects "better," or to
+solve all repository problems. It promises to make the engineering
+foundation of a repository:
+
+- **Explicit** — defined declaratively, not implied by files
+- **Reproducible** — the same foundation produces the same repository
+- **Verifiable** — the repository's conformance to its foundation is
+  continuously checkable
+
+### 9.2 What the Promise Does Not Claim
+
+The promise does **not** claim that Forge:
+
+- Detects drift — this is planned but not yet built
+- Safely updates foundations — this is planned but not yet built
+- Supports team or organisation standards — these are future phases
+- Replaces Git, CI, or package managers
+- Generates "better" code
+- Improves code quality
+- Fixes security vulnerabilities
+- Manages dependencies
+- Deploys applications
+
+Every capability Forge eventually provides must trace back to the
+promise. If a proposed feature does not strengthen "define and
+maintain reproducible engineering foundations," it is out of scope.
+
+### 9.3 Product Definition
+
+**Forge is an Engineering Foundation Manager.**
+
+It treats the engineering foundation of a software repository as a
+first-class artifact — declarative, versioned, verifiable, and
+evolvable.
+
+This definition was recorded in
+[ADR-001](./decisions/ADR-001-forge-as-foundation-manager.md) and
+remains the product's central identity.
+
+### 9.4 The Core Lifecycle
+
+If evidence supports the hypotheses, the product lifecycle is:
+
+```text
+CREATE → VERIFY → EXPLAIN → EVOLVE
+```
+
+Each verb corresponds to a capability the product provides:
+
+| Verb | Capability | Purpose |
+|------|------------|---------|
+| **CREATE** | Establish a foundation | Define what a repository should be; generate it |
+| **VERIFY** | Check the foundation | Confirm the repository still satisfies it |
+| **EXPLAIN** | Describe the foundation | Make the reasons for a finding visible |
+| **EVOLVE** | Update the foundation | Safely apply foundation changes to existing repositories |
+
+This lifecycle is the product. Every command, feature, and phase must
+support one or more of these four verbs.
+
+### 9.5 The Foundation Concept
+
+The foundation is not the same as a template. A template is a
+mechanism for *materialising* a foundation. The foundation is the
+declarative model of *what the repository should be*.
+
+For example:
+
+```yaml
+foundation:
+  name: python-api
+  version: 2.4.0
+
+runtime:
+  language: python
+  version: "3.13"
+
+framework:
+  name: fastapi
+
+database:
+  name: postgres
+
+testing:
+  framework: pytest
+
+container:
+  enabled: true
+
+ci:
+  provider: github-actions
+
+documentation:
+  required:
+    - README.md
+
+security:
+  baseline: standard
+```
+
+This model is versioned, verifiable, and portable across repositories.
+
+### 9.6 The Reproducibility Claim
+
+The promise says "reproducible engineering foundations." This means:
+
+- The same foundation produces the same repository, given the same
+  Forge version and inputs
+- The foundation can be verified deterministically
+- The foundation can be explained with provenance
+
+Reproducibility is a testable property. If Forge's output is not
+deterministic, the promise is broken.
+
+### 9.7 The Maintenance Claim
+
+The promise says "maintain reproducible engineering foundations." This
+means:
+
+- Foundations can be *verified* after creation
+- Foundations can be *explained* when they are violated
+- Foundations can be *updated* without destroying developer changes
+
+Maintenance is where Forge differentiates from existing tools.
+Generation alone is commoditized; maintenance is the wedge.
+
+### 9.8 The Product Thesis (Full)
+
+The full thesis, dependent on all six hypotheses being validated:
 
 > **Forge keeps the engineering foundation of repositories intact as
 > they evolve.**
@@ -1090,35 +1395,241 @@ If HYP-001 through HYP-006 are supported, the product thesis is:
 > repository from it, verifies it continuously, detects drift,
 > explains the reason for a finding, and safely evolves the
 > foundation when it changes.
->
-> The core lifecycle is:
->
-> ```text
-> CREATE → VERIFY → EXPLAIN → EVOLVE
-> ```
 
-This thesis is recorded in full in
-[ADR-001](./decisions/ADR-001-forge-as-foundation-manager.md). It
-depends on all six hypotheses. If any is refuted, the thesis must be
-adjusted before Phase 2 begins.
+The thesis is a **hypothesis**. If any hypothesis is refuted, the
+thesis must be adjusted before Phase 2 begins.
 
 ---
 
 ## 10. Non-Goals
 
-Explicitly, Forge is **not**:
+Explicit non-goals protect the product boundary. Every proposed
+feature must be evaluated against this list. If a feature falls into
+any non-goal category, it is out of scope.
 
-- A generic code generator
-- A CI replacement
-- A deployment platform
-- A project management system
-- An architecture authority
-- A generic linter
-- A dependency scanner
-- A developer portal
-- A hosted platform (in Phase 1–5)
+### 10.1 Forge Is Not a Generic Code Generator
 
-This boundary prevents scope creep and keeps the product coherent.
+**What this means:** Forge does not generate arbitrary code. It
+generates engineering infrastructure — project structure, tests, CI,
+documentation, security baseline — driven by a foundation definition.
+
+**Why this matters:** Code generation is framework-specific and
+domain-specific. Attempting to generate business logic would require
+Forge to know application semantics, which is outside its scope.
+
+**What Forge does generate:**
+
+- Repository structure
+- Test scaffolding
+- CI workflows
+- Documentation templates
+- Configuration files
+- Development commands
+
+**What Forge does not generate:**
+
+- Business logic
+- Domain models
+- API implementations
+- Application code beyond boilerplate
+
+### 10.2 Forge Is Not an IDE
+
+**What this means:** Forge does not provide a graphical editor, code
+completion, debugging, or language services.
+
+**Why this matters:** IDEs are mature, comprehensive, and separate
+from CLI tooling. Forge is a CLI; it complements IDEs, not replaces
+them.
+
+**What Forge provides:**
+
+- A command-line interface
+- Machine-readable output for IDE integration (future)
+- A `forge.yaml` file IDEs can read
+
+**What Forge does not provide:**
+
+- Editor integration
+- Language server protocol
+- Debugging tools
+- Interactive development
+
+### 10.3 Forge Is Not a CI Replacement
+
+**What this means:** Forge does not run tests, orchestrate pipelines,
+or manage CI infrastructure.
+
+**Why this matters:** CI systems (GitHub Actions, GitLab CI, Jenkins)
+are mature platforms. Forge *runs inside* CI; it does not compete with
+it.
+
+**What Forge provides:**
+
+- `forge check` runnable in CI
+- JSON output for CI integration
+- Non-zero exit codes on failure
+
+**What Forge does not provide:**
+
+- Pipeline orchestration
+- Job scheduling
+- Test execution
+- Artifact storage
+
+### 10.4 Forge Is Not a Deployment Platform
+
+**What this means:** Forge does not deploy applications, manage
+infrastructure, or configure cloud resources.
+
+**Why this matters:** Deployment is a distinct domain with mature
+tooling (Terraform, Kubernetes, cloud platforms). Forge stays focused
+on repository foundations.
+
+**What Forge provides:**
+
+- Dockerfile generation (when configured)
+- Deployment scaffolding (when configured)
+
+**What Forge does not provide:**
+
+- Cloud provisioning
+- Kubernetes management
+- Container orchestration
+- Release management
+
+### 10.5 Forge Is Not a Project Management System
+
+**What this means:** Forge does not manage tasks, issues, roadmaps, or
+team workflows.
+
+**Why this matters:** Project management is a distinct domain.
+Integrations with project management tools may come later, but Forge
+does not replace them.
+
+**What Forge does not provide:**
+
+- Issue tracking
+- Sprint planning
+- Team coordination
+- Time tracking
+
+### 10.6 Forge Is Not an Architecture Authority
+
+**What this means:** Forge does not dictate application architecture,
+design patterns, or technology choices.
+
+**Why this matters:** Forge's promise is to make foundations
+*reproducible*, not to make architectural decisions for developers. It
+provides opinionated defaults and escape hatches; it does not mandate
+a specific architecture.
+
+**What Forge provides:**
+
+- Configurable foundations
+- Opinionated defaults with override paths
+- Ability to define custom foundations
+
+**What Forge does not provide:**
+
+- Mandatory architectural patterns
+- Enforced design decisions
+- Framework lock-in
+
+### 10.7 Forge Is Not a Generic Linter
+
+**What this means:** Forge does not perform code analysis, style
+checking, or static analysis.
+
+**Why this matters:** Linters are mature and language-specific. Forge
+evaluates *foundation* state, not code quality.
+
+**What Forge provides:**
+
+- Foundation conformance checks
+- Structural validation
+
+**What Forge does not provide:**
+
+- Code style enforcement
+- Static analysis
+- Bug detection
+- Security scanning
+
+### 10.8 Forge Is Not a Dependency Scanner
+
+**What this means:** Forge does not scan for vulnerable dependencies,
+outdated packages, or license issues.
+
+**Why this matters:** Dependency scanning is a distinct domain with
+mature tools (Dependabot, Snyk, Trivy). Forge may integrate with
+these, but does not replace them.
+
+**What Forge provides:**
+
+- Ability to require Dependabot/Snyk configuration in a foundation
+- Foundation-level dependency policy (future)
+
+**What Forge does not provide:**
+
+- Vulnerability detection
+- License scanning
+- Dependency graph analysis
+
+### 10.9 Forge Is Not a Developer Portal
+
+**What this means:** Forge does not provide a hosted platform for
+cataloguing repositories, managing teams, or visualising systems.
+
+**Why this matters:** Developer portals (Backstage, internal
+platforms) are mature platforms requiring organisational investment.
+Forge is a CLI-first tool that works without infrastructure.
+
+**What Forge provides (in later phases):**
+
+- A registry for distributing foundations
+- Organisation-level reporting (Phase 19+)
+- Optional dashboard (Phase 19+, downstream of CLI)
+
+**What Forge does not provide (in Phase 1–5):**
+
+- Hosted platform
+- Organisational catalogue
+- Team management
+- Authentication
+
+### 10.10 Forge Is Not a Hosted Platform (in Phase 1–5)
+
+**What this means:** Forge's MVP is a local CLI tool. It does not
+require a hosted service to function.
+
+**Why this matters:** The CLI-first approach is central to Forge's
+adoption strategy. Developers must be able to use Forge without
+sign-up, network access, or organisational commitment.
+
+**What Forge provides:**
+
+- A single binary
+- Local operation
+- Offline-capable commands
+
+**What Forge does not provide (in MVP):**
+
+- Cloud sync
+- Remote templates
+- Team collaboration
+- User accounts
+
+### 10.11 Adding to This List
+
+Adding a new non-goal, or removing an existing one, requires:
+
+1. An ADR documenting the change
+2. Rationale grounded in market evidence or architectural necessity
+3. Review for consistency with ADR-001
+
+Non-goals are as binding as goals. They are the boundary that keeps
+Forge focused.
 
 ---
 

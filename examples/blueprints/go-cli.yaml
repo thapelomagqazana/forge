@@ -1,0 +1,23 @@
+forge:
+  blueprint: go-cli
+  version: 1
+
+project:
+  name: deploy-tool
+  type: cli
+
+language:
+  name: go
+  version: "1.22"
+
+framework:
+  name: cobra
+
+testing:
+  enabled: true
+
+ci:
+  provider: github-actions
+
+security:
+  baseline: standard

@@ -1,0 +1,10 @@
+forge:
+  blueprint: minimal
+  version: 1
+
+project:
+  name: my-project
+  type: service
+
+language:
+  name: go

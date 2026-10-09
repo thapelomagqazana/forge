@@ -1,0 +1,38 @@
+forge:
+  blueprint: python-api
+  version: 1
+
+project:
+  name: payments-api
+  type: service
+
+language:
+  name: python
+  version: "3.13"
+
+framework:
+  name: fastapi
+  version: "0.115"
+
+database:
+  name: postgres
+  version: "16"
+
+testing:
+  enabled: true
+  framework: pytest
+
+container:
+  enabled: true
+  runtime: docker
+
+ci:
+  provider: github-actions
+
+security:
+  baseline: standard
+
+documentation:
+  required:
+    - README.md
+    - ARCHITECTURE.md

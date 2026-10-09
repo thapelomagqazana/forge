@@ -1,0 +1,32 @@
+forge:
+  blueprint: typescript-node
+  version: 1
+
+project:
+  name: notifications-api
+  type: service
+
+language:
+  name: typescript
+  version: "5.0"
+
+framework:
+  name: express
+
+database:
+  name: postgres
+  version: "16"
+
+testing:
+  enabled: true
+  framework: jest
+
+container:
+  enabled: true
+  runtime: docker
+
+ci:
+  provider: github-actions
+
+security:
+  baseline: standard
