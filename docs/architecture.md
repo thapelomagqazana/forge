@@ -2,7 +2,7 @@
 
 - **Document type:** Model
 - **Status:** Draft
-- **Version:** 0.1.0
+- **Version:** 0.2.0
 - **Author:** @thapelomagqazana
 - **Created:** 2026-10-09
 - **Last Updated:** 2026-10-09
@@ -15,8 +15,9 @@
 
 This document defines the internal technical architecture of Forge.
 It turns the Phase 1 specifications into a coherent module structure,
-dependency direction, interface contract, data flow, error model, and
-logging model that Phase 2 can implement against.
+dependency direction, interface contract, data flow, error model,
+logging model, and execution boundary that Phase 2 can implement
+against.
 
 This document exists to answer:
 
@@ -24,6 +25,7 @@ This document exists to answer:
 - Which direction do dependencies flow?
 - What interfaces connect modules?
 - What is the end-to-end data flow?
+- How is the process boundary made testable?
 - How are errors structured?
 - How is logging structured?
 - What does the architecture look like as a diagram?
@@ -41,6 +43,7 @@ other specification documents. This document defines **structure**.
 - Dependency direction rules
 - Interface contracts between modules
 - End-to-end data flow
+- The two-layer execution boundary
 - Error architecture
 - Logging architecture
 - Architecture diagram
@@ -1039,12 +1042,171 @@ When running in CI (`CI=true` environment variable):
 
 ---
 
-## 11. Cross-Cutting Concerns
+## 11. The Two-Layer Execution Model
+
+### 11.1 Overview
+
+The Forge CLI is structured as two layers.
+
+| Layer | Function | Visibility | Purpose |
+|-------|----------|------------|---------|
+| **Public entry point** | `Execute() int` | Exported | Contract with `cmd/forge/main.go` |
+| **Injectable implementation** | `executeWithOptions(opts options) int` | Unexported | Contract with tests |
+
+The two functions live in
+[`internal/cli/execute.go`](../internal/cli/execute.go). The first is
+a one-line wrapper around the second:
+
+```go
+func Execute() int {
+    return executeWithOptions(defaultOptions())
+}
+```
+
+Every behaviour a user can observe is implemented in
+`executeWithOptions` or below it. `Execute` exists only to establish
+the contract with the process entry point.
+
+### 11.2 The `options` Struct
+
+The boundary between the two layers is the `options` struct:
+
+```go
+type options struct {
+    args     []string
+    stdin    io.Reader
+    stdout   io.Writer
+    stderr   io.Writer
+    env      func(string) string
+    rootPath string
+}
+```
+
+Each field captures one class of side effect the CLI may perform.
+
+| Field | Purpose | Default source |
+|-------|---------|----------------|
+| `args` | Command-line arguments, excluding the program name. | `os.Args[1:]` |
+| `stdin` | Reader for interactive input. | `os.Stdin` |
+| `stdout` | Writer for successful output. | `os.Stdout` |
+| `stderr` | Writer for diagnostics and errors. | `os.Stderr` |
+| `env` | Environment variable lookup. | `os.Getenv` |
+| `rootPath` | Directory for relative path resolution. | `os.Getwd` |
+
+The struct is deliberately small: six fields, each a primitive or an
+interface. No nested structs, no pointers to structs, no maps. The
+small size is a design decision:
+
+- It is easy to reason about. A reader can read the six fields and
+  understand the entire injected environment.
+- It is easy to construct in tests.
+- It is easy to extend. Adding a field is a two-line change (the
+  field and its assignment in `defaultOptions`).
+
+### 11.3 The Boundary
+
+The two layers exist to separate two concerns:
+
+1. **The public entry point is stable.** Its signature is frozen. It
+   is the contract with `cmd/forge/main.go`.
+2. **The injectable implementation is testable.** Its inputs are
+   explicit. Every test reaches the CLI's behaviour through it.
+
+The boundary between the two is the `options` struct. Everything
+above the boundary (the process) reads from the operating system.
+Everything below the boundary (the command tree) reads from the
+struct.
+
+### 11.4 Why This Design
+
+Without this separation, testing the CLI would require spawning a
+subprocess for every test case. Subprocess tests are slow
+(milliseconds per case instead of microseconds), brittle (they
+depend on the test binary being built), and inconvenient (they
+cannot inspect internal state).
+
+With this separation, 90% or more of the CLI's behaviour is
+testable in-process. The remaining cases — process-level concerns
+like exit code propagation through `main.go` — are tested in
+`cmd/forge/binary_integration_test.go` behind the `integration`
+build tag.
+
+### 11.5 What Is Not Tested in Process
+
+A few behaviours are only observable at the process boundary:
+
+- `main.go` correctly forwards `Execute()`'s return value to
+  `os.Exit`.
+- The compiled binary starts, runs, and exits with the expected
+  code.
+- Signal handling (not yet implemented).
+
+These are covered by integration tests. They are the exception, not
+the rule: most of the CLI is testable in-process.
+
+### 11.6 The Error Path
+
+When the command tree returns a non-nil error,
+`executeWithOptions`:
+
+1. Formats the error via `formatError`.
+2. Writes the formatted string to `opts.stderr`, followed by a
+   newline.
+3. Returns the exit code for the error's category, via
+   `exitCodeFromError`.
+
+When the command tree returns a nil error, the function returns
+`ExitSuccess` without writing anything.
+
+The two functions called here are documented in
+[`docs/development.md`](./development.md) (exit codes) and in
+[`docs/cli-ux-spec.md`](./cli-ux-spec.md) § 7 (exit code contract).
+
+### 11.7 The Output Path
+
+Successful output is written by the command tree itself, to
+`opts.stdout`. `executeWithOptions` does not write to `opts.stdout`;
+it only wires it to the command tree.
+
+This preserves the standard Unix convention: successful output goes
+to stdout, diagnostics and errors go to stderr.
+
+### 11.8 Related Files
+
+| File | Purpose |
+|------|---------|
+| `internal/cli/execute.go` | Both layers, plus `options` and `formatError`. |
+| `internal/cli/execute_test.go` | White-box tests for the boundary. |
+| `internal/cli/exitcodes.go` | Exit code constants and the error-to-code mapping. |
+| `internal/cli/root.go` | The root command constructor. It accepts an `options` value. |
+| `cmd/forge/main.go` | The process entry point. Calls `Execute()` and forwards its return to `os.Exit`. |
+| `cmd/forge/binary_integration_test.go` | Process-boundary tests. |
+
+### 11.9 Rules for Extending the Model
+
+1. **`Execute` remains a one-line wrapper.** Its body must not grow.
+   Every new behaviour belongs in `executeWithOptions` or below.
+2. **`executeWithOptions` reads only from `opts`.** It must not read
+   `os.Args`, `os.Stdin`, `os.Stdout`, `os.Stderr`, or `os.Getenv`.
+   This invariant is enforced by a source-code test
+   (`TestExecuteWithOptions_NoProcessStreamsReferenced`) in
+   `execute_test.go`.
+3. **`formatError` and `exitCodeFromError` remain separate.** The
+   first renders an error; the second classifies it. Merging them
+   would couple error presentation to error classification, which
+   are distinct concerns.
+4. **Adding a field to `options` is a breaking change to the test
+   suite.** Every test that constructs an `options` value must be
+   updated. The change is small, but it must be deliberate.
+
+---
+
+## 12. Cross-Cutting Concerns
 
 The following concerns cut across modules and must be handled
 consistently.
 
-### 11.1 Error Handling
+### 12.1 Error Handling
 
 Every module:
 
@@ -1055,7 +1217,7 @@ Every module:
 
 See § 8 for the full error architecture.
 
-### 11.2 Logging
+### 12.2 Logging
 
 Every module:
 
@@ -1066,7 +1228,7 @@ Every module:
 
 See § 9 for the full logging architecture.
 
-### 11.3 Context Propagation
+### 12.3 Context Propagation
 
 Every long-running operation:
 
@@ -1074,7 +1236,7 @@ Every long-running operation:
 - Checks for cancellation at safe points
 - Propagates deadlines
 
-### 11.4 Determinism
+### 12.4 Determinism
 
 Every module that produces output:
 
@@ -1083,7 +1245,7 @@ Every module that produces output:
 - Avoids environment-dependent behaviour
 - Uses stable algorithms
 
-### 11.5 Security
+### 12.5 Security
 
 Every module that accesses the filesystem:
 
@@ -1095,7 +1257,7 @@ Every module that accesses the filesystem:
 See [`docs/security-model.md`](./security-model.md) for full
 policies.
 
-### 11.6 Testing
+### 12.6 Testing
 
 Every module has:
 
@@ -1105,7 +1267,7 @@ Every module has:
 
 ---
 
-## 12. Package Layout (Illustrative)
+## 13. Package Layout (Illustrative)
 
 The following is the expected package layout. It is illustrative, not
 binding; the exact structure will be finalised in Phase 2.
@@ -1146,7 +1308,7 @@ forge/
 └── docs/             # Documentation
 ```
 
-### 12.1 Package Boundaries
+### 13.1 Package Boundaries
 
 | Package | Contains |
 |---------|----------|
@@ -1162,7 +1324,7 @@ forge/
 | `internal/infra/output` | Human and JSON output formatters |
 | `templates/` | Bundled templates |
 
-### 12.2 Import Rules
+### 13.2 Import Rules
 
 - `internal/domain/*` may not import any other `internal/*` package
   (except other `internal/domain/*`).
@@ -1174,11 +1336,11 @@ forge/
 
 ---
 
-## 13. Testability
+## 14. Testability
 
 The architecture is designed for testability.
 
-### 13.1 Unit Tests
+### 14.1 Unit Tests
 
 Domain logic is tested in isolation:
 
@@ -1187,7 +1349,7 @@ Domain logic is tested in isolation:
 - No network access
 - Fast (milliseconds)
 
-### 13.2 Integration Tests
+### 14.2 Integration Tests
 
 Application services are tested with a mock Filesystem:
 
@@ -1195,7 +1357,7 @@ Application services are tested with a mock Filesystem:
 - Deterministic behaviour
 - No OS interaction
 
-### 13.3 End-to-End Tests
+### 14.3 End-to-End Tests
 
 The CLI is tested as a subprocess:
 
@@ -1203,7 +1365,7 @@ The CLI is tested as a subprocess:
 - Real process execution
 - Full command flow
 
-### 13.4 Golden Tests
+### 14.4 Golden Tests
 
 Some outputs are compared against golden files:
 
@@ -1213,7 +1375,7 @@ Some outputs are compared against golden files:
 
 Golden files are committed and version-controlled.
 
-### 13.5 Fuzz Tests
+### 14.5 Fuzz Tests
 
 Fuzz tests are used for:
 
@@ -1224,32 +1386,32 @@ Fuzz tests are used for:
 
 ---
 
-## 14. Extensibility
+## 15. Extensibility
 
 The architecture supports future extension without breaking existing
 behaviour.
 
-### 14.1 Adding a New Command
+### 15.1 Adding a New Command
 
 1. Define the command in `internal/cli`
 2. Define the use case in `internal/app/<command>`
 3. Reuse existing domain and infrastructure packages
 4. Add tests
 
-### 14.2 Adding a New Domain Concept
+### 15.2 Adding a New Domain Concept
 
 1. Define the concept in `internal/domain/<concept>`
 2. Define its interfaces
 3. Wire it into the application layer
 4. Implement infrastructure as needed
 
-### 14.3 Adding a New Infrastructure Provider
+### 15.3 Adding a New Infrastructure Provider
 
 1. Define the interface (in domain or application)
 2. Implement the provider in `internal/infra/<provider>`
 3. Wire it into the CLI
 
-### 14.4 Plugin System
+### 15.4 Plugin System
 
 A plugin system is not supported in Phase 1. The architecture reserves
 space for future plugins:
@@ -1263,55 +1425,55 @@ Plugins will be introduced in a future phase (see
 
 ---
 
-## 15. Anti-Patterns to Avoid
+## 16. Anti-Patterns to Avoid
 
 The following are explicitly discouraged.
 
-### 15.1 Business Logic in the CLI
+### 16.1 Business Logic in the CLI
 
 The CLI layer is for command parsing and output formatting only. Any
 business logic belongs in the Application or Domain layer.
 
-### 15.2 Direct Filesystem Access from Domain
+### 16.2 Direct Filesystem Access from Domain
 
 Domain code never calls `os.ReadFile`, `os.WriteFile`, or similar. All
 filesystem access goes through the `Filesystem` interface.
 
-### 15.3 God Objects
+### 16.3 God Objects
 
 No single object orchestrates everything. Responsibilities are split
 across modules.
 
-### 15.4 Global State
+### 16.4 Global State
 
 No global mutable variables. Dependencies are injected via
 constructors.
 
-### 15.5 Implicit Dependencies
+### 16.5 Implicit Dependencies
 
 Every dependency is explicit in a constructor. No hidden globals, no
 service locators.
 
-### 15.6 Circular Dependencies
+### 16.6 Circular Dependencies
 
 Packages do not import each other cyclically. The dependency
 direction is strictly enforced.
 
-### 15.7 Silent Failures
+### 16.7 Silent Failures
 
 Every error is reported. No swallowed errors, no ignored returns.
 
-### 15.8 Unstructured Errors
+### 16.8 Unstructured Errors
 
 Every error uses the `ForgeError` type. No `errors.New("something
 failed")`.
 
-### 15.9 Unstructured Logs
+### 16.9 Unstructured Logs
 
 Every log message has a level and structured fields. No `fmt.Println`
 for diagnostics.
 
-### 15.10 Environment-Dependent Behaviour
+### 16.10 Environment-Dependent Behaviour
 
 Forge behaves the same regardless of environment. Environment
 variables do not change behaviour except through explicit, documented
@@ -1319,7 +1481,7 @@ configurations.
 
 ---
 
-## 16. Relationship to Other Specifications
+## 17. Relationship to Other Specifications
 
 | Specification | Relationship |
 |---------------|--------------|
@@ -1335,7 +1497,7 @@ configurations.
 
 ---
 
-## 17. Open Questions
+## 18. Open Questions
 
 The following questions remain open and should be resolved before
 implementation:
@@ -1361,23 +1523,3 @@ implementation:
 
 These questions will be addressed in Phase 2 as implementation
 begins.
-
----
-
-## 18. Status
-
-**Draft.**
-
-This document is under active development during Phase 1. It becomes
-**Approved** when:
-
-- The module list is frozen
-- The dependency direction is confirmed
-- The interface contracts are stable
-- The data flow is verified with use cases
-- The error architecture is implemented and tested
-- The logging architecture is implemented and tested
-- The architecture diagram reflects the final design
-- Open questions have been resolved or explicitly deferred
-- The specification has been reviewed for consistency with all other
-  Phase 1 specifications
