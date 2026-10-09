@@ -149,7 +149,6 @@ MD053: true
 
 MD044:
   names:
-    - Go
     - Cobra
     - Viper
     - GitHub

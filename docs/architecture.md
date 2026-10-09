@@ -1,0 +1,1383 @@
+# Technical Architecture
+
+- **Document type:** Model
+- **Status:** Draft
+- **Version:** 0.1.0
+- **Author:** @thapelomagqazana
+- **Created:** 2026-10-09
+- **Last Updated:** 2026-10-09
+- **Supersedes:** —
+- **Superseded by:** —
+
+---
+
+## 1. Purpose
+
+This document defines the internal technical architecture of Forge.
+It turns the Phase 1 specifications into a coherent module structure,
+dependency direction, interface contract, data flow, error model, and
+logging model that Phase 2 can implement against.
+
+This document exists to answer:
+
+- What are the top-level modules of Forge?
+- Which direction do dependencies flow?
+- What interfaces connect modules?
+- What is the end-to-end data flow?
+- How are errors structured?
+- How is logging structured?
+- What does the architecture look like as a diagram?
+
+This is not a specification of behaviour. Behaviour is defined in the
+other specification documents. This document defines **structure**.
+
+---
+
+## 2. Scope
+
+**In scope:**
+
+- Top-level modules
+- Dependency direction rules
+- Interface contracts between modules
+- End-to-end data flow
+- Error architecture
+- Logging architecture
+- Architecture diagram
+
+**Out of scope:**
+
+- Behaviour of individual commands (see
+  [`docs/cli-ux-spec.md`](./cli-ux-spec.md))
+- Schema definitions (see their respective `*-spec.md` documents)
+- Security policies (see
+  [`docs/security-model.md`](./security-model.md))
+- Update algorithm (see
+  [`docs/update-model.md`](./update-model.md))
+- Implementation details (belongs in code)
+- Package-level layout (belongs in Phase 2)
+
+---
+
+## 3. Architectural Principles
+
+The Forge architecture rests on seven principles.
+
+### 3.1 Clean Architecture
+
+Dependencies point inward. The domain layer does not depend on
+infrastructure. Infrastructure depends on the domain.
+
+### 3.2 Single Responsibility
+
+Each module has one responsibility. Modules do not overlap.
+
+### 3.3 Explicit Interfaces
+
+Modules communicate through interfaces, not concrete types. This
+enables testing and future extension.
+
+### 3.4 Pure Domain Logic
+
+The domain layer contains pure logic. It does not perform I/O. This
+makes it fully testable without filesystem or network access.
+
+### 3.5 Side Effects at the Edges
+
+I/O, filesystem writes, and process execution happen at the edges of
+the system (infrastructure layer), not in the domain.
+
+### 3.6 Fail-Fast
+
+Errors are detected as early as possible. Malformed input is
+rejected before it can cause downstream damage.
+
+### 3.7 Observable
+
+Every significant operation emits structured logs and produces
+structured results that can be consumed by the CLI or by automation.
+
+---
+
+## 4. Module Overview
+
+Forge is organised into the following top-level modules.
+
+### 4.1 Module List
+
+| Module | Layer | Responsibility |
+|--------|-------|----------------|
+| **CLI** | Application | Parse commands, present output, map results to exit codes |
+| **Application** | Application | Orchestrate use cases; coordinate domain and infrastructure |
+| **Domain** | Domain | Express the core concepts of Forge |
+| **Configuration** | Domain | Load, validate, and represent configuration |
+| **Blueprint** | Domain | Represent and validate Blueprints |
+| **Template** | Domain | Represent and resolve templates |
+| **Component** | Domain | Represent and resolve components |
+| **Policy** | Domain | Represent and evaluate policies |
+| **Renderer** | Application | Transform template content into rendered content |
+| **Validator** | Application | Evaluate rules against repository state |
+| **Update Engine** | Application | Compute and apply safe updates |
+| **Filesystem** | Infrastructure | Provide safe, sandboxed filesystem access |
+| **Process** | Infrastructure | Provide process execution where needed |
+| **Registry** | Infrastructure | Fetch and verify remote artifacts (future) |
+| **Logging** | Infrastructure | Provide structured logging |
+| **Output** | Infrastructure | Format human and machine-readable output |
+
+### 4.2 Module Descriptions
+
+#### 4.2.1 CLI
+
+**Responsibility:** Parse arguments, dispatch to Application, present
+results, map to exit codes.
+
+**Does not:** Contain business logic, read files, render templates.
+
+**Depends on:** Application, Output, Logging.
+
+#### 4.2.2 Application
+
+**Responsibility:** Implement use cases (create project, validate,
+check, diff, update, explain).
+
+**Does not:** Contain domain logic (delegates to Domain), read files
+(delegates to Infrastructure).
+
+**Depends on:** Domain, Renderer, Validator, Update Engine,
+Filesystem, Logging.
+
+#### 4.2.3 Domain
+
+**Responsibility:** Express Forge's core concepts and rules. Contains
+pure logic.
+
+**Does not:** Perform I/O, depend on any infrastructure.
+
+**Depends on:** Nothing (pure).
+
+**Submodules:**
+
+- `Configuration`
+- `Blueprint`
+- `Template`
+- `Component`
+- `Policy`
+
+#### 4.2.4 Configuration
+
+**Responsibility:** Load, validate, and represent Forge configuration
+(`forge.yaml`).
+
+**Depends on:** Nothing (pure parsing after YAML decode).
+
+#### 4.2.5 Blueprint
+
+**Responsibility:** Represent Blueprints, apply defaults, validate
+against schema and semantic rules.
+
+**Depends on:** Nothing (pure).
+
+#### 4.2.6 Template
+
+**Responsibility:** Represent templates, resolve template references,
+determine compatibility.
+
+**Depends on:** Blueprint (read-only, for compatibility checks).
+
+#### 4.2.7 Component
+
+**Responsibility:** Represent components, resolve dependencies,
+detect conflicts, compose contributions.
+
+**Depends on:** Blueprint, Template (read-only).
+
+#### 4.2.8 Policy
+
+**Responsibility:** Represent policies, evaluate against repository
+state, produce findings.
+
+**Depends on:** Blueprint (read-only).
+
+#### 4.2.9 Renderer
+
+**Responsibility:** Transform template files into rendered content.
+
+**Does not:** Write to disk (that is Filesystem).
+
+**Depends on:** Domain, Filesystem (read-only for template sources).
+
+#### 4.2.10 Validator
+
+**Responsibility:** Evaluate validation rules against repository
+state. Produces findings.
+
+**Depends on:** Domain, Filesystem (read-only).
+
+#### 4.2.11 Update Engine
+
+**Responsibility:** Compute update plans, perform three-way merge,
+detect conflicts, apply updates atomically.
+
+**Depends on:** Domain, Renderer, Filesystem.
+
+#### 4.2.12 Filesystem
+
+**Responsibility:** Provide safe, sandboxed filesystem access.
+Enforce boundary rules, path resolution, atomic writes.
+
+**Depends on:** Security rules (from Domain).
+
+#### 4.2.13 Process
+
+**Responsibility:** Execute external processes where explicitly
+required (e.g., Git operations).
+
+**Depends on:** Nothing (wraps OS APIs).
+
+#### 4.2.14 Registry
+
+**Responsibility:** Fetch, verify, and cache remote artifacts.
+
+**Introduced in:** Phase 16.
+
+**Depends on:** Filesystem, Security rules.
+
+#### 4.2.15 Logging
+
+**Responsibility:** Emit structured log messages at defined levels.
+
+**Depends on:** Nothing.
+
+#### 4.2.16 Output
+
+**Responsibility:** Format results for human and machine consumers.
+
+**Depends on:** Domain (for result types).
+
+---
+
+## 5. Dependency Direction
+
+### 5.1 The Rule
+
+> **Dependencies point inward.**
+
+```text
+┌─────────────────────────────────────────────────────────┐
+│                                                         │
+│  ┌───────────────────────────────────────────────┐      │
+│  │  Application Layer                            │      │
+│  │  ┌───────────────────────────────────────┐    │      │
+│  │  │  Domain Layer                         │    │      │
+│  │  │                                       │    │      │
+│  │  │  Configuration  Blueprint  Template   │    │      │
+│  │  │  Component      Policy                │    │      │
+│  │  │                                       │    │      │
+│  │  └───────────────────────────────────────┘    │      │
+│  │                                               │      │
+│  │  Application Services                         │      │
+│  │  Renderer  Validator  Update Engine           │      │
+│  │                                               │      │
+│  └───────────────────────────────────────────────┘      │
+│                                                         │
+│  ┌───────────────────────────────────────────────┐      │
+│  │  Infrastructure Layer                         │      │
+│  │  Filesystem  Process  Registry  Logging       │      │
+│  │  Output                                       │      │
+│  └───────────────────────────────────────────────┘      │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
+```
+
+### 5.2 Allowed Dependencies
+
+| From | To | Allowed |
+|------|----|---------|
+| CLI | Application | Yes |
+| CLI | Infrastructure (Output, Logging) | Yes |
+| Application | Domain | Yes |
+| Application | Infrastructure | Yes |
+| Domain | Domain (same layer) | Yes, within submodules |
+| Infrastructure | Domain | Yes (for shared types) |
+| Any | CLI | **No** |
+| Domain | Application | **No** |
+| Domain | Infrastructure (I/O) | **No** |
+| Infrastructure | CLI | **No** |
+
+### 5.3 Forbidden Dependencies
+
+The following are explicitly forbidden:
+
+- **CLI directly reading files.** The CLI must call Application
+  services, which call Infrastructure.
+- **CLI directly parsing YAML.** The CLI must not depend on the YAML
+  parser.
+- **Domain reading files.** Domain logic is pure; it receives data,
+  never fetches it.
+- **Domain calling external processes.** Domain logic is pure.
+- **Infrastructure depending on CLI.** This would invert the
+  dependency direction.
+
+### 5.4 Rationale
+
+The dependency rule ensures:
+
+- **Testability:** Domain logic can be tested without filesystem or
+  network.
+- **Replaceability:** The filesystem, YAML parser, or CLI framework
+  can be changed without touching domain logic.
+- **Safety:** I/O is centralised in the Infrastructure layer, where
+  security policies are enforced.
+- **Clarity:** Every module's role is unambiguous.
+
+### 5.5 Enforcement
+
+The dependency direction is enforced by:
+
+- Code review
+- Package structure (`internal/` subdirectories)
+- Automated tests that check import graphs (Phase 2)
+- Linting rules (Phase 2)
+
+---
+
+## 6. Interface Contracts
+
+Interfaces are the contract between modules. They are defined in the
+Domain or Application layer, and implemented by Infrastructure.
+
+### 6.1 Filesystem
+
+```go
+type Filesystem interface {
+    // Read returns the content of a file within the boundary.
+    Read(path string) ([]byte, error)
+
+    // Write writes content to a file within the boundary.
+    Write(path string, content []byte, mode fs.FileMode) error
+
+    // Exists reports whether a path exists within the boundary.
+    Exists(path string) (bool, error)
+
+    // MkdirAll creates a directory and any parents within the boundary.
+    MkdirAll(path string, mode fs.FileMode) error
+
+    // Remove deletes a file within the boundary.
+    Remove(path string) error
+
+    // List returns the entries in a directory within the boundary.
+    List(path string) ([]fs.DirEntry, error)
+
+    // Stat returns file metadata within the boundary.
+    Stat(path string) (fs.FileInfo, error)
+
+    // Boundary returns the target directory.
+    Boundary() string
+}
+```
+
+**Responsibilities:**
+
+- Enforce boundary rules (no path escapes)
+- Resolve symlinks safely
+- Provide atomic writes where practical
+- Return structured errors
+
+**Does not:**
+
+- Interpret file contents
+- Apply business logic
+
+### 6.2 ConfigurationLoader
+
+```go
+type ConfigurationLoader interface {
+    // Load reads and parses forge.yaml from the given path.
+    Load(path string) (*Configuration, error)
+}
+```
+
+**Responsibilities:**
+
+- Read `forge.yaml`
+- Parse YAML
+- Validate schema
+- Apply defaults
+- Return structured errors
+
+### 6.3 BlueprintLoader
+
+```go
+type BlueprintLoader interface {
+    // Load reads and parses a Blueprint.
+    Load(id string) (*Blueprint, error)
+
+    // LoadFromFile reads and parses a Blueprint from a file.
+    LoadFromFile(path string) (*Blueprint, error)
+}
+```
+
+### 6.4 TemplateResolver
+
+```go
+type TemplateResolver interface {
+    // Resolve returns the template matching the Blueprint.
+    Resolve(bp *Blueprint) (*Template, error)
+
+    // ResolveByID returns a template by identifier.
+    ResolveByID(id string) (*Template, error)
+}
+```
+
+### 6.5 ComponentResolver
+
+```go
+type ComponentResolver interface {
+    // Resolve returns components that satisfy the Blueprint.
+    Resolve(bp *Blueprint) ([]*Component, error)
+
+    // ResolveDependencies returns the full dependency closure.
+    ResolveDependencies(c *Component) ([]*Component, error)
+}
+```
+
+### 6.6 Renderer
+
+```go
+type Renderer interface {
+    // Render produces the content of a file from a template.
+    Render(
+        file *TemplateFile,
+        ctx *RenderContext,
+    ) ([]byte, error)
+
+    // Plan produces the full render plan for a template.
+    Plan(
+        tpl *Template,
+        ctx *RenderContext,
+    ) (*RenderPlan, error)
+}
+```
+
+### 6.7 Validator
+
+```go
+type Validator interface {
+    // Validate evaluates all rules against the repository state.
+    Validate(
+        ctx context.Context,
+        repo *Repository,
+        rules []Rule,
+    ) (*ValidationResult, error)
+}
+```
+
+### 6.8 UpdateEngine
+
+```go
+type UpdateEngine interface {
+    // Plan computes an update plan without modifying the repository.
+    Plan(
+        ctx context.Context,
+        repo *Repository,
+        target *Foundation,
+    ) (*UpdatePlan, error)
+
+    // Apply executes an update plan.
+    Apply(
+        ctx context.Context,
+        repo *Repository,
+        plan *UpdatePlan,
+    ) (*UpdateResult, error)
+
+    // Rollback reverses the most recent update.
+    Rollback(
+        ctx context.Context,
+        repo *Repository,
+    ) error
+}
+```
+
+### 6.9 StateStore
+
+```go
+type StateStore interface {
+    // Load reads the Forge state.
+    Load(root string) (*State, error)
+
+    // Save writes the Forge state.
+    Save(root string, s *State) error
+
+    // Backup creates a backup of the current state and files.
+    Backup(root string) (*Backup, error)
+}
+```
+
+### 6.10 Logger
+
+```go
+type Logger interface {
+    // Log emits a structured log message at the given level.
+    Log(level Level, msg string, fields ...Field)
+
+    // With returns a logger with additional fields.
+    With(fields ...Field) Logger
+}
+```
+
+### 6.11 Output
+
+```go
+type Output interface {
+    // WriteHuman writes a human-readable result.
+    WriteHuman(w io.Writer, r Result) error
+
+    // WriteJSON writes a machine-readable result.
+    WriteJSON(w io.Writer, r Result) error
+}
+```
+
+---
+
+## 7. Data Flow
+
+### 7.1 End-to-End Flow
+
+Every Forge command follows the same high-level flow:
+
+```text
+┌──────────────────┐
+│  CLI input       │  User runs `forge <command>`
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│  Configuration   │  Load forge.yaml (if present)
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│  Blueprint       │  Load or construct Blueprint
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│  Component       │  Resolve components from Blueprint
+│  resolution      │
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│  Template        │  Resolve template from Blueprint
+│  resolution      │
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│  Validation      │  Validate all inputs
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│  Rendering       │  Render template files
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│  Filesystem      │  Write files (if mutating)
+└──────────────────┘
+```
+
+### 7.2 Flow Variations by Command
+
+| Command | Skips |
+|---------|-------|
+| `forge validate` | Rendering, Filesystem (write) |
+| `forge check` | Rendering, Filesystem (write) |
+| `forge diff` | Filesystem (write) |
+| `forge explain` | Rendering, Filesystem (write) |
+| `forge new` | Configuration (creates new) |
+| `forge init` | Rendering (only writes forge.yaml) |
+| `forge update` | Configuration (reads existing) |
+
+### 7.3 Data Flow Invariants
+
+Every flow must satisfy:
+
+- **Pure domain:** Domain logic receives data; it never fetches it.
+- **Boundary enforcement:** Filesystem access is always through the
+  Filesystem interface, which enforces boundaries.
+- **Determinism:** Given the same inputs, the flow produces the same
+  outputs.
+- **Observability:** Every step logs its progress at debug level.
+
+### 7.4 Specific Command Flows
+
+#### 7.4.1 `forge new`
+
+```text
+CLI → parse args
+  → Application.NewProject(args)
+    → Configuration.BuildFromArgs(args)
+    → Blueprint.FromConfiguration(config)
+    → Blueprint.Validate()
+    → ComponentResolver.Resolve(blueprint)
+    → ComponentResolver.ResolveDependencies(components)
+    → TemplateResolver.Resolve(blueprint)
+    → Validator.Validate(blueprint, template, components)
+    → Renderer.Plan(template, context)
+    → Filesystem.MkdirAll(target)
+    → For each file in plan:
+        → Renderer.Render(file)
+        → Filesystem.Write(path, content)
+    → StateStore.Save(state)
+  → Output.WriteHuman(result)
+  → Exit code 0
+```
+
+#### 7.4.2 `forge init`
+
+```text
+CLI → parse args
+  → Application.InitProject(args)
+    → Filesystem.List(".") → detect technologies
+    → Repository.Detect() → technology profile
+    → Blueprint.Recommend(profile) → candidate blueprints
+    → (interactive) prompt for confirmation
+    → Blueprint.FromSelection(selection)
+    → Blueprint.Validate()
+    → Configuration.BuildFromBlueprint(blueprint)
+    → Filesystem.Write("forge.yaml", content)
+  → Output.WriteHuman(result)
+  → Exit code 0
+```
+
+#### 7.4.3 `forge update`
+
+```text
+CLI → parse args
+  → Application.UpdateProject(args)
+    → Configuration.Load("forge.yaml")
+    → Blueprint.Load(config.blueprint)
+    → StateStore.Load(".forge/state.yaml")
+    → UpdateEngine.Plan(repo, target)
+      → For each file:
+        → compute BASE, CURRENT, TARGET
+        → classify by change-tracking
+        → if BOTH_MODIFIED, three-way merge
+        → collect plan or conflict
+    → (if dry-run) Output.WriteHuman(plan)
+    → (if interactive) prompt for conflict resolution
+    → StateStore.Backup(root)
+    → For each change:
+      → Renderer.Render or apply merge
+      → Filesystem.Write
+    → Validator.Validate(repo)
+    → (if validation fails) UpdateEngine.Rollback()
+    → StateStore.Save(state)
+  → Output.WriteHuman(result)
+  → Exit code 0 (or 5 for conflicts)
+```
+
+---
+
+## 8. Error Architecture
+
+### 8.1 Principles
+
+Errors in Forge are:
+
+- **Structured:** Every error has a code, message, cause, and context
+- **Actionable:** Every error includes a suggestion
+- **Traceable:** Every error includes enough context to reproduce
+- **Safe:** Errors do not leak secrets
+
+### 8.2 Error Type
+
+Every Forge error conforms to:
+
+```go
+type ForgeError struct {
+    Code        ErrorCode  // Stable identifier (e.g., "FORGE_CONFIG_INVALID")
+    Message     string     // Human-readable description
+    Cause       error      // Underlying error (may be nil)
+    Context     ErrorContext // Additional structured context
+    Suggestion  string     // What the user can do
+    ExitCode    int        // Process exit code
+}
+```
+
+### 8.3 Error Codes
+
+Error codes follow the pattern:
+
+```text
+FORGE_<CATEGORY>_<SPECIFIC>
+```
+
+Categories:
+
+| Category | Meaning |
+|----------|---------|
+| `USAGE` | Invalid command or flags |
+| `INPUT` | Invalid user input |
+| `CONFIG` | Configuration file issue |
+| `BLUEPRINT` | Blueprint issue |
+| `TEMPLATE` | Template issue |
+| `COMPONENT` | Component issue |
+| `VALIDATION` | Validation failure |
+| `FILESYSTEM` | Filesystem failure |
+| `SECURITY` | Security violation |
+| `UPDATE` | Update failure or conflict |
+| `NETWORK` | Network failure |
+| `INTERNAL` | Internal error |
+
+### 8.4 Error Construction
+
+Every error is constructed with:
+
+- The specific code
+- A message in the developer's language
+- The cause (for wrapping)
+- Context (structured data)
+- A suggestion (what to do)
+
+### 8.5 Error Wrapping
+
+Forge uses Go's error wrapping:
+
+```go
+if err := fs.Write(path, content); err != nil {
+    return NewForgeError(
+        CodeFilesystemWriteFailed,
+        "Failed to write file",
+        err, // wrapped cause
+        Context{"path": path},
+        "Check that the path is writable.",
+    )
+}
+```
+
+The underlying error is preserved for debugging (`--verbose`).
+
+### 8.6 Error Presentation
+
+Errors are presented differently depending on context:
+
+**Human output:**
+
+```text
+✗ Failed to write file
+
+File: src/main.py
+Reason: permission denied
+
+Suggestion:
+  Check that you have write permission for this directory.
+```
+
+**JSON output:**
+
+```json
+{
+  "status": "error",
+  "error": {
+    "code": "FORGE_FILESYSTEM_WRITE_FAILED",
+    "message": "Failed to write file",
+    "context": {
+      "path": "src/main.py"
+    },
+    "cause": "permission denied",
+    "suggestion": "Check that you have write permission for this directory."
+  }
+}
+```
+
+### 8.7 Exit Code Mapping
+
+| Error category | Exit code |
+|----------------|-----------|
+| Success | 0 |
+| Validation failure | 1 |
+| Usage / input error | 2 |
+| Filesystem failure | 3 |
+| Security violation | 4 |
+| Update conflict | 5 |
+| Internal error | 1 (default) |
+
+The full exit code contract is defined in
+[`docs/cli-ux-spec.md`](./cli-ux-spec.md) § 7.
+
+### 8.8 Secret Redaction
+
+Errors never include secret values. If an error's context contains a
+value matching a secret pattern (e.g., API key format), the value is
+replaced with `<redacted>`.
+
+---
+
+## 9. Logging Architecture
+
+### 9.1 Log Levels
+
+Forge supports four log levels:
+
+| Level | Purpose |
+|-------|---------|
+| `ERROR` | Failures requiring attention |
+| `WARN` | Potential issues |
+| `INFO` | High-level progress |
+| `DEBUG` | Detailed diagnostic information |
+
+### 9.2 Default Level
+
+The default level is `INFO`.
+
+- `--quiet` suppresses `INFO` and `WARN`
+- `--verbose` enables `DEBUG`
+- `--debug` enables `DEBUG` with additional internal details
+
+### 9.3 Log Destinations
+
+| Destination | Content |
+|-------------|---------|
+| **stdout** | Command output (human or JSON) |
+| **stderr** | Logs, warnings, errors |
+| **file** | Optional (`--log-file`) |
+
+By default, logs go to stderr so that stdout remains clean for
+piping.
+
+### 9.4 Log Format
+
+**Human format (default):**
+
+```text
+[INFO]  Loading forge.yaml
+[INFO]  Validating blueprint
+[DEBUG] Resolving template python-fastapi@1.0.0
+[DEBUG] Rendered 12 files
+[INFO]  Project created successfully
+```
+
+**JSON format (`--log-format json`):**
+
+```json
+{"level":"info","msg":"Loading forge.yaml","time":"2026-10-09T12:00:00Z"}
+{"level":"info","msg":"Validating blueprint","time":"2026-10-09T12:00:01Z"}
+{"level":"debug","msg":"Resolving template","template":"python-fastapi@1.0.0","time":"2026-10-09T12:00:02Z"}
+```
+
+### 9.5 Structured Fields
+
+Every log message includes structured fields:
+
+| Field | Purpose |
+|-------|---------|
+| `command` | The command being executed |
+| `path` | File path (if relevant) |
+| `template` | Template ID (if relevant) |
+| `component` | Component ID (if relevant) |
+| `duration` | Time taken (for completed operations) |
+
+### 9.6 Redaction
+
+Log messages never include:
+
+- Secret values
+- API keys
+- Passwords
+- Private keys
+- Environment variable values
+
+If a value matches a secret pattern, it is redacted:
+
+```text
+[INFO] Connecting to database
+[DEBUG] Connection string: postgres://user:<redacted>@host/db
+```
+
+### 9.7 Determinism
+
+Log output is deterministic where practical. Timestamps are the only
+exception (they reflect actual time).
+
+### 9.8 Log Levels by Verbosity
+
+| Flag | Level |
+|------|-------|
+| (default) | `INFO` |
+| `--quiet` | `ERROR` |
+| `--verbose` | `DEBUG` |
+| `--debug` | `DEBUG` (with internal details) |
+
+### 9.9 Logging in CI
+
+When running in CI (`CI=true` environment variable):
+
+- Default log format is `JSON`
+- Default level is `INFO`
+- No colour is emitted
+- Progress indicators are disabled
+
+---
+
+## 10. Architecture Diagram
+
+```text
+┌───────────────────────────────────────────────────────────────────┐
+│                          USER / CI                                │
+└───────────────────────────────┬───────────────────────────────────┘
+                                │
+                                ▼
+┌───────────────────────────────────────────────────────────────────┐
+│                          CLI LAYER                                │
+│                                                                   │
+│  ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐       │
+│  │ new       │  │ init      │  │ validate  │  │ update    │  ...  │
+│  └─────┬─────┘  └─────┬─────┘  └─────┬─────┘  └─────┬─────┘       │
+│        │              │              │              │             │
+│        └──────────────┴──────────────┴──────────────┘             │
+│                              │                                    │
+└──────────────────────────────┼────────────────────────────────────┘
+                               │
+                               ▼
+┌───────────────────────────────────────────────────────────────────┐
+│                       APPLICATION LAYER                           │
+│                                                                   │
+│  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐   │
+│  │ Renderer   │  │ Validator  │  │ Update     │  │ Explain    │   │
+│  │            │  │            │  │ Engine     │  │ Service    │   │
+│  └─────┬──────┘  └─────┬──────┘  └─────┬──────┘  └─────┬──────┘   │
+│        │               │               │               │          │
+└────────┼───────────────┼───────────────┼───────────────┼──────────┘
+         │               │               │               │
+         └───────────────┴───────────────┴───────────────┘
+                         │
+                         ▼
+┌───────────────────────────────────────────────────────────────────┐
+│                          DOMAIN LAYER                             │
+│                                                                   │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐           │
+│  │Blueprint │  │Template  │  │Component │  │Policy    │           │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘           │
+│                                                                   │
+│  ┌──────────────┐                                                 │
+│  │Configuration │                                                 │
+│  └──────────────┘                                                 │
+│                                                                   │
+└───────────────────────────────────────────────────────────────────┘
+                         ▲
+                         │ (implements interfaces)
+                         │
+┌───────────────────────────────────────────────────────────────────┐
+│                     INFRASTRUCTURE LAYER                          │
+│                                                                   │
+│  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐   │
+│  │ Filesystem │  │ Process    │  │ Registry   │  │ Logging    │   │
+│  └────────────┘  └────────────┘  └────────────┘  └────────────┘   │
+│                                                                   │
+│  ┌────────────┐                                                   │
+│  │ Output     │                                                   │
+│  └────────────┘                                                   │
+│                                                                   │
+└───────────────────────────────────────────────────────────────────┘
+```
+
+### 10.1 Reading the Diagram
+
+- **Arrows point downward** — dependencies flow from CLI → Application
+  → Domain. Infrastructure is below Domain and provides
+  implementations.
+- **Domain is at the center** — it has no dependencies on other
+  layers.
+- **Infrastructure implements Domain interfaces** — the arrow from
+  Infrastructure to Domain is an implementation arrow, not a
+  dependency arrow.
+- **CLI is at the top** — it depends on Application, not the other
+  way around.
+
+### 10.2 Alternative View: By Concern
+
+```text
+┌───────────────────────────────────────────────────────────────────┐
+│                                                                   │
+│  USER-FACING                                                      │
+│  ├── CLI commands                                                 │
+│  ├── Human output                                                 │
+│  └── Machine output (JSON, SARIF)                                 │
+│                                                                   │
+├───────────────────────────────────────────────────────────────────┤
+│                                                                   │
+│  ORCHESTRATION                                                    │
+│  ├── Application services (New, Init, Validate, Check, Diff,      │
+│  │   Update, Explain)                                             │
+│  ├── Renderer                                                     │
+│  ├── Validator                                                    │
+│  └── Update Engine                                                │
+│                                                                   │
+├───────────────────────────────────────────────────────────────────┤
+│                                                                   │
+│  CORE LOGIC                                                       │
+│  ├── Blueprint (parse, validate, default)                         │
+│  ├── Template (parse, resolve, plan)                              │
+│  ├── Component (resolve, compose, conflict)                       │
+│  ├── Policy (parse, evaluate)                                     │
+│  └── Configuration (load, merge)                                  │
+│                                                                   │
+├───────────────────────────────────────────────────────────────────┤
+│                                                                   │
+│  FOUNDATIONS                                                      │
+│  ├── Filesystem (boundary, atomic writes)                         │
+│  ├── Process (Git, subprocess)                                    │
+│  ├── Registry (fetch, verify)                                     │
+│  ├── Logging                                                      │
+│  └── Output (formatting)                                          │
+│                                                                   │
+└───────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 11. Cross-Cutting Concerns
+
+The following concerns cut across modules and must be handled
+consistently.
+
+### 11.1 Error Handling
+
+Every module:
+
+- Returns errors using the `ForgeError` type
+- Never panics on user input
+- Wraps errors with context
+- Includes suggestions where possible
+
+See § 8 for the full error architecture.
+
+### 11.2 Logging
+
+Every module:
+
+- Receives a `Logger` via constructor injection
+- Logs at appropriate levels
+- Includes structured fields
+- Never logs secrets
+
+See § 9 for the full logging architecture.
+
+### 11.3 Context Propagation
+
+Every long-running operation:
+
+- Accepts a `context.Context` as the first argument
+- Checks for cancellation at safe points
+- Propagates deadlines
+
+### 11.4 Determinism
+
+Every module that produces output:
+
+- Uses deterministic ordering
+- Avoids timestamps in output (except metadata)
+- Avoids environment-dependent behaviour
+- Uses stable algorithms
+
+### 11.5 Security
+
+Every module that accesses the filesystem:
+
+- Goes through the `Filesystem` interface
+- Respects the boundary rules
+- Never writes outside the target directory
+- Never logs secrets
+
+See [`docs/security-model.md`](./security-model.md) for full
+policies.
+
+### 11.6 Testing
+
+Every module has:
+
+- **Unit tests:** Pure functions, no I/O
+- **Integration tests:** With the Filesystem interface mocked
+- **End-to-end tests:** Full command execution
+
+---
+
+## 12. Package Layout (Illustrative)
+
+The following is the expected package layout. It is illustrative, not
+binding; the exact structure will be finalised in Phase 2.
+
+```text
+forge/
+├── cmd/
+│   └── forge/
+│       └── main.go
+├── internal/
+│   ├── cli/          # CLI commands
+│   ├── app/          # Application services
+│   │   ├── new/
+│   │   ├── init/
+│   │   ├── validate/
+│   │   ├── check/
+│   │   ├── diff/
+│   │   ├── update/
+│   │   └── explain/
+│   ├── domain/       # Domain logic (pure)
+│   │   ├── blueprint/
+│   │   ├── template/
+│   │   ├── component/
+│   │   ├── policy/
+│   │   └── config/
+│   ├── renderer/     # Rendering engine
+│   ├── validator/    # Validation engine
+│   ├── update/       # Update engine
+│   ├── state/        # State store
+│   └── infra/        # Infrastructure
+│       ├── fs/       # Filesystem
+│       ├── process/  # Process execution
+│       ├── registry/ # Registry (future)
+│       ├── logging/  # Logging
+│       └── output/   # Output formatting
+├── templates/        # Bundled templates
+├── examples/         # Example blueprints and templates
+└── docs/             # Documentation
+```
+
+### 12.1 Package Boundaries
+
+| Package | Contains |
+|---------|----------|
+| `internal/cli` | Command definitions, argument parsing, output wiring |
+| `internal/app/<command>` | Use case orchestration for each command |
+| `internal/domain/<concept>` | Pure domain logic and types |
+| `internal/renderer` | Rendering of template content |
+| `internal/validator` | Validation rules and engine |
+| `internal/update` | Update planning, merging, application |
+| `internal/state` | Reading and writing `.forge/state.yaml` |
+| `internal/infra/fs` | Filesystem interface and OS implementation |
+| `internal/infra/logging` | Logger interface and implementation |
+| `internal/infra/output` | Human and JSON output formatters |
+| `templates/` | Bundled templates |
+
+### 12.2 Import Rules
+
+- `internal/domain/*` may not import any other `internal/*` package
+  (except other `internal/domain/*`).
+- `internal/app/*` may import `internal/domain/*` and
+  `internal/infra/*`.
+- `internal/cli` may import `internal/app/*` and `internal/infra/*`.
+- `internal/infra/*` may import `internal/domain/*` (for shared
+  types) but not `internal/app/*` or `internal/cli`.
+
+---
+
+## 13. Testability
+
+The architecture is designed for testability.
+
+### 13.1 Unit Tests
+
+Domain logic is tested in isolation:
+
+- No filesystem access
+- No process execution
+- No network access
+- Fast (milliseconds)
+
+### 13.2 Integration Tests
+
+Application services are tested with a mock Filesystem:
+
+- In-memory filesystem for speed
+- Deterministic behaviour
+- No OS interaction
+
+### 13.3 End-to-End Tests
+
+The CLI is tested as a subprocess:
+
+- Real filesystem
+- Real process execution
+- Full command flow
+
+### 13.4 Golden Tests
+
+Some outputs are compared against golden files:
+
+- CLI output
+- JSON output
+- Rendered repositories
+
+Golden files are committed and version-controlled.
+
+### 13.5 Fuzz Tests
+
+Fuzz tests are used for:
+
+- Path parsing
+- YAML parsing
+- Template rendering
+- Blueprint validation
+
+---
+
+## 14. Extensibility
+
+The architecture supports future extension without breaking existing
+behaviour.
+
+### 14.1 Adding a New Command
+
+1. Define the command in `internal/cli`
+2. Define the use case in `internal/app/<command>`
+3. Reuse existing domain and infrastructure packages
+4. Add tests
+
+### 14.2 Adding a New Domain Concept
+
+1. Define the concept in `internal/domain/<concept>`
+2. Define its interfaces
+3. Wire it into the application layer
+4. Implement infrastructure as needed
+
+### 14.3 Adding a New Infrastructure Provider
+
+1. Define the interface (in domain or application)
+2. Implement the provider in `internal/infra/<provider>`
+3. Wire it into the CLI
+
+### 14.4 Plugin System
+
+A plugin system is not supported in Phase 1. The architecture reserves
+space for future plugins:
+
+- Extension points at the Domain layer
+- Plugin loading in the CLI layer
+- Sandboxing in the Infrastructure layer
+
+Plugins will be introduced in a future phase (see
+[`docs/product-discovery.md`](./product-discovery.md) § 10).
+
+---
+
+## 15. Anti-Patterns to Avoid
+
+The following are explicitly discouraged.
+
+### 15.1 Business Logic in the CLI
+
+The CLI layer is for command parsing and output formatting only. Any
+business logic belongs in the Application or Domain layer.
+
+### 15.2 Direct Filesystem Access from Domain
+
+Domain code never calls `os.ReadFile`, `os.WriteFile`, or similar. All
+filesystem access goes through the `Filesystem` interface.
+
+### 15.3 God Objects
+
+No single object orchestrates everything. Responsibilities are split
+across modules.
+
+### 15.4 Global State
+
+No global mutable variables. Dependencies are injected via
+constructors.
+
+### 15.5 Implicit Dependencies
+
+Every dependency is explicit in a constructor. No hidden globals, no
+service locators.
+
+### 15.6 Circular Dependencies
+
+Packages do not import each other cyclically. The dependency
+direction is strictly enforced.
+
+### 15.7 Silent Failures
+
+Every error is reported. No swallowed errors, no ignored returns.
+
+### 15.8 Unstructured Errors
+
+Every error uses the `ForgeError` type. No `errors.New("something
+failed")`.
+
+### 15.9 Unstructured Logs
+
+Every log message has a level and structured fields. No `fmt.Println`
+for diagnostics.
+
+### 15.10 Environment-Dependent Behaviour
+
+Forge behaves the same regardless of environment. Environment
+variables do not change behaviour except through explicit, documented
+configurations.
+
+---
+
+## 16. Relationship to Other Specifications
+
+| Specification | Relationship |
+|---------------|--------------|
+| [Blueprint](./blueprint-spec.md) | Domain model consumed by the Blueprint package |
+| [forge.yaml](./forge-yaml-spec.md) | Configuration consumed by the Configuration package |
+| [Template](./template-spec.md) | Domain model consumed by the Template package |
+| [Component](./component-spec.md) | Domain model consumed by the Component package |
+| [Validation](./validation-spec.md) | Implemented by the Validator package |
+| [Security Model](./security-model.md) | Enforced by the Filesystem package |
+| [Update Model](./update-model.md) | Implemented by the Update Engine package |
+| [CLI UX Spec](./cli-ux-spec.md) | Implemented by the CLI layer |
+| [Product Discovery](./product-discovery.md) | Defines the product this architecture implements |
+
+---
+
+## 17. Open Questions
+
+The following questions remain open and should be resolved before
+implementation:
+
+- Should the CLI layer be built with **Cobra** (the de facto standard)
+  or with a lighter framework?
+- Should the Application layer use a **use case** pattern (one service
+  per command) or a **service** pattern (one service per domain
+  concept)?
+- Should the Domain layer use **value objects** or plain structs?
+- Should the Filesystem interface be **narrow** (few methods) or
+  **wide** (all operations)?
+- Should the Update Engine use a library for **three-way merge** or
+  implement one?
+- Should logging use a library (e.g., `slog`, `zap`) or a custom
+  implementation?
+- Should the CLI support **shell completion** out of the box?
+- Should the architecture support **parallelism** for large
+  repositories, and if so, where?
+- Should the State store use **YAML**, **JSON**, or a binary format?
+- Should the architecture include a **cache** layer for template
+  resolution?
+
+These questions will be addressed in Phase 2 as implementation
+begins.
+
+---
+
+## 18. Status
+
+**Draft.**
+
+This document is under active development during Phase 1. It becomes
+**Approved** when:
+
+- The module list is frozen
+- The dependency direction is confirmed
+- The interface contracts are stable
+- The data flow is verified with use cases
+- The error architecture is implemented and tested
+- The logging architecture is implemented and tested
+- The architecture diagram reflects the final design
+- Open questions have been resolved or explicitly deferred
+- The specification has been reviewed for consistency with all other
+  Phase 1 specifications

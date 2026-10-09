@@ -1,0 +1,90 @@
+version: '3'
+
+vars:
+  ADR_DIR: docs/decisions
+  ADR_TEMPLATE: "{{.ADR_DIR}}/template.md"
+  ADR_SCRIPTS: scripts/adr
+
+tasks:
+  default:
+    desc: List all available tasks
+    cmds:
+      - task --list
+
+  # ─────────────────────────────────────────────────────────────
+  # Create a new ADR
+  # ─────────────────────────────────────────────────────────────
+  adr:new:
+    desc: "Create a new ADR: task adr:new -- 'Decision title'"
+    dir: "{{.USER_WORKING_DIR}}"
+    preconditions:
+      - sh: test -d {{.ADR_DIR}}
+        msg: "ADR directory does not exist: {{.ADR_DIR}}"
+      - sh: test -f {{.ADR_TEMPLATE}}
+        msg: "ADR template does not exist: {{.ADR_TEMPLATE}}"
+      - sh: test -n "{{.CLI_ARGS}}"
+        msg: "Usage: task adr:new -- 'Decision title'"
+    cmds:
+      - task: adr:_create
+        vars:
+          TITLE: '{{.CLI_ARGS}}'
+      - task: adr:index
+
+  # Internal: do not call directly
+  adr:_create:
+    internal: true
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - bash {{.ADR_SCRIPTS}}/new.sh {{.ADR_DIR}} "{{.TITLE}}"
+
+  # ─────────────────────────────────────────────────────────────
+  # Supersede an existing ADR
+  # ─────────────────────────────────────────────────────────────
+  adr:supersede:
+    desc: "Supersede an old ADR: task adr:supersede -- 'old-number' 'new-title'"
+    dir: "{{.USER_WORKING_DIR}}"
+    preconditions:
+      - sh: test -n "{{index .CLI_ARGS 0}}"
+        msg: "Usage: task adr:supersede -- 'old-number' 'new-title'"
+      - sh: test -n "{{index .CLI_ARGS 1}}"
+        msg: "Usage: task adr:supersede -- 'old-number' 'new-title'"
+    cmds:
+      - task: adr:_supersede
+        vars:
+          OLD_NUM: '{{index .CLI_ARGS 0}}'
+          NEW_TITLE: '{{index .CLI_ARGS 1}}'
+      - task: adr:index
+
+  # Internal: do not call directly
+  adr:_supersede:
+    internal: true
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - bash {{.ADR_SCRIPTS}}/supersede.sh {{.ADR_DIR}} "{{.OLD_NUM}}" "{{.NEW_TITLE}}"
+
+  # ─────────────────────────────────────────────────────────────
+  # Regenerate the index (called by adr:new and adr:supersede)
+  # ─────────────────────────────────────────────────────────────
+  adr:index:
+    desc: Regenerate the ADR index
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - bash {{.ADR_SCRIPTS}}/index.sh {{.ADR_DIR}}
+
+  # ─────────────────────────────────────────────────────────────
+  # List ADRs (optional status filter)
+  # ─────────────────────────────────────────────────────────────
+  adr:list:
+    desc: "List ADRs: task adr:list [-- --status=Proposed]"
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - bash {{.ADR_SCRIPTS}}/list.sh {{.ADR_DIR}} {{.CLI_ARGS}}
+
+  # ─────────────────────────────────────────────────────────────
+  # Lint ADRs (format completeness; usable in CI)
+  # ─────────────────────────────────────────────────────────────
+  adr:lint:
+    desc: Check all ADRs for format completeness
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - bash {{.ADR_SCRIPTS}}/lint.sh {{.ADR_DIR}}
