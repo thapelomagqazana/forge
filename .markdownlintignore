@@ -1,0 +1,21 @@
+# .markdownlintignore
+#
+# Paths that markdownlint should not scan.
+# Generated, vendored, or third-party content only.
+
+node_modules/
+vendor/
+dist/
+build/
+coverage/
+
+# Git internal files
+.git/
+
+# Editor and OS metadata
+.vscode/
+.idea/
+.DS_Store
+
+# Generated documentation (if any is produced by tooling later)
+docs/generated/

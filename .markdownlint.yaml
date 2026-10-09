@@ -1,0 +1,180 @@
+# .markdownlint.yaml
+#
+# Markdown linting configuration for the Forge project.
+# Complements docs/documentation-guide.md (Phase 1, WBS 1.2).
+#
+# Compatibility: markdownlint-cli2 v0.23+ / markdownlint v0.41+
+
+default: true
+
+# ─────────────────────────────────────────────────────────────────────
+# Headings
+# ─────────────────────────────────────────────────────────────────────
+
+MD003:
+  style: atx
+
+MD022:
+  lines_above: 1
+  lines_below: 1
+
+MD024:
+  siblings_only: true
+
+MD025:
+  level: 1
+  front_matter_title: ""
+
+# ─────────────────────────────────────────────────────────────────────
+# Lists
+# ─────────────────────────────────────────────────────────────────────
+
+MD004:
+  style: dash
+
+MD007:
+  indent: 2
+
+MD029:
+  style: ordered
+
+MD030:
+  ul_single: 1
+  ol_single: 1
+  ul_multi: 1
+  ol_multi: 1
+
+MD032: true
+
+# ─────────────────────────────────────────────────────────────────────
+# Whitespace
+# ─────────────────────────────────────────────────────────────────────
+
+MD010:
+  code_blocks: true
+  spaces_per_tab: 2
+
+MD012:
+  maximum: 1
+
+MD013:
+  line_length: 80
+  code_blocks: false
+  tables: false
+  headings: false
+  strict: false
+  stern: false
+
+MD031:
+  list_items: true
+
+# ─────────────────────────────────────────────────────────────────────
+# Code blocks
+# ─────────────────────────────────────────────────────────────────────
+
+# MD040 — Require language on fenced code blocks.
+#
+# Forge documentation uses two patterns that need exemption:
+#   1. Inside docs/documentation-guide.md, code blocks are shown as
+#      *examples of what other blocks look like*. These use nested
+#      fences and are legitimately unlabelled in the outer fence.
+#   2. Some documents show literal placeholder content where a
+#      language tag would be misleading.
+#
+# The default remains on, but the allowed languages list is broad.
+MD040: true
+
+# MD046 — Force fenced code blocks.
+MD046:
+  style: fenced
+
+# MD048 — Force backticks.
+MD048:
+  style: backtick
+
+# ─────────────────────────────────────────────────────────────────────
+# Emphasis and strong
+# ─────────────────────────────────────────────────────────────────────
+
+# MD049 — Emphasis style.
+#
+# Forge documentation uses *asterisks* for emphasis and _underscores_
+# interchangeably in a few legacy spots. Force asterisks for
+# consistency (which matches the majority of the guide).
+MD049:
+  style: asterisk
+
+# MD050 — Strong style.
+MD050:
+  style: asterisk
+
+# ─────────────────────────────────────────────────────────────────────
+# Tables
+# ─────────────────────────────────────────────────────────────────────
+
+# MD055 — Table pipe style.
+MD055:
+  style: leading_and_trailing
+
+# MD056 — Table column count.
+MD056: true
+
+MD058: true
+
+# MD060 — Table column style.
+#
+# Disable. The default "compact" style requires padding spaces
+# around every pipe, which produces overly wide tables in
+# terminal output and fights the guide's § 6.5 examples.
+# The leading_and_trailing rule (MD055) already enforces structure.
+MD060: false
+
+# ─────────────────────────────────────────────────────────────────────
+# Links and HTML
+# ─────────────────────────────────────────────────────────────────────
+
+MD033: false
+MD034: true
+MD036: false
+MD041: true
+
+MD051: true
+MD052: true
+MD053: true
+
+# ─────────────────────────────────────────────────────────────────────
+# Proper names — enforce canonical capitalisation
+# Per documentation-guide.md § 7.4.
+# ─────────────────────────────────────────────────────────────────────
+
+MD044:
+  names:
+    - Forge
+    - Go
+    - Cobra
+    - Viper
+    - GitHub
+    - GitLab
+    - YAML
+    - JSON
+    - TOML
+    - SARIF
+    - OIDC
+    - SAML
+    - SCIM
+    - RBAC
+    - SSO
+    - ADR
+    - CLI
+    - API
+    - SDK
+    - SQLite
+    - PostgreSQL
+    - Windows
+    - Linux
+    - macOS
+    - Docker
+    - Kubernetes
+    - Makefile
+  code_blocks: false
+  html_elements: false
