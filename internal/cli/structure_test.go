@@ -1,16 +1,19 @@
-// Package cli_test contains structural tests for the internal/cli package.
+// Package cli_test contains structural tests for the internal/cli
+// package.
 //
-// These tests verify the *shape* of the package rather than its runtime
-// behaviour. They are architectural tests: they enforce constraints that
-// are invisible to the Go compiler but essential to the package's design.
+// These tests verify the *shape* of the package rather than its
+// runtime behaviour. They are architectural tests: they enforce
+// constraints that are invisible to the Go compiler but essential to
+// the package's design.
 //
 // # What this file tests
 //
 //   - File layout: which files exist, and which must not exist.
 //   - Import discipline: which packages may be imported where.
-//   - Exported surface: how many symbols are exported.
+//   - Exported surface: how many functions and constants are exported.
 //   - Required metadata: documentation comments and invariants.
 //   - Package boundaries: no leakage into other packages.
+//   - Test package declarations: the white-box / black-box split.
 //
 // # What this file does not test
 //
@@ -19,28 +22,34 @@
 //   - Exit codes.
 //   - Error formatting.
 //
-// Those are tested by runtime test files, which are added in WBS 4.x
-// onwards. See the package documentation for the full test strategy.
+// Those are tested by the white-box tests in root_test.go and
+// execute_test.go, which live in package cli (not cli_test).
 //
 // # Why structural tests
 //
-// The CLI package's design depends on properties that the compiler does
-// not enforce:
+// The CLI package's design depends on properties that the compiler
+// does not enforce:
 //
-//   - Only one file may import Cobra. If a second file imports it, the
-//     "one entry point" invariant is violated.
+//   - Only one file may import Cobra. If a second file imports it,
+//     the "one entry point" invariant is violated.
 //   - Only one function may be exported from the package (Execute).
-//     If a second symbol becomes exported, downstream packages can depend
-//     on internals, which locks the design in place.
+//     If a second function becomes exported, downstream packages can
+//     depend on internals, which locks the design in place.
+//   - The package's exported constants are a bounded vocabulary. New
+//     ones require review.
 //   - The package must contain no unused files. Orphaned source files
 //     accumulate over time and create confusion.
 //
-// Without structural tests, these constraints decay silently. With them,
-// any violation fails CI immediately and forces a deliberate decision.
+// Without structural tests, these constraints decay silently. With
+// them, any violation fails CI immediately and forces a deliberate
+// decision.
 package cli_test
 
 import (
 	"bufio"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -56,9 +65,9 @@ import (
 
 // packageDir returns the absolute path to the internal/cli directory.
 //
-// It is derived from the location of this test file, using runtime.Caller
-// to find the source file path, then walking up to the directory
-// containing it.
+// It derives the path from the location of this test file, using
+// runtime.Caller to find the source file path, then returning the
+// directory that contains it.
 //
 // The helper is deliberately robust: it does not depend on the current
 // working directory, which Go's testing framework sets to the package
@@ -75,13 +84,12 @@ func packageDir(t *testing.T) string {
 	return filepath.Dir(thisFile)
 }
 
-// listGoFiles returns the sorted list of *.go files in the package
-// directory, excluding test files and the file that contains this
-// helper.
+// listGoFiles returns the sorted list of non-test *.go files in the
+// package directory.
 //
-// The exclusion of *_test.go files is deliberate: test files may
-// legitimately import Cobra for the purpose of testing it, and are not
-// subject to the "one file imports Cobra" rule.
+// Test files are excluded because they may legitimately import Cobra
+// for the purpose of testing it, and are not subject to the "one file
+// imports Cobra" rule.
 func listGoFiles(t *testing.T) []string {
 	t.Helper()
 
@@ -124,72 +132,88 @@ func readFile(t *testing.T, name string) string {
 	return string(data)
 }
 
+// findModuleRoot walks up from the package directory until it finds
+// go.mod, and returns the directory containing it.
+func findModuleRoot(t *testing.T) string {
+	t.Helper()
+
+	dir := packageDir(t)
+
+	for {
+		candidate := filepath.Join(dir, "go.mod")
+		if _, err := os.Stat(candidate); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatalf("go.mod not found above %s", packageDir(t))
+		}
+		dir = parent
+	}
+}
+
 // =============================================================================
 // File layout
 // =============================================================================
 
-// TestRootFileExists verifies that root.go exists in the package.
+// expectedSourceFiles enumerates every non-test Go source file the
+// package is permitted to contain, along with the WBS item that
+// introduced it.
 //
-// root.go is the anchor file: it contains the Execute entry point and
-// the root command constructor. Without it, the package cannot be
-// imported.
-func TestRootFileExists(t *testing.T) {
+// The map is deliberately explicit rather than glob-based. When a new
+// file is added in a future WBS, this map must be updated as part of
+// that WBS. The update is a review checkpoint: it forces the author
+// to justify the new file.
+//
+// This constant is used by both TestExpectedFilesExist and
+// TestNoOrphanedFiles. Keeping the allowlist in one place ensures the
+// two tests never disagree.
+var expectedSourceFiles = map[string]string{
+	"doc.go":       "WBS 2.4.2 — package documentation and public contract",
+	"execute.go":   "WBS 2.4.2 — Execute and executeWithOptions",
+	"exitcodes.go": "WBS 2.4.2 — exit code constants and error mapping",
+	"root.go":      "WBS 2.4.2 — root command constructor",
+}
+
+// TestExpectedFilesExist verifies that every file this WBS expects is
+// present in the package.
+func TestExpectedFilesExist(t *testing.T) {
 	t.Parallel()
 
 	files := listGoFiles(t)
 
-	found := false
-	for _, f := range files {
-		if f == "root.go" {
-			found = true
-			break
+	for name, reason := range expectedSourceFiles {
+		found := false
+		for _, actual := range files {
+			if actual == name {
+				found = true
+				break
+			}
 		}
-	}
-
-	if !found {
-		t.Fatalf("root.go not found in package; files present: %v", files)
+		if !found {
+			t.Errorf("expected file missing: %s (required by %s)",
+				name, reason)
+		}
 	}
 }
 
 // TestNoOrphanedFiles verifies that every Go file in the package is
 // one of the files this WBS explicitly expects.
 //
-// The list is deliberately explicit rather than glob-based. When a new
-// file is added in a future WBS, this test must be updated as part of
-// that WBS. The update is a review checkpoint: it forces the author to
-// justify the new file.
+// The failure message tells the contributor exactly what to do:
+// update the allowlist and cite the WBS item that introduced the new
+// file.
 func TestNoOrphanedFiles(t *testing.T) {
 	t.Parallel()
-
-	// Files expected in the package after WBS 2.4.1.
-	//
-	// This list grows as subsequent WBS items are completed. Every
-	// addition requires a corresponding WBS reference in the comment.
-	expected := map[string]string{
-		"root.go": "WBS 2.4.1 — root command and Execute entry point",
-	}
 
 	files := listGoFiles(t)
 
 	for _, f := range files {
-		if _, ok := expected[f]; !ok {
+		if _, ok := expectedSourceFiles[f]; !ok {
 			t.Errorf("unexpected Go file in package: %s\n"+
 				"If this file was intentionally added, update the "+
-				"expected list in TestNoOrphanedFiles and cite the WBS "+
-				"item that introduced it.", f)
-		}
-	}
-
-	for f, reason := range expected {
-		found := false
-		for _, actual := range files {
-			if actual == f {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("expected file missing: %s (required by %s)", f, reason)
+				"expectedSourceFiles map in structure_test.go and "+
+				"cite the WBS item that introduced it.", f)
 		}
 	}
 }
@@ -202,9 +226,9 @@ func TestNoOrphanedFiles(t *testing.T) {
 // multiple tests below.
 const cobraImportPath = `"github.com/spf13/cobra"`
 
-// TestRootFileImportsCobra verifies that root.go imports Cobra. This is
-// the positive half of the AC6 requirement from WBS 2.4.1: Cobra must
-// be wired in.
+// TestRootFileImportsCobra verifies that root.go imports Cobra. This
+// is the positive half of the AC6 requirement from WBS 2.4.1: Cobra
+// must be wired in.
 func TestRootFileImportsCobra(t *testing.T) {
 	t.Parallel()
 
@@ -350,87 +374,262 @@ func TestStdlibOnlyForRootImports(t *testing.T) {
 	}
 }
 
-// =============================================================================
-// Exported surface
-// =============================================================================
-
-// TestOnlyExecuteIsExported verifies that root.go exports exactly one
-// symbol: the Execute function.
+// TestStdlibOnlyForExecuteImports verifies that execute.go imports
+// only standard-library packages, Cobra, and packages under Forge's
+// own module path.
 //
-// The package's public surface is deliberately one function. Every
-// other symbol — command constructors, helpers, types — is unexported.
-// This prevents downstream packages from depending on internals, which
-// would freeze the design in place and make refactoring harder.
-//
-// The test scans the file for top-level declarations whose identifier
-// begins with an uppercase letter. The scan is line-based rather than
-// AST-based: for the small, well-formed source files in this package,
-// a regex-based scan is sufficient and much simpler to read.
-func TestOnlyExecuteIsExported(t *testing.T) {
+// The same discipline that applies to root.go applies to every file
+// in the package. execute.go is checked separately because it is the
+// second file most likely to attract a new dependency.
+func TestStdlibOnlyForExecuteImports(t *testing.T) {
 	t.Parallel()
 
-	content := readFile(t, "root.go")
+	content := readFile(t, "execute.go")
+	imports := parseImportPaths(t, content)
 
-	// Match top-level declarations of the form:
-	//
-	//   func Name(...)         — function
-	//   func (recv Type) Name  — method (receiver's methods are attached
-	//                            to types, not to the package)
-	//   var Name ...           — variable
-	//   const Name ...         — constant
-	//   type Name ...          — type
-	//
-	// The regex anchors on the start of a line (no leading whitespace),
-	// which is where top-level declarations occur in gofmt-formatted
-	// source.
-	declPattern := regexp.MustCompile(
-		`^(?:func|var|const|type)\s+(?:\([^)]*\)\s+)?([A-Z][A-Za-z0-9_]*)`,
-	)
+	const forgeModulePrefix = "github.com/thapelomagqazana/forge/"
 
-	var exported []string
-	scanner := bufio.NewScanner(strings.NewReader(content))
-	for scanner.Scan() {
-		line := scanner.Text()
-		matches := declPattern.FindStringSubmatch(line)
-		if len(matches) >= 2 {
-			exported = append(exported, matches[1])
+	for _, imp := range imports {
+		// Standard library: no dots in the first path segment.
+		firstSegment := imp
+		if idx := strings.Index(imp, "/"); idx > 0 {
+			firstSegment = imp[:idx]
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		t.Fatalf("scan root.go: %v", err)
-	}
+		if !strings.Contains(firstSegment, ".") {
+			continue
+		}
 
-	// The package may contain additional files in future WBS items;
-	// this test is scoped to root.go specifically. When a new file is
-	// added, a similar test should be added for it if the file is
-	// expected to have a bounded public surface. Most files will
-	// export nothing at all.
+		// Forge's own packages are permitted.
+		if strings.HasPrefix(imp, forgeModulePrefix) {
+			continue
+		}
+
+		t.Errorf("forbidden import in execute.go: %s\n"+
+			"execute.go may only import the standard library and "+
+			"Forge's own packages. Any other import requires updating "+
+			"docs/dependency-policy.md and adding an ADR.", imp)
+	}
+}
+
+// =============================================================================
+// Exported surface — functions
+// =============================================================================
+
+// TestOnlyExecuteFunctionIsExported verifies that the package exports
+// exactly one *function*: Execute.
+//
+// The package's public function surface is deliberately one function.
+// Every other function — command constructors, helpers — is
+// unexported. This prevents downstream packages from depending on
+// internals, which would freeze the design in place and make
+// refactoring harder.
+//
+// Constants are tested separately by
+// TestOnlyExpectedConstantsAreExported. They are a different category
+// of public surface: an enumerated vocabulary that downstream code
+// may reference by name.
+//
+// The test scans every non-test source file in the package and
+// collects top-level function declarations whose identifier begins
+// with an uppercase letter. Only Execute is permitted.
+func TestOnlyExecuteFunctionIsExported(t *testing.T) {
+	t.Parallel()
+
+	files := listGoFiles(t)
+	exported := collectExportedFunctions(t, files)
+
 	if len(exported) != 1 {
-		t.Fatalf("expected exactly 1 exported symbol in root.go; found %d: %v",
-			len(exported), exported)
+		t.Fatalf("expected exactly 1 exported function in the package; "+
+			"found %d: %v", len(exported), exported)
 	}
 
 	if exported[0] != "Execute" {
-		t.Fatalf("expected the sole exported symbol to be Execute; found %s",
-			exported[0])
+		t.Fatalf("expected the sole exported function to be Execute; "+
+			"found %s", exported[0])
 	}
+}
+
+// collectExportedFunctions returns the sorted list of exported
+// top-level function identifiers across the given files.
+//
+// Methods (functions with a receiver) are excluded: they are attached
+// to their receiver's type, not to the package. A method is exported
+// only if both the method name and the receiver type are exported,
+// which is separately checked when the type is added.
+func collectExportedFunctions(t *testing.T, files []string) []string {
+	t.Helper()
+
+	dir := packageDir(t)
+	fset := token.NewFileSet()
+
+	seen := make(map[string]bool)
+
+	for _, file := range files {
+		path := filepath.Join(dir, file)
+		parsed, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", file, err)
+		}
+
+		for _, decl := range parsed.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok {
+				continue
+			}
+			if fn.Recv != nil {
+				continue
+			}
+			if !fn.Name.IsExported() {
+				continue
+			}
+			seen[fn.Name.Name] = true
+		}
+	}
+
+	var out []string
+	for name := range seen {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// =============================================================================
+// Exported surface — constants
+// =============================================================================
+
+// expectedConstants enumerates every exported constant the package is
+// permitted to expose, along with the WBS item that introduced it.
+//
+// The map is deliberately explicit. Adding a constant requires
+// updating this map, which forces the contributor to justify the
+// addition. Removing a constant is a breaking change and requires an
+// ADR, because downstream code may depend on the name.
+var expectedConstants = map[string]string{
+	"ExitSuccess":    "WBS 2.4.2 — successful command exit code",
+	"ExitFailure":    "WBS 2.4.2 — general failure exit code",
+	"ExitUsage":      "WBS 2.4.2 — usage error exit code",
+	"ExitConfig":     "WBS 2.4.2 — configuration failure exit code (reserved)",
+	"ExitFilesystem": "WBS 2.4.2 — filesystem failure exit code (reserved)",
+	"ExitValidation": "WBS 2.4.2 — validation failure exit code (reserved)",
+	"ExitSecurity":   "WBS 2.4.2 — security failure exit code (reserved)",
+}
+
+// TestOnlyExpectedConstantsAreExported verifies that the package
+// exports exactly the exit code constants that the CLI contract
+// requires, and nothing more.
+//
+// The exit code constants form a stable vocabulary that downstream
+// code and tests may reference by name. They are:
+//
+//   - ExitSuccess
+//   - ExitFailure
+//   - ExitUsage
+//   - ExitConfig
+//   - ExitFilesystem
+//   - ExitValidation
+//   - ExitSecurity
+//
+// Adding a new exported constant requires updating the
+// expectedConstants map in this file. The update is a review
+// checkpoint: it forces the contributor to justify the addition.
+func TestOnlyExpectedConstantsAreExported(t *testing.T) {
+	t.Parallel()
+
+	files := listGoFiles(t)
+	actual := collectExportedConstants(t, files)
+
+	// Every actual constant must be in the expected set.
+	for _, name := range actual {
+		if _, ok := expectedConstants[name]; !ok {
+			t.Errorf("unexpected exported constant: %s\n"+
+				"If this constant was intentionally added, update the "+
+				"expectedConstants map in structure_test.go and cite "+
+				"the WBS item or ADR that introduced it.", name)
+		}
+	}
+
+	// Every expected constant must be present.
+	for name, reason := range expectedConstants {
+		found := false
+		for _, actualName := range actual {
+			if actualName == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected exported constant missing: %s (%s)",
+				name, reason)
+		}
+	}
+}
+
+// collectExportedConstants returns the sorted list of exported
+// top-level constant identifiers across the given files.
+//
+// Constants declared inside a `const (...)` block are visited
+// individually. Constants declared as a single `const Name = value`
+// line are also visited.
+func collectExportedConstants(t *testing.T, files []string) []string {
+	t.Helper()
+
+	dir := packageDir(t)
+	fset := token.NewFileSet()
+
+	seen := make(map[string]bool)
+
+	for _, file := range files {
+		path := filepath.Join(dir, file)
+		parsed, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", file, err)
+		}
+
+		for _, decl := range parsed.Decls {
+			gen, ok := decl.(*ast.GenDecl)
+			if !ok {
+				continue
+			}
+			if gen.Tok != token.CONST {
+				continue
+			}
+			for _, spec := range gen.Specs {
+				vs, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for _, name := range vs.Names {
+					if name.IsExported() {
+						seen[name.Name] = true
+					}
+				}
+			}
+		}
+	}
+
+	var out []string
+	for name := range seen {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // =============================================================================
 // Required content
 // =============================================================================
 
-// TestRootFileHasPackageDocumentation verifies that root.go begins
-// with a package comment.
+// TestDocFileHasPackageDocumentation verifies that doc.go begins with
+// a package comment.
 //
-// The package comment is the first thing a reader sees when opening
-// the file. It documents the package's public contract and the
-// invariants that contributors must preserve. Its absence signals that
-// the package's design was not thought through.
-func TestRootFileHasPackageDocumentation(t *testing.T) {
+// The package comment lives in doc.go, not in root.go. This is a Go
+// convention: the package comment may live in any file, but placing
+// it in a file named doc.go makes it discoverable.
+func TestDocFileHasPackageDocumentation(t *testing.T) {
 	t.Parallel()
 
-	content := readFile(t, "root.go")
+	content := readFile(t, "doc.go")
 
 	// The first non-empty, non-build-constraint line must be a comment
 	// that begins with "Package cli".
@@ -441,23 +640,27 @@ func TestRootFileHasPackageDocumentation(t *testing.T) {
 			continue
 		}
 		if !strings.HasPrefix(line, "// Package cli") {
-			t.Fatalf("root.go does not begin with a package comment; "+
+			t.Fatalf("doc.go does not begin with a package comment; "+
 				"first non-empty line was: %q", line)
 		}
-		break
+		return
 	}
+	t.Fatal("doc.go is empty")
 }
 
 // TestExecuteHasDocComment verifies that the Execute function is
 // documented.
 //
-// Execute is the only exported symbol in the package. It defines the
-// package's contract with cmd/forge/main.go. Its documentation is what
-// future maintainers read to understand why the signature is frozen.
+// Execute is the only exported function in the package. It defines
+// the package's contract with cmd/forge/main.go. Its documentation is
+// what future maintainers read to understand why the signature is
+// frozen.
+//
+// Execute lives in execute.go, not root.go.
 func TestExecuteHasDocComment(t *testing.T) {
 	t.Parallel()
 
-	content := readFile(t, "root.go")
+	content := readFile(t, "execute.go")
 
 	// Find the line containing "func Execute" and verify that the
 	// preceding non-empty line is a comment.
@@ -480,34 +683,107 @@ func TestExecuteHasDocComment(t *testing.T) {
 		}
 		t.Fatal("Execute has no preceding line")
 	}
-	t.Fatal("func Execute not found in root.go")
+	t.Fatal("func Execute not found in execute.go")
+}
+
+// TestExitCodesHaveDocComment verifies that the exit code constants
+// block is documented.
+//
+// The constants are part of the CLI's public vocabulary. Their
+// documentation explains what each code means and why the values are
+// stable. Its absence signals that the constants were added without
+// consideration for their public role.
+func TestExitCodesHaveDocComment(t *testing.T) {
+	t.Parallel()
+
+	content := readFile(t, "exitcodes.go")
+
+	// The file must contain a comment block before the `const (` line.
+	constDecl := "const ("
+	idx := strings.Index(content, constDecl)
+	if idx < 0 {
+		t.Fatal("exitcodes.go does not contain a const declaration")
+	}
+
+	// Walk backwards from the const declaration to find the nearest
+	// non-blank line. It must be a comment.
+	lines := strings.Split(content[:idx], "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "//") {
+			t.Fatalf("exit code constants have no preceding doc comment; "+
+				"the line before 'const (' was: %q", line)
+		}
+		return
+	}
+	t.Fatal("exitcodes.go begins with the const declaration; no doc comment")
 }
 
 // =============================================================================
-// Module integration
+// Test file package declarations
 // =============================================================================
 
-// findModuleRoot walks up from the package directory until it finds
-// go.mod, and returns the directory containing it.
+// TestTestFilePackageDeclarations verifies that the package's test
+// files are split between `package cli` (white-box) and
+// `package cli_test` (black-box) according to the design.
 //
-// The helper fails the test if no go.mod is found, which would mean
-// the test is running outside the Forge module.
-func findModuleRoot(t *testing.T) string {
-	t.Helper()
+// The split is deliberate:
+//
+//   - White-box tests (package cli) reach unexported symbols and are
+//     used for behaviour and boundary testing.
+//
+//   - Black-box tests (package cli_test) read source files as data
+//     and are used for structural invariant testing.
+//
+// The split is enforced so that a contributor who moves a test file
+// to the wrong package is told immediately why the move is wrong.
+func TestTestFilePackageDeclarations(t *testing.T) {
+	t.Parallel()
 
-	dir := packageDir(t)
+	expected := map[string]string{
+		// White-box: needs unexported symbols.
+		"root_test.go":    "package cli",
+		"execute_test.go": "package cli",
 
-	for {
-		candidate := filepath.Join(dir, "go.mod")
-		if _, err := os.Stat(candidate); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatalf("go.mod not found above %s", packageDir(t))
-		}
-		dir = parent
+		// Black-box: reads source files as data.
+		"structure_test.go": "package cli_test",
 	}
+
+	for file, wantPkg := range expected {
+		file := file
+		wantPkg := wantPkg
+		t.Run(file, func(t *testing.T) {
+			t.Parallel()
+			content := readFile(t, file)
+			gotPkg := extractPackageDeclaration(content)
+			if gotPkg != wantPkg {
+				t.Errorf("package declaration mismatch\n"+
+					"  file: %s\n"+
+					"  want: %s\n"+
+					"  got:  %s",
+					file, wantPkg, gotPkg)
+			}
+		})
+	}
+}
+
+// extractPackageDeclaration returns the package clause of a Go source
+// file as a single-line string, e.g. "package cli".
+func extractPackageDeclaration(content string) string {
+	scanner := bufio.NewScanner(strings.NewReader(content))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "//") {
+			continue
+		}
+		if strings.HasPrefix(line, "package ") {
+			return line
+		}
+	}
+	return ""
 }
 
 // =============================================================================
@@ -521,8 +797,6 @@ func findModuleRoot(t *testing.T) string {
 //	    "os"
 //	    "github.com/spf13/cobra"
 //	)
-//
-// The capture group includes everything between the parentheses.
 var importBlockPattern = regexp.MustCompile(`(?s)import\s*\(([^)]*)\)`)
 
 // singleImportPattern matches a single-line import:
