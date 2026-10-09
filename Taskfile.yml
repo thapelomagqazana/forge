@@ -11,18 +11,22 @@
 # Structure:
 #
 #   adr:*                — Architecture Decision Record management
+#   hooks:*              — Local Git hooks management (WBS 2.6.1)
 #   module:*             — Go module verification (WBS 2.1.1)
 #   goversion:*          — Go version matrix verification (WBS 2.1.2)
-#   verify:*             — Reproducibility & composed verification
-#                          (WBS 2.3.1, and future verify:* namespaces)
+#   verify:*             — Composed verification namespaces
+#     verify:reproducible  — Reproducibility invariant (WBS 2.3.1)
+#     verify:cobra         — Cobra pin and wiring (WBS 2.4.1)
+#     verify:deps          — Dependency policy enforcement (WBS 2.5.1)
 #   lint:*               — Linting (Markdown, and future linters)
 #   tidy                 — Dependency lockfile maintenance (maintainers only)
 #   build:*              — Binary compilation with injected metadata
-#   test                 — Unit and integration tests
+#   test                 — Fast unit tests
+#   test:integration     — Process-boundary integration tests
 #   fmt*                 — Go formatting
 #   vet                  — Static analysis
-#   check                — Full quality gate (fmt + lint + vet + goversion +
-#                          verify:reproducible + test)
+#   check                — Full quality gate
+#   verify               — Composition of all verify:* tasks
 #   clean                — Remove build artifacts
 #   default              — List all tasks
 #
@@ -35,6 +39,10 @@
 #     CI logs are greppable.
 #   - Internal helpers are marked `internal: true` and must not be invoked
 #     directly by contributors.
+#   - Checks that invoke commands containing Go template syntax
+#     (`go list -m -f '{{...}}'`) live in scripts/ rather than inline.
+#     Task parses `cmds:` blocks as Go templates, and the two template
+#     syntaxes collide when inlined.
 # =============================================================================
 
 version: '3'
@@ -107,6 +115,23 @@ vars:
   # contributors can set them in their shell profiles.
   GOFLAGS_REQUIRED: '-mod=readonly'
   GOTOOLCHAIN_REQUIRED: 'auto'
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Dependency policy configuration (WBS 2.5.1)
+  # ───────────────────────────────────────────────────────────────────────────
+  #
+  # DEP_POLICY — path to the dependency policy document. Checked for
+  # existence by verify:deps:documented.
+  #
+  # DEP_ALLOWED_DIRECT — the exact set of direct dependencies permitted in
+  # Phase 2, one module path per line. Any change to this set requires
+  # updating this variable AND adding a registry entry to the policy
+  # document. The two changes must be made in the same commit.
+  #
+  #   Phase 2 permits exactly one direct dependency: Cobra.
+  #   The list grows as future WBS items introduce dependencies.
+  DEP_POLICY: 'docs/dependency-policy.md'
+  DEP_ALLOWED_DIRECT: 'github.com/spf13/cobra'
 
   # ───────────────────────────────────────────────────────────────────────────
   # Markdown lint configuration (WBS 2.1.x — documentation quality)
@@ -249,6 +274,57 @@ tasks:
     dir: "{{.USER_WORKING_DIR}}"
     cmds:
       - bash {{.ADR_SCRIPTS}}/lint.sh {{.ADR_DIR}}
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Hooks — local Git hooks management (WBS 2.6.1)
+  # ═══════════════════════════════════════════════════════════════════════════
+  #
+  # The hooks live in .githooks/ and are versioned with the repository.
+  # The tasks below install, uninstall, and inspect them in the local
+  # clone by setting core.hooksPath.
+  #
+  # Hooks run the same tasks that CI runs. See .githooks/README.md for
+  # the full documentation.
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  hooks:install:
+    desc: Install the Forge Git hooks into the local clone (run once)
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - sh scripts/install-hooks.sh
+
+  hooks:uninstall:
+    desc: Remove the Forge Git hooks from the local clone
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - git config --unset core.hooksPath || true
+      - echo "OK - hooks uninstalled"
+
+  hooks:status:
+    desc: Report whether the Forge Git hooks are installed
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - |
+        set -euo pipefail
+        current=$(git config --get core.hooksPath 2>/dev/null || echo "")
+        if [ "$current" = ".githooks" ]; then
+          echo "OK: hooks installed (core.hooksPath = .githooks)"
+        else
+          echo "WARN: hooks not installed (core.hooksPath = ${current:-unset})"
+          echo "      Run 'task hooks:install' to install them."
+        fi
+
+  hooks:test:
+    desc: Run the pre-commit checks without creating a commit
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - sh .githooks/pre-commit
+
+  hooks:test:push:
+    desc: Run the pre-push checks without pushing
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - sh .githooks/pre-push
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Module — verification of go.mod configuration (WBS 2.1.1)
@@ -586,10 +662,16 @@ tasks:
   # AC4 — Negative test: prove that -mod=readonly fails on mutation.
   #
   # The working tree is never modified. A temporary copy of the module
-  # is created, the copy's go.mod is tampered with, and a build is
-  # attempted against the copy. The build must fail.
+  # is created, the copy's go.sum is emptied, and a build is attempted
+  # against the copy. The build must fail because -mod=readonly refuses
+  # to fetch the missing checksums.
+  #
+  # An empty go.sum is a valid file. A go.sum containing a comment is
+  # not: the format is strictly "<module> <version> <hash>" per line,
+  # and any other line is a parse error. The test therefore truncates
+  # the file to zero bytes rather than writing a marker into it.
   verify:reproducible:negative:
-    desc: Prove that -mod=readonly prevents go.mod mutation (WBS 2.3.1)
+    desc: Prove that -mod=readonly prevents go.sum mutation (WBS 2.3.1)
     dir: "{{.USER_WORKING_DIR}}"
     cmds:
       - |
@@ -598,30 +680,257 @@ tasks:
         tmpdir=$(mktemp -d)
         trap 'rm -rf "$tmpdir"' EXIT
 
-        # Copy only the files needed for a build attempt.
+        # Copy the module files needed to attempt a build.
         cp go.mod "$tmpdir/go.mod"
-        [ -f go.sum ] && cp go.sum "$tmpdir/go.sum"
+        cp go.sum "$tmpdir/go.sum"
         cp -R cmd "$tmpdir/cmd" 2>/dev/null || true
         cp -R internal "$tmpdir/internal" 2>/dev/null || true
 
-        # Introduce a deliberate inconsistency: add a require for a
-        # module that is not actually imported. With -mod=readonly, the
-        # next build must fail.
-        cat >> "$tmpdir/go.mod" <<EOF
+        # Sanity check: the copy must contain at least one Go source
+        # file. If it does not, the build would succeed trivially and
+        # the negative test would be meaningless.
+        if ! find "$tmpdir" -name '*.go' -print -quit | grep -q .; then
+          echo "FAIL: negative test cannot run — no Go source files copied" >&2
+          exit 1
+        fi
 
-        require example.com/nonexistent v0.0.0-00010101000000-000000000000
-        EOF
+        # Truncate go.sum to zero bytes. This is a valid but empty
+        # file. Every module requirement in go.mod now lacks a
+        # checksum, and Go must resolve the modules. Under
+        # -mod=readonly, resolution fails because Go refuses to write
+        # the missing checksums.
+        #
+        # Do NOT write a comment or marker into go.sum: the file
+        # format does not support comments, and any non-conforming
+        # line causes a parse error that masks the -mod=readonly
+        # failure the test is trying to observe.
+        : > "$tmpdir/go.sum"
 
-        # Attempt the build in the temp directory.
+        # Attempt the build in the temp directory. It must fail.
         cd "$tmpdir"
-        if GOFLAGS=-mod=readonly go build ./... 2>/tmp/forge-neg.err; then
-          echo "FAIL: build succeeded despite inconsistent go.mod" >&2
+
+        if GOFLAGS=-mod=readonly go build ./... 2>"$tmpdir/build.err"; then
+          echo "FAIL: build succeeded despite empty go.sum" >&2
           echo "      -mod=readonly is not being honoured." >&2
-          cat /tmp/forge-neg.err >&2 || true
+          echo "" >&2
+          echo "Diagnostic output:" >&2
+          cat "$tmpdir/build.err" >&2 || true
+          exit 1
+        fi
+
+        # The build failed. Verify the failure is attributable to
+        # -mod=readonly and not to some unrelated error such as a
+        # syntax error in the tampered file.
+        #
+        # The Go toolchain emits one of a small number of diagnostic
+        # strings in this case. The list below is deliberately broad:
+        # different Go versions phrase the message differently, and
+        # the test should pass on any version that honours the flag.
+        if ! grep -qE 'missing go.sum entry|updates to go.sum needed|mod=readonly|module lookup disabled|verify.*missing' \
+                "$tmpdir/build.err"; then
+          echo "FAIL: build failed, but not because of -mod=readonly" >&2
+          echo "" >&2
+          echo "Diagnostic output:" >&2
+          cat "$tmpdir/build.err" >&2 || true
           exit 1
         fi
 
         echo "OK: -mod=readonly correctly prevented silent mutation"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Cobra — pin and wiring verification (WBS 2.4.1)
+  # ═══════════════════════════════════════════════════════════════════════════
+  #
+  # verify:cobra enforces the mechanical parts of the Cobra pin: the
+  # version is exact, the checksum is present, the import is confined
+  # to a single file, and the dependency is documented.
+  #
+  # The substantive parts (why Cobra was chosen, what its transitive
+  # tree looks like) are enforced by review and by ADR-002.
+  #
+  # CI should call verify:cobra; contributors should call it before
+  # committing changes to go.mod or to internal/cli/root.go.
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  verify:cobra:
+    desc: Verify Cobra is pinned, wired, and documented (WBS 2.4.1)
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - task: verify:cobra:pinned
+      - task: verify:cobra:checksum
+      - task: verify:cobra:single-import
+      - task: verify:cobra:documented
+
+  # AC1 — go.mod pins Cobra to an exact version.
+  verify:cobra:pinned:
+    desc: Confirm go.mod pins Cobra to an exact version
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - |
+        set -euo pipefail
+        line=$(grep -E 'github\.com/spf13/cobra[[:space:]]' go.mod | head -1 || true)
+        if [ -z "$line" ]; then
+          echo "FAIL: Cobra is not in go.mod" >&2
+          exit 1
+        fi
+        if echo "$line" | grep -q 'latest'; then
+          echo "FAIL: Cobra is pinned to 'latest' (forbidden)" >&2
+          exit 1
+        fi
+        if echo "$line" | grep -qE 'v[0-9]+\.[0-9]+\.[0-9]+'; then
+          echo "OK: Cobra is pinned: $line"
+        else
+          echo "FAIL: Cobra does not have an exact semver pin" >&2
+          echo "  line: $line" >&2
+          exit 1
+        fi
+
+  # AC2 — go.sum contains checksum entries for Cobra.
+  verify:cobra:checksum:
+    desc: Confirm go.sum contains checksums for Cobra
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - |
+        set -euo pipefail
+        if [ ! -f go.sum ]; then
+          echo "FAIL: go.sum missing" >&2
+          exit 1
+        fi
+        count=$(grep -c '^github.com/spf13/cobra ' go.sum || true)
+        if [ "$count" -lt 1 ]; then
+          echo "FAIL: go.sum has no entry for Cobra" >&2
+          exit 1
+        fi
+        echo "OK: go.sum has $count checksum entries for Cobra"
+
+    # AC6 — Cobra is imported in exactly one *non-test* file.
+  #
+  # Test files are excluded: they may reference the import path as a
+  # string (for assertions) or import Cobra directly (for integration
+  # tests). Neither is a violation of the "single importer" rule,
+  # which concerns production code.
+  verify:cobra:single-import:
+    desc: Confirm Cobra is imported in exactly one non-test file
+    dir: "{{.ROOT}}"
+    cmds:
+      - |
+        set -euo pipefail
+        files=$(grep -rl '"github.com/spf13/cobra"' --include='*.go' . 2>/dev/null \
+          | grep -v '_test\.go$' \
+          | sort || true)
+        count=$(echo "$files" | grep -c . || true)
+        if [ "$count" -ne 1 ]; then
+          echo "FAIL: Cobra is imported in $count non-test files (expected 1)" >&2
+          echo "$files" >&2
+          echo "" >&2
+          echo "Cobra should be imported only by internal/cli/root.go." >&2
+          echo "If Cobra is imported by another production file, move" >&2
+          echo "the affected logic into internal/cli. If Cobra is" >&2
+          echo "imported by a test file, this is expected and the test" >&2
+          echo "file should reference it via a shared constant." >&2
+          exit 1
+        fi
+        echo "OK: Cobra is imported in exactly one non-test file: $files"
+
+  # AC7 — Cobra is documented in docs/dependency-policy.md.
+  verify:cobra:documented:
+    desc: Confirm Cobra is documented in the dependency policy
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - |
+        set -euo pipefail
+        file="{{.DEP_POLICY}}"
+        if [ ! -f "$file" ]; then
+          echo "FAIL: $file is missing" >&2
+          exit 1
+        fi
+        if ! grep -q 'github.com/spf13/cobra' "$file"; then
+          echo "FAIL: Cobra is not documented in $file" >&2
+          exit 1
+        fi
+        if ! grep -q 'v1.8.1' "$file"; then
+          echo "FAIL: Cobra's pinned version is not documented in $file" >&2
+          exit 1
+        fi
+        echo "OK: Cobra is documented in $file"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Dependency policy — enforcement (WBS 2.5.1)
+  # ═══════════════════════════════════════════════════════════════════════════
+  #
+  # verify:deps enforces the mechanical parts of the dependency policy
+  # in docs/dependency-policy.md. The substantive parts (standard-
+  # library-first justification, ADR review, license analysis) are
+  # enforced by code review.
+  #
+  # The mechanical parts that are enforced:
+  #
+  #   - Every direct dependency is pinned to an exact semantic version.
+  #   - The exact set of direct dependencies is known and controlled.
+  #   - Every direct dependency is documented in the policy's registry.
+  #   - No unused dependency appears in go.mod.
+  #
+  # The implementation of each check lives in scripts/deps/*.sh. The
+  # Taskfile provides the interface; the scripts provide the logic.
+  # This split is necessary because the checks invoke `go list -m`
+  # with a Go template format string, and that template syntax
+  # collides with Task's own template parser when inlined.
+  #
+  # When a new dependency is added, update the DEP_ALLOWED_DIRECT
+  # variable in this file AND add a registry entry to the policy in
+  # the same commit. The verify:deps:single task enforces that the two
+  # stay in sync.
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  verify:deps:
+    desc: Verify the dependency policy is respected (WBS 2.5.1)
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - task: verify:deps:pin
+      - task: verify:deps:single
+      - task: verify:deps:documented
+      - task: verify:deps:no-unused
+
+  # Every direct dependency must be pinned to an exact semantic
+  # version. Ranges, branches, pseudo-versions, and +incompatible
+  # versions are prohibited.
+  #
+  # The implementation lives in scripts/deps/verify-pin.sh.
+  verify:deps:pin:
+    desc: Confirm every direct dependency is pinned to an exact version
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - sh scripts/deps/verify-pin.sh
+
+  # The exact set of direct dependencies is controlled. Adding a
+  # dependency requires updating DEP_ALLOWED_DIRECT in Taskfile.yml
+  # AND adding a registry entry to the policy document.
+  #
+  # The implementation lives in scripts/deps/verify-single.sh.
+  verify:deps:single:
+    desc: Confirm the direct dependency set matches DEP_ALLOWED_DIRECT
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - sh scripts/deps/verify-single.sh "{{.DEP_ALLOWED_DIRECT}}"
+
+  # Every direct dependency must have an entry in the registry in
+  # docs/dependency-policy.md.
+  #
+  # The implementation lives in scripts/deps/verify-documented.sh.
+  verify:deps:documented:
+    desc: Confirm every direct dependency is documented in the policy
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - sh scripts/deps/verify-documented.sh "{{.DEP_POLICY}}"
+
+  # No unused dependency may appear in go.mod.
+  #
+  # The implementation lives in scripts/deps/verify-no-unused.sh.
+  verify:deps:no-unused:
+    desc: Confirm no direct dependency is unused
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - sh scripts/deps/verify-no-unused.sh
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Lint — documentation and configuration quality
@@ -707,20 +1016,27 @@ tasks:
   # ═══════════════════════════════════════════════════════════════════════════
   #
   # verify is the single entry point for "is this repository healthy?".
-  # It composes module verification, version-matrix verification, and
-  # reproducibility verification.
+  # It composes every verify:* task:
+  #
+  #   - module:*            — Go module configuration
+  #   - goversion:*         — Go version matrix
+  #   - verify:reproducible — Reproducibility invariant
+  #   - verify:cobra        — Cobra pin and wiring
+  #   - verify:deps         — Dependency policy enforcement
   #
   # CI should call this task; contributors should run it before opening
   # a pull request.
   # ═══════════════════════════════════════════════════════════════════════════
 
   verify:
-    desc: Run all verification tasks (module + Go version matrix + reproducible)
+    desc: Run all verification tasks
     dir: "{{.USER_WORKING_DIR}}"
     cmds:
       - task: module:verify
       - task: goversion:verify
       - task: verify:reproducible
+      - task: verify:cobra
+      - task: verify:deps
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Tidy — dependency lockfile maintenance (WBS 2.3.1)
@@ -781,10 +1097,28 @@ tasks:
   # ═══════════════════════════════════════════════════════════════════════════
 
   test:
-    desc: Run all tests with race detector
+    desc: Run fast unit tests with the race detector
     dir: "{{.USER_WORKING_DIR}}"
     cmds:
       - go test -race -count=1 ./...
+
+  # Integration tests compile the forge binary and invoke it as a
+  # subprocess. They are gated behind the `integration` build tag so
+  # that the default `task test` run stays fast.
+  #
+  # Run explicitly with: task test:integration
+  # Run only the fast subset: task test:integration:short
+  test:integration:
+    desc: Run integration tests (compiles and invokes the binary)
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - go test -race -tags=integration -count=1 ./...
+
+  test:integration:short:
+    desc: Run integration tests in short mode (skips slow cases)
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - go test -race -short -tags=integration -count=1 ./...
 
   fmt:
     desc: Format all Go source files
@@ -818,17 +1152,21 @@ tasks:
   #
   # Order rationale:
   #
-  #   1. fmt:check              — instant; catches formatting drift
-  #   2. lint                   — fast; catches documentation drift
-  #   3. vet                    — fast; catches obvious Go issues
+  #   1. fmt:check              — instant; formatting drift
+  #   2. lint                   — fast; documentation drift
+  #   3. vet                    — fast; obvious Go issues
   #   4. goversion:verify       — moderate; toolchain matrix
   #   5. verify:reproducible    — moderate; environment, tidy, and
   #                               negative test
-  #   6. test                   — slow; runs the full test suite
+  #   6. verify:cobra           — fast; Cobra pin and wiring
+  #   7. verify:deps            — fast; dependency policy
+  #   8. test                   — slow; full test suite
+  #   9. test:integration       — slowest; process boundary
   check:
     desc: |
       Run the full quality gate
-      (format, lint, vet, version matrix, reproducibility, test)
+      (format, lint, vet, version matrix, reproducibility, cobra,
+       dependency policy, test, integration)
     dir: "{{.USER_WORKING_DIR}}"
     cmds:
       - task: fmt:check
@@ -836,7 +1174,10 @@ tasks:
       - task: vet
       - task: goversion:verify
       - task: verify:reproducible
+      - task: verify:cobra
+      - task: verify:deps
       - task: test
+      - task: test:integration
 
   clean:
     desc: Remove build artifacts

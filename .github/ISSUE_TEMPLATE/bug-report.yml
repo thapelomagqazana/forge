@@ -1,0 +1,177 @@
+# =============================================================================
+# .github/ISSUE_TEMPLATE/bug-report.yml
+# =============================================================================
+#
+# Structured template for bug reports. Uses GitHub's YAML form syntax
+# so that the resulting issue has all the fields a maintainer needs to
+# reproduce and diagnose the problem.
+#
+# The template prioritises:
+#
+#   1. Forge version and environment (for reproducibility).
+#   2. Reproduction steps (for diagnosis).
+#   3. Expected versus actual behaviour (for clarity).
+#   4. Any additional context (for depth).
+#
+# See: https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/syntax-for-githubs-form-schema
+# =============================================================================
+
+name: Bug report
+description: Report a bug in the Forge CLI or documentation.
+title: "[Bug]: "
+labels:
+  - "bug"
+  - "needs-triage"
+assignees:
+  - thapelomagqazana
+body:
+  # ─────────────────────────────────────────────────────────────────────
+  # Intro
+  # ─────────────────────────────────────────────────────────────────────
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Structured reports
+        are triaged faster than unstructured ones.
+
+        Before submitting, please:
+        - Search the existing issues to avoid duplicates.
+        - Verify the bug is reproducible with the latest release.
+        - Read the troubleshooting section of `docs/development.md`.
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Environment
+  # ─────────────────────────────────────────────────────────────────────
+  - type: input
+    id: forge-version
+    attributes:
+      label: Forge version
+      description: |
+        The output of `forge version`. If the command does not work,
+        describe how Forge was installed (binary release, `go install`,
+        or built from source).
+      placeholder: |
+        forge v0.1.0
+        commit: abc1234
+        built: 2026-10-09T12:00:00Z
+        dirty: false
+    validations:
+      required: true
+
+  - type: input
+    id: go-version
+    attributes:
+      label: Go version
+      description: |
+        The output of `go version`. This is only required if you built
+        Forge from source; skip it if you used a released binary.
+      placeholder: "go version go1.23.4 linux/amd64"
+    validations:
+      required: false
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      description: Which operating system are you running Forge on?
+      options:
+        - Linux
+        - macOS
+        - Windows
+        - Other (describe in the Additional context field)
+    validations:
+      required: true
+
+  - type: input
+    id: shell
+    attributes:
+      label: Shell
+      description: Which shell are you using?
+      placeholder: "bash 5.2, zsh 5.9, PowerShell 7.4, Git Bash, WSL, ..."
+    validations:
+      required: false
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Reproduction
+  # ─────────────────────────────────────────────────────────────────────
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: |
+        The exact commands you ran, in order. Copy-paste the commands
+        rather than describing them.
+      placeholder: |
+        1. Run `forge version`
+        2. Observe the output
+        3. ...
+      render: shell
+    validations:
+      required: true
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Expected and actual behaviour
+  # ─────────────────────────────────────────────────────────────────────
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+      description: What did you expect to happen?
+      placeholder: |
+        `forge version` should print the version and exit with code 0.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: What actually happened?
+      placeholder: |
+        `forge version` prints nothing and exits with code 2.
+      render: shell
+    validations:
+      required: true
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Diagnostic output
+  # ─────────────────────────────────────────────────────────────────────
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostic output
+      description: |
+        Any error messages, stack traces, or diagnostic output. If the
+        output is long, paste the first and last ten lines.
+      render: shell
+    validations:
+      required: false
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Additional context
+  # ─────────────────────────────────────────────────────────────────────
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: |
+        Anything else that might help: related issues, workarounds you
+        tried, configuration that might be relevant.
+    validations:
+      required: false
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Checklist
+  # ─────────────────────────────────────────────────────────────────────
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-submission checklist
+      description: Please confirm the following before submitting.
+      options:
+        - label: I have searched the existing issues and this bug is not a duplicate.
+          required: true
+        - label: I have verified the bug is reproducible with the latest release.
+          required: true
+        - label: I have read the troubleshooting section of `docs/development.md`.
+          required: true

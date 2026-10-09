@@ -1,0 +1,120 @@
+# =============================================================================
+# .github/ISSUE_TEMPLATE/documentation.yml
+# =============================================================================
+#
+# Structured template for reporting documentation problems. The
+# template is deliberately lighter than bug reports because
+# documentation issues are usually quick to diagnose.
+#
+# The template prioritises:
+#
+#   1. The specific document and section affected.
+#   2. What is wrong (missing, incorrect, unclear, broken).
+#   3. A suggestion for the fix, if the contributor has one.
+# =============================================================================
+
+name: Documentation issue
+description: Report a problem with the Forge documentation.
+title: "[Docs]: "
+labels:
+  - "documentation"
+  - "needs-triage"
+assignees:
+  - thapelomagqazana
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve the documentation. Clear
+        documentation is as important as clear code.
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Location
+  # ─────────────────────────────────────────────────────────────────────
+  - type: input
+    id: location
+    attributes:
+      label: Document
+      description: |
+        The path to the document, relative to the repository root, or
+        the URL of the published version.
+      placeholder: "docs/development.md, section 'Local Hooks'"
+    validations:
+      required: true
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Problem type
+  # ─────────────────────────────────────────────────────────────────────
+  - type: dropdown
+    id: problem-type
+    attributes:
+      label: Problem type
+      description: What kind of problem is it?
+      options:
+        - Missing content (something should be documented and is not)
+        - Incorrect content (something is documented incorrectly)
+        - Unclear content (something is documented but hard to understand)
+        - Broken link (a link points to the wrong place or a missing page)
+        - Outdated content (something reflects an older version of Forge)
+        - Typo or formatting issue
+    validations:
+      required: true
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Description
+  # ─────────────────────────────────────────────────────────────────────
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: |
+        Describe the problem. If the content is incorrect, quote the
+        current text and describe what it should say.
+      placeholder: |
+        The "Local Hooks" section says the hooks run automatically
+        after cloning, but they require `task hooks:install` to be
+        run manually. The section should mention this.
+    validations:
+      required: true
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Suggested fix
+  # ─────────────────────────────────────────────────────────────────────
+  - type: textarea
+    id: suggested-fix
+    attributes:
+      label: Suggested fix
+      description: |
+        If you have a suggestion for the fix, describe it here. If
+        you are willing to open a pull request, mention that.
+      placeholder: |
+        Add a "Installation" subsection to the "Local Hooks" section
+        that describes running `task hooks:install` once per clone.
+    validations:
+      required: false
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Additional context
+  # ─────────────────────────────────────────────────────────────────────
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: |
+        Anything else: screenshots, related discussions, examples of
+        how the same concept is documented elsewhere.
+    validations:
+      required: false
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Checklist
+  # ─────────────────────────────────────────────────────────────────────
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-submission checklist
+      options:
+        - label: I have searched the existing issues for a similar report.
+          required: true
+        - label: I have checked the latest version of the documentation.
+          required: true
