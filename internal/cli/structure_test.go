@@ -174,6 +174,7 @@ var expectedSourceFiles = map[string]string{
 	"execute.go":   "WBS 2.4.2 — Execute and executeWithOptions",
 	"exitcodes.go": "WBS 2.4.2 — exit code constants and error mapping",
 	"root.go":      "WBS 2.4.2 — root command constructor",
+	"deps.go":      "WBS 4.2.2 — Dependencies injection struct and Logger",
 }
 
 // TestExpectedFilesExist verifies that every file this WBS expects is

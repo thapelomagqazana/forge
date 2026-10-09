@@ -16,16 +16,23 @@ import (
 // WBS 5.1.1 freezes the final values (Use, Short, Long) and adds
 // acceptance tests for them.
 //
-// # Why the constructor accepts options
+// # Why the constructor accepts Dependencies
 //
 // Subcommands added in later WBS items need access to the injectable
-// environment: the stdin, stdout, stderr, env, and rootPath fields
-// of the options struct. The cleanest way to provide that access is
-// to pass the options value down the command tree at construction
-// time.
+// collaborators: the resolved config, the logger, the filesystem
+// abstraction, the output streams, and the environment lookup. The
+// cleanest way to provide that access is to pass a single
+// Dependencies value down the command tree at construction time.
+//
+// Before WBS 4.2.2, this constructor accepted the raw options struct.
+// That worked while there were no subcommands, but it coupled every
+// future subcommand constructor to the process-boundary type. The
+// Dependencies struct decouples them: subcommands receive resolved
+// collaborators, not raw os.* values, and the constructor signature
+// is stable across phases.
 //
 // The root command itself does not consume the value. It only
-// forwards it to the subcommand constructors. In WBS 4.2.1 there are
+// forwards it to the subcommand constructors. In WBS 4.2.2 there are
 // no subcommands yet, so the value is unused. The signature is
 // nevertheless fixed, because the subcommand constructors added
 // later will require it.
@@ -58,8 +65,8 @@ import (
 //
 // SilenceUsage and SilenceErrors are set to true, so that Forge
 // controls error formatting and exit codes. Without these flags,
-// Cobra prints usage on every error and writes errors to stdout,
-// both of which break the CLI UX contract.
+// Cobra prints usage on every error and writes errors to stdout, both
+// of which break the CLI UX contract.
 //
 // TraverseChildren is left at its default (false). This will be
 // revisited in WBS 4.4.1 when the full command tree is added.
@@ -69,8 +76,17 @@ import (
 // The function performs no I/O of its own. It does not read os.Args,
 // does not write to any stream, and does not touch the filesystem.
 // The handler is delegated to Cobra, which uses the streams bound by
-// executeWithOptions.
-func newRootCmd(opts options) *cobra.Command {
+// executeWithOptions from the Dependencies value.
+//
+// # Relationship to options
+//
+// The options struct (options.go) is the process boundary: it is the
+// only place os.Args, os.Stdin, os.Stdout, os.Stderr, os.Getenv, and
+// os.Getwd are read. The Dependencies struct is the command boundary:
+// it is the resolved, injectable set of collaborators that commands
+// consume. executeWithOptions is the single transformation point
+// between the two. This function sees only Dependencies.
+func newRootCmd(deps Dependencies) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "forge",
 		Short:         "Forge — Engineering Foundations as Code",
@@ -108,12 +124,23 @@ func newRootCmd(opts options) *cobra.Command {
 		Args: cobra.ArbitraryArgs,
 	}
 
-	// The opts value is accepted but not consumed by the root
+	// The deps value is accepted but not consumed by the root
 	// command. Subcommands added in later WBS items will receive it
-	// through their constructors, which are invoked from here.
-	_ = opts
+	// through their constructors, which are invoked from here. The
+	// assignment below is intentional and documented: it silences
+	// the "declared and not used" compiler error without changing
+	// the contract.
+	//
+	// When the first subcommand is added (WBS 4.4.1), this line is
+	// replaced by a call to the subcommand constructor:
+	//
+	//   root.AddCommand(newInitCmd(deps))
+	//
+	// The constructor receives deps, captures it in the handler
+	// closure, and never reaches for a global.
+	_ = deps
 
-	// No subcommands are registered in WBS 4.2.1. The registry
+	// No subcommands are registered in WBS 4.2.2. The registry
 	// mechanism is introduced in WBS 4.4.1.
 
 	return root

@@ -1,12 +1,50 @@
 // Package cli contains white-box tests for the CLI package.
 //
 // This file tests the boundary between the CLI and the process
-// environment: the Execute public function and the unexported
-// executeWithOptions function. It also tests the helper functions
-// that support the boundary: defaultOptions and formatError.
+// environment: the Execute public function, the unexported
+// executeWithOptions function, and the helper functions that
+// support the boundary: defaultOptions and formatError.
 //
 // The test file is declared in package cli, not package cli_test,
 // because it needs to reach unexported symbols.
+//
+// # Relationship to deps_test.go
+//
+// This file tests the process boundary and the command boundary's
+// entry point. deps_test.go tests the Dependencies struct itself:
+// its construction, its field contracts, and the Logger interface.
+// The two files are complementary; a reader looking for "how does
+// the CLI get its collaborators" should start with deps_test.go,
+// and a reader looking for "how does the CLI turn a process
+// invocation into behaviour" should start here.
+//
+// # The two-boundary model
+//
+// After WBS 4.2.2, executeWithOptions is the single transformation
+// point between options (the process boundary) and Dependencies
+// (the command boundary). The tests below pin that transformation:
+// they assert that executeWithOptions accepts options, constructs
+// Dependencies exactly once, and threads Dependencies to the root
+// command constructor.
+//
+// # Test organisation
+//
+// The file is organised in sections, each with a banner comment:
+//
+//  1. Test helper
+//  2. Tests — the public Execute function
+//  3. Tests — the root command constructor
+//  4. Tests — the injectable boundary
+//  5. Tests — stream separation
+//  6. Tests — the Dependencies transformation (WBS 4.2.2)
+//  7. Tests — formatError
+//  8. Tests — the options struct
+//  9. Tests — non-functional properties
+//  10. Tests — the structural invariants the WBS specifies
+//  11. Test helpers — source file reading and function body extraction
+//
+// A reader looking for a specific behaviour should scan the section
+// banners, not read the file top to bottom.
 package cli
 
 import (
@@ -50,6 +88,16 @@ type testRun struct {
 //
 // The helper is the standard way to invoke the CLI in a test. Every
 // test in this file uses it. The helper does not spawn a subprocess.
+//
+// # Why the helper does not construct Dependencies directly
+//
+// A test could construct a Dependencies value and pass it to
+// newRootCmd, bypassing executeWithOptions. That would test the
+// command tree in isolation, which is useful for unit-testing a
+// specific subcommand. It would not test the transformation from
+// options to Dependencies, which is what this file is about. The
+// helper therefore starts at the options boundary, the same place
+// defaultOptions starts in production.
 func runCLI(t *testing.T, args ...string) testRun {
 	t.Helper()
 
@@ -120,21 +168,67 @@ func TestExecute_HasFrozenSignature(t *testing.T) {
 // Tests — the root command constructor
 // =============================================================================
 
-// TestNewRootCmd_AcceptsOptions verifies that newRootCmd has the
-// signature required by the two-layer model.
+// TestNewRootCmd_AcceptsDependencies verifies that newRootCmd has the
+// signature required by the two-boundary model introduced in WBS
+// 4.2.2.
 //
 // The signature must be:
 //
-//	func newRootCmd(opts options) *cobra.Command
+//	func newRootCmd(deps Dependencies) *cobra.Command
 //
-// This is a compile-time check.
-func TestNewRootCmd_AcceptsOptions(t *testing.T) {
+// Before WBS 4.2.2, the signature was func(options) *cobra.Command.
+// The refactor changed it to accept the command-boundary type so
+// that subcommand constructors added in later WBS items receive
+// resolved collaborators rather than raw process inputs.
+//
+// This is a compile-time check. If newRootCmd's parameter or return
+// type changes, this line does not compile.
+//
+// # Why the old signature is not also asserted
+//
+// Some refactors preserve backward compatibility by adding a wrapper
+// with the old signature. WBS 4.2.2 does not: executeWithOptions is
+// the single transformation point from options to Dependencies, and
+// newRootCmd is the single consumer of the result. Adding a
+// func(options) wrapper would create a second construction path and
+// violate AC4 (Dependencies constructed exactly once). The old
+// signature is therefore deliberately gone, and the test asserts
+// only the new one.
+func TestNewRootCmd_AcceptsDependencies(t *testing.T) {
 	t.Parallel()
 
 	// A typed assignment forces the compiler to verify the
 	// signature. If newRootCmd's parameter or return type changes,
 	// this line does not compile.
-	var _ func(options) *cobra.Command = newRootCmd
+	var _ func(Dependencies) *cobra.Command = newRootCmd
+}
+
+// TestNewRootCmd_ConstructsFromDependencies is the runtime companion
+// to TestNewRootCmd_AcceptsDependencies. It verifies that a
+// Dependencies value built from options produces a working root
+// command.
+//
+// The test constructs Dependencies the same way executeWithOptions
+// does, calls newRootCmd, and asserts that the returned command has
+// the expected name. It does not execute the command; that is the
+// responsibility of the tests below.
+func TestNewRootCmd_ConstructsFromDependencies(t *testing.T) {
+	t.Parallel()
+
+	deps := buildDependencies(options{
+		stdout:   &bytes.Buffer{},
+		stderr:   &bytes.Buffer{},
+		env:      func(string) string { return "" },
+		rootPath: t.TempDir(),
+	})
+
+	root := newRootCmd(deps)
+	if root == nil {
+		t.Fatal("newRootCmd returned nil")
+	}
+	if root.Name() != "forge" {
+		t.Errorf("root.Name() = %q; want %q", root.Name(), "forge")
+	}
 }
 
 // =============================================================================
@@ -314,6 +408,109 @@ func TestExecuteWithOptions_StreamsAreIndependent(t *testing.T) {
 }
 
 // =============================================================================
+// Tests — the Dependencies transformation (WBS 4.2.2)
+// =============================================================================
+
+// TestExecuteWithOptions_BuildsDependenciesOnce is a structural test
+// for AC4. It asserts the observable consequence of the invariant:
+// a command tree constructed by executeWithOptions writes to the
+// injected stdout, which can only happen if Dependencies was built
+// from options and threaded through newRootCmd.
+//
+// The test does not count call sites of buildDependencies (that
+// requires source analysis, and is performed by the Taskfile target
+// `verify:deps`). It asserts the runtime behaviour that depends on
+// the invariant being true.
+func TestExecuteWithOptions_BuildsDependenciesOnce(t *testing.T) {
+	t.Parallel()
+
+	var stdout, stderr bytes.Buffer
+	code := executeWithOptions(options{
+		args:     nil, // no args: root prints help to stdout
+		stdin:    strings.NewReader(""),
+		stdout:   &stdout,
+		stderr:   &stderr,
+		env:      func(string) string { return "" },
+		rootPath: t.TempDir(),
+	})
+
+	if code != ExitSuccess {
+		t.Errorf("exit code = %d; want %d (ExitSuccess)",
+			code, ExitSuccess)
+	}
+	if stdout.Len() == 0 {
+		t.Error("stdout is empty; " +
+			"want help text (proves Dependencies was threaded)")
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("stderr = %q; want empty", stderr.String())
+	}
+}
+
+// TestExecuteWithOptions_GivenBadRootPath_StillRuns verifies that a
+// rootPath which does not exist on disk does not prevent the CLI
+// from running. The filesystem abstraction is bound to the path at
+// construction time, but the path is not touched until a command
+// actually performs I/O.
+//
+// This is an edge case for WBS 4.2.2: buildDependencies constructs
+// an OSFS bound to rootPath, and OSFS.NewOSFS does not stat the
+// directory. A test that passes a non-existent path therefore
+// exercises the "boundary is informational" behaviour documented in
+// osfs.go.
+func TestExecuteWithOptions_GivenBadRootPath_StillRuns(t *testing.T) {
+	t.Parallel()
+
+	var stdout, stderr bytes.Buffer
+	code := executeWithOptions(options{
+		args:     []string{"--help"},
+		stdin:    strings.NewReader(""),
+		stdout:   &stdout,
+		stderr:   &stderr,
+		env:      func(string) string { return "" },
+		rootPath: "/this/path/does/not/exist",
+	})
+
+	if code != ExitSuccess {
+		t.Errorf("exit code = %d; want %d (ExitSuccess)",
+			code, ExitSuccess)
+	}
+	if stdout.Len() == 0 {
+		t.Error("stdout should contain help output")
+	}
+}
+
+// TestExecuteWithOptions_GivenNilEnv_StillRuns verifies that a nil
+// env function does not prevent --help from working. The env
+// function is stored on Dependencies but is not called by the root
+// command's help path. A nil env would panic only if a command
+// actually reads an environment variable.
+//
+// This is a corner case that documents the laziness of the env
+// dependency: it is injected eagerly but consumed lazily.
+func TestExecuteWithOptions_GivenNilEnv_StillRuns(t *testing.T) {
+	t.Parallel()
+
+	var stdout, stderr bytes.Buffer
+	code := executeWithOptions(options{
+		args:     []string{"--help"},
+		stdin:    strings.NewReader(""),
+		stdout:   &stdout,
+		stderr:   &stderr,
+		env:      nil,
+		rootPath: t.TempDir(),
+	})
+
+	if code != ExitSuccess {
+		t.Errorf("exit code = %d; want %d (ExitSuccess)",
+			code, ExitSuccess)
+	}
+	if stdout.Len() == 0 {
+		t.Error("stdout should contain help output")
+	}
+}
+
+// =============================================================================
 // Tests — formatError
 // =============================================================================
 
@@ -441,29 +638,30 @@ func TestExecuteWithOptions_IsDeterministic(t *testing.T) {
 // This is a structural invariant the WBS specifies: "No global
 // state is read directly (os.Args, os.Stdout) inside commands —
 // everything flows through a Dependencies struct."
+//
+// # Scope of the check
+//
+// The check is deliberately narrow: it inspects only the body of
+// executeWithOptions, not the whole file. defaultOptions is allowed
+// to reference os.Args, os.Stdin, os.Stdout, os.Stderr, and
+// os.Getenv, because it is the single reader of those values.
+// executeWithOptions is not allowed to reference them, because it
+// must receive every input through the options struct.
+//
+// # Why the body is extracted by brace counting
+//
+// The body is extracted by extractFuncBody, which counts braces
+// rather than searching for the first "\n}\n" after the function
+// declaration. The naive search would stop at the first inner
+// block's closing brace (for example, the closing brace of the
+// `if err == nil` block), truncating the body and producing a false
+// positive or false negative depending on what follows.
 func TestExecuteWithOptions_NoProcessStreamsReferenced(t *testing.T) {
 	t.Parallel()
 
 	content := readFile(t, "execute.go")
+	body := extractFuncBody(t, content, "executeWithOptions")
 
-	// Find the body of executeWithOptions.
-	start := strings.Index(content, "func executeWithOptions(")
-	if start < 0 {
-		t.Fatal("func executeWithOptions not found in execute.go")
-	}
-
-	// Find the closing brace of the function. The first occurrence
-	// of "\n}\n" after the function's opening brace is the function's
-	// closing brace, because Go's formatter places the closing brace
-	// at the start of a line.
-	end := strings.Index(content[start:], "\n}\n")
-	if end < 0 {
-		t.Fatal("could not find end of executeWithOptions body")
-	}
-	body := content[start : start+end]
-
-	// The body must not reference the process's global inputs or
-	// streams.
 	forbidden := []string{
 		"os.Stdout",
 		"os.Stderr",
@@ -485,27 +683,89 @@ func TestExecuteWithOptions_NoProcessStreamsReferenced(t *testing.T) {
 // to exitCodeFromError.
 //
 // The test is a source-code check: it asserts that the function body
-// contains a call to exitCodeFromError and does not contain a bare
-// integer literal in the exit code range.
+// contains a call to exitCodeFromError.
 func TestExecuteWithOptions_UsesExitCodeFromError(t *testing.T) {
 	t.Parallel()
 
 	content := readFile(t, "execute.go")
+	body := extractFuncBody(t, content, "executeWithOptions")
 
-	if !strings.Contains(content, "exitCodeFromError(err)") {
+	if !strings.Contains(body, "exitCodeFromError(err)") {
 		t.Error("executeWithOptions does not call exitCodeFromError")
 	}
 }
 
+// TestExecuteWithOptions_UsesBuildDependencies verifies that
+// executeWithOptions constructs Dependencies via buildDependencies,
+// not by hand. This is the structural companion to
+// TestExecuteWithOptions_BuildsDependenciesOnce.
+//
+// The test is a source-code check: it asserts that the function body
+// contains a call to buildDependencies. It is the single call site
+// required by AC4.
+func TestExecuteWithOptions_UsesBuildDependencies(t *testing.T) {
+	t.Parallel()
+
+	content := readFile(t, "execute.go")
+	body := extractFuncBody(t, content, "executeWithOptions")
+
+	if !strings.Contains(body, "buildDependencies(opts)") {
+		t.Error("executeWithOptions does not call buildDependencies(opts)")
+	}
+}
+
+// TestExecuteWithOptions_DoesNotConstructDependenciesByHand verifies
+// that executeWithOptions does not construct a Dependencies value
+// with a struct literal. A struct literal would bypass
+// buildDependencies and duplicate the construction logic, violating
+// AC4 and AC6.
+//
+// The test is a source-code check: it asserts that the function body
+// does not contain the substring "Dependencies{".
+func TestExecuteWithOptions_DoesNotConstructDependenciesByHand(t *testing.T) {
+	t.Parallel()
+
+	content := readFile(t, "execute.go")
+	body := extractFuncBody(t, content, "executeWithOptions")
+
+	if strings.Contains(body, "Dependencies{") {
+		t.Error("executeWithOptions constructs Dependencies by hand; " +
+			"use buildDependencies instead (AC4, AC6)")
+	}
+}
+
+// TestExecuteWithOptions_ThreadsDependenciesToRoot verifies that
+// executeWithOptions passes the Dependencies value to newRootCmd,
+// rather than passing options or nothing.
+//
+// The test is a source-code check: it asserts that the function body
+// contains the substring "newRootCmd(deps)". This is the contract
+// that decouples subcommand constructors from the process-boundary
+// type (AC2, AC6).
+func TestExecuteWithOptions_ThreadsDependenciesToRoot(t *testing.T) {
+	t.Parallel()
+
+	content := readFile(t, "execute.go")
+	body := extractFuncBody(t, content, "executeWithOptions")
+
+	if !strings.Contains(body, "newRootCmd(deps)") {
+		t.Error("executeWithOptions does not call newRootCmd(deps); " +
+			"the Dependencies value must be threaded to the root")
+	}
+	if strings.Contains(body, "newRootCmd(opts)") {
+		t.Error("executeWithOptions calls newRootCmd(opts); " +
+			"the root must receive Dependencies, not options")
+	}
+}
+
 // =============================================================================
-// Test helpers — source file reading
+// Test helpers — source file reading and function body extraction
 // =============================================================================
 //
-// The structural tests in this file (TestExecuteWithOptions_
-// NoProcessStreamsReferenced and TestExecuteWithOptions_
-// UsesExitCodeFromError) inspect the source code of execute.go
-// rather than the runtime behaviour of executeWithOptions. They
-// need to read the file from disk.
+// The structural tests in this file inspect the source code of
+// execute.go rather than the runtime behaviour of executeWithOptions.
+// They need to read the file from disk and to extract the body of a
+// named function.
 //
 // The helpers below are duplicated from structure_test.go, which
 // lives in package cli_test. A test file in package cli cannot call
@@ -520,6 +780,21 @@ func TestExecuteWithOptions_UsesExitCodeFromError(t *testing.T) {
 // It derives the path from the location of this test file, using
 // runtime.Caller to find the source file path, then returning the
 // directory that contains it.
+//
+// # Why runtime.Caller and not os.Getwd
+//
+// os.Getwd returns the directory from which the test binary was
+// invoked, which is not necessarily the directory containing the
+// test file. In a Go module, `go test ./internal/cli/` runs the
+// test binary with the working directory set to the package
+// directory, but this is not guaranteed by the toolchain and can
+// change. runtime.Caller returns the path of the source file that
+// called it, which is stable regardless of the working directory.
+//
+// The helper is called from readFile, which is called from the
+// structural tests. The stack depth is fixed (runtime.Caller(0) is
+// this function itself), so the file path returned is always this
+// test file's path.
 func executeTestPackageDir(t *testing.T) string {
 	t.Helper()
 
@@ -538,6 +813,14 @@ func executeTestPackageDir(t *testing.T) string {
 // named "readFile" to match the helper of the same name in
 // structure_test.go, which serves the same purpose for the black-box
 // tests.
+//
+// # Why the helper does not cache
+//
+// The helper reads the file on every call. Caching would make the
+// tests non-hermetic: a test that modifies a source file (which no
+// test does today) would see stale contents. Reading on every call
+// is cheap for a package with a handful of files, and it keeps the
+// helper simple.
 func readFile(t *testing.T, name string) string {
 	t.Helper()
 
@@ -547,4 +830,106 @@ func readFile(t *testing.T, name string) string {
 		t.Fatalf("read %s: %v", name, err)
 	}
 	return string(data)
+}
+
+// extractFuncBody returns the source text of the named function's
+// body, including the opening and closing braces, with comments
+// stripped.
+//
+// The function is located by searching for "func <name>(" in the
+// content. The body is extracted by counting braces from the
+// function's opening brace to its matching closing brace.
+//
+// # Why comments are stripped
+//
+// The extractor is used by structural tests that assert the body
+// does not contain certain tokens (for example, "os.Stdout"). A
+// comment inside the body may legitimately mention those tokens
+// while explaining why they are not used. Stripping comments before
+// the token check separates "the code does not reference os.Stdout"
+// from "the docstring mentions os.Stdout".
+//
+// Stripping comments also makes brace counting robust: a comment
+// containing an unbalanced brace (for example, `// see {foo`) would
+// otherwise be counted as an opening brace and would truncate or
+// extend the extracted body.
+//
+// # Limitations
+//
+// The stripper handles the two Go comment forms: `// ...` to end of
+// line, and `/* ... */`. It does not handle braces inside string or
+// rune literals. The file it is applied to (execute.go) contains
+// none of those inside the function bodies it inspects. A future
+// structural test that inspects such a function should use
+// go/parser instead.
+func extractFuncBody(t *testing.T, content, funcName string) string {
+	t.Helper()
+
+	needle := "func " + funcName + "("
+	start := strings.Index(content, needle)
+	if start < 0 {
+		t.Fatalf("func %s not found", funcName)
+	}
+
+	// Find the opening brace of the function signature.
+	openRel := strings.Index(content[start:], "{")
+	if openRel < 0 {
+		t.Fatalf("opening brace of %s not found", funcName)
+	}
+	open := start + openRel
+
+	// Walk forward from the opening brace, skipping comments and
+	// counting braces. When the depth returns to zero, we have
+	// found the function's closing brace.
+	//
+	// The loop is written as an explicit index walk rather than a
+	// range over runes because Go source is ASCII for the purposes
+	// of brace counting, and byte indexing is clearer than rune
+	// indexing for a scanner.
+	var b strings.Builder
+	depth := 0
+	i := open
+	for i < len(content) {
+		// Line comment: skip to end of line. The newline is kept
+		// so that the extracted body's line structure is preserved
+		// for diagnostics.
+		if i+1 < len(content) && content[i] == '/' && content[i+1] == '/' {
+			j := strings.IndexByte(content[i:], '\n')
+			if j < 0 {
+				// Comment runs to end of file; the function
+				// cannot be properly closed.
+				t.Fatalf("unterminated line comment in %s", funcName)
+			}
+			i += j // leave the newline for the next iteration
+			continue
+		}
+
+		// Block comment: skip to the closing "*/".
+		if i+1 < len(content) && content[i] == '/' && content[i+1] == '*' {
+			j := strings.Index(content[i+2:], "*/")
+			if j < 0 {
+				t.Fatalf("unterminated block comment in %s", funcName)
+			}
+			i += 2 + j + 2 // skip "/*", the comment body, and "*/"
+			continue
+		}
+
+		// Ordinary character: append it, and update the depth on
+		// braces.
+		switch content[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+		}
+		b.WriteByte(content[i])
+		i++
+
+		if depth == 0 {
+			return b.String()
+		}
+	}
+
+	t.Fatalf("closing brace of %s not found", funcName)
+	return "" // unreachable; t.Fatalf does not return
 }

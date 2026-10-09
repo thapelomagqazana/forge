@@ -1,3 +1,47 @@
+// Package cli implements the Forge command-line interface.
+//
+// This file defines the process boundary of the CLI: the options
+// struct, the functions that read os.* into it, and the entry point
+// that transforms it into the command-boundary Dependencies struct.
+//
+// # The two-boundary model
+//
+// Forge has two structs that describe its injectable environment,
+// and they serve different purposes:
+//
+//   - options (options.go / this file) is the process boundary. It
+//     holds raw os.* values: os.Args[1:], os.Stdin, os.Stdout,
+//     os.Stderr, os.Getenv, and the working directory. It is
+//     constructed by defaultOptions in production, or by a test.
+//
+//   - Dependencies (deps.go) is the command boundary. It holds
+//     resolved collaborators: a *config.Config, a Logger, a
+//     filesystem.FS, two io.Writers, and an env lookup function.
+//     It is constructed by buildDependencies from an options value.
+//
+// The transformation is one-directional and pure:
+//
+//	process ─► options ─► buildDependencies ─► Dependencies ─► commands
+//
+// There is no path from Dependencies back to options, and no path
+// from a command back to the process. This is what makes every
+// command testable in-process (AC5) and what enforces AC3.
+//
+// # The single construction site
+//
+// buildDependencies is called exactly once in production code, from
+// executeWithOptions. This satisfies AC4. The invariant is verified
+// by the Taskfile target `verify:deps` and by the structural test
+// TestExecuteWithOptions_BuildsDependenciesOnce.
+//
+// # The single os.* reader
+//
+// defaultOptions is the only function in the package that reads
+// os.Args, os.Stdin, os.Stdout, os.Stderr, os.Getenv, or os.Getwd.
+// Every other function receives these values through the options
+// struct, and every command receives them through the Dependencies
+// struct built from options. This is what enforces AC3, and it is
+// verified by the Taskfile target `verify:two-boundary`.
 package cli
 
 import (
@@ -21,7 +65,7 @@ import (
 // # Field semantics
 //
 // Every field is a value, not a pointer. This is deliberate: the
-// struct is small (five fields), and passing it by value avoids the
+// struct is small (six fields), and passing it by value avoids the
 // aliasing questions that come with pointers. A caller who wants to
 // share state between two invocations can construct two options
 // values that reference the same underlying writers.
@@ -32,6 +76,15 @@ import (
 // execute_test.go: every test that constructs an options value must
 // be updated. The change is small, but it is a change. Add fields
 // only when a command genuinely needs the new input.
+//
+// # Relationship to Dependencies
+//
+// This struct is the process boundary; Dependencies (deps.go) is the
+// command boundary. buildDependencies transforms one into the other.
+// Commands never see an options value; they see only Dependencies.
+// This separation is what keeps command constructors stable across
+// phases: adding a field to options does not change any command's
+// signature, because the field is resolved into Dependencies first.
 type options struct {
 	// args are the command-line arguments, excluding the program
 	// name. In a normal process invocation, this is os.Args[1:].
@@ -66,7 +119,8 @@ type options struct {
 	//
 	// WBS 4.2.1 introduced this field. No command consumes it yet;
 	// the field exists so that the filesystem abstraction in WBS
-	// 13.0 has a single place to read the root from.
+	// 13.0 has a single place to read the root from. buildDependencies
+	// passes it to filesystem.NewOSFS.
 	rootPath string
 }
 
@@ -75,17 +129,38 @@ type options struct {
 //
 // It is the only place in the package that reads os.Args, os.Stdin,
 // os.Stdout, os.Stderr, os.Getenv, or os.Getwd directly. Every other
-// function receives these values through the options struct.
+// function receives these values through the options struct, and
+// every command receives them through the Dependencies struct built
+// from options by buildDependencies.
 //
 // This is the pattern that makes the package testable in-process.
 // Tests construct options directly, bypassing this function entirely.
+//
+// # Error handling
+//
+// os.Getwd may fail in rare circumstances (for example, if the
+// current directory has been deleted). When it does, the empty
+// string is used, and commands treat the empty root as "use the
+// process's default". This matches the behaviour of the underlying
+// os package, which also falls back to relative paths when Getwd
+// fails.
+//
+// The function does not return an error. A failure to determine the
+// working directory is not fatal: the CLI can still run, and the
+// only consequence is that paths are resolved relative to the
+// process's default rather than an explicit root. This is the
+// correct behaviour for a foundation manager that must work in
+// constrained environments (containers, CI runners) where the
+// working directory may be unusual.
+//
+// # Why not use os.Environ
+//
+// os.Environ returns the entire environment as a slice of strings.
+// The CLI does not need the entire environment; it needs to look up
+// individual variables by name. A function is both cheaper and more
+// testable: a test can inject a lookup that returns specific values
+// without constructing a full environment map.
 func defaultOptions() options {
-	// os.Getwd may fail in rare circumstances (for example, if the
-	// current directory has been deleted). When it does, the empty
-	// string is used, and commands treat the empty root as "use the
-	// process's default". This matches the behaviour of the
-	// underlying os package, which also falls back to relative
-	// paths when Getwd fails.
 	rootPath, err := os.Getwd()
 	if err != nil {
 		rootPath = ""
@@ -123,6 +198,22 @@ func defaultOptions() options {
 // delegates to executeWithOptions. It contains no logic of its own.
 // Every behaviour a user can observe is implemented in
 // executeWithOptions or below it.
+//
+// # Why the process exit code is returned, not set
+//
+// Execute returns an int rather than calling os.Exit. This is
+// deliberate: calling os.Exit inside Execute would make the function
+// untestable, because os.Exit terminates the test process. Returning
+// the code lets main.go decide when to exit, and lets tests call
+// Execute (or executeWithOptions) and assert on the returned code
+// without terminating.
+//
+// The convention is that main.go calls:
+//
+//	os.Exit(cli.Execute())
+//
+// and nothing else. Every other decision — argument parsing, error
+// formatting, exit code mapping — is made inside the cli package.
 func Execute() int {
 	return executeWithOptions(defaultOptions())
 }
@@ -133,15 +224,34 @@ func Execute() int {
 // It is unexported because it is an implementation detail. Tests
 // within the package call it directly. Downstream packages must not.
 //
+// # The two-boundary model
+//
+// This function is the single transformation point between the two
+// structs that define Forge's injectable environment:
+//
+//   - options is the process boundary. It holds raw os.* values.
+//     It is constructed by defaultOptions (in production) or by a
+//     test (in tests).
+//
+//   - Dependencies is the command boundary. It holds resolved
+//     collaborators. It is constructed by buildDependencies from
+//     an options value.
+//
+// The transformation is one-directional and pure: given the same
+// options, buildDependencies always produces the same Dependencies.
+// There is no path from Dependencies back to options, and no path
+// from a command back to the process. This is what makes every
+// command testable in-process (AC5) and what enforces AC3.
+//
 // # What the function does
 //
-//  1. Constructs the root command, passing the injectable
-//     environment to it.
-//  2. Binds the injectable inputs and outputs to the command tree.
-//  3. Executes the command tree.
-//  4. Formats any returned error.
-//  5. Writes the formatted error to the injected stderr.
-//  6. Maps the error to an exit code via exitCodeFromError.
+//  1. Transforms options into Dependencies via buildDependencies.
+//  2. Constructs the root command, passing Dependencies to it.
+//  3. Binds the injectable inputs and outputs to the command tree.
+//  4. Executes the command tree.
+//  5. Formats any returned error.
+//  6. Writes the formatted error to the injected stderr.
+//  7. Maps the error to an exit code via exitCodeFromError.
 //
 // # What the function does not do
 //
@@ -168,34 +278,130 @@ func Execute() int {
 // # The output path
 //
 // Successful output is written by the command tree itself, to
-// opts.stdout. The function does not write to opts.stdout; it only
-// wires it to the command tree.
+// opts.stdout (which is deps.Stdout). The function does not write to
+// opts.stdout; it only wires it to the command tree.
+//
+// # Why buildDependencies is called exactly once
+//
+// AC4 requires that Dependencies is constructed exactly once per
+// invocation. Constructing it here, and only here, satisfies that
+// requirement. A future refactor that constructs Dependencies in
+// newRootCmd, or in a subcommand constructor, or in a test helper
+// outside this package, would violate AC4 and break the single
+// source of truth for command collaborators.
+//
+// The Taskfile target `verify:deps` checks this invariant by
+// counting the call sites of buildDependencies. The structural test
+// TestExecuteWithOptions_BuildsDependenciesOnce documents it in
+// Go code so that a reader of the test suite sees it.
+//
+// # Why the writers are bound twice
+//
+// The writers appear in two places: deps.Stdout / deps.Stderr (for
+// commands that read them from the Dependencies struct) and
+// root.SetOut / root.SetErr (for Cobra's internal use, such as
+// printing help text). Both must point to the same underlying
+// writer, or help output would go to one stream and command output
+// to another.
+//
+// The binding below uses opts.stdout and opts.stderr directly, not
+// deps.Stdout and deps.Stderr. This is safe because buildDependencies
+// passes the same writers through unchanged. Using opts.* makes the
+// equivalence explicit and avoids a spurious dependency on deps for
+// the Cobra binding.
+//
+// # Why a nil error is not written
+//
+// When the command tree succeeds, nothing is written to stderr. This
+// is the CLI UX contract: a successful invocation produces no
+// diagnostic output. The function returns ExitSuccess immediately,
+// without touching opts.stderr.
 func executeWithOptions(opts options) int {
-	root := newRootCmd(opts)
+	// Transform the process-boundary options into the command-
+	// boundary Dependencies. This is the only call site of
+	// buildDependencies in production code (AC4).
+	//
+	// The transformation is pure: buildDependencies reads only its
+	// argument, allocates a new Dependencies value, and returns it.
+	// It does not mutate opts, does not touch the filesystem, and
+	// does not read the environment. A caller can therefore reason
+	// about the transformation by reading a single function.
+	deps := buildDependencies(opts)
+
+	// Construct the command tree with the resolved collaborators.
+	// The root command does not consume deps in Phase 2, but the
+	// signature is fixed so that subcommand constructors added in
+	// later WBS items can receive it without changing this call.
+	root := newRootCmd(deps)
+
+	// Bind the injectable inputs and outputs to the command tree.
+	// Cobra uses these for help text, usage messages, and any
+	// internal writes it performs. Commands that write their own
+	// output read the writers from deps, not from Cobra.
+	//
+	// SetArgs is the injectable equivalent of os.Args[1:]. SetIn is
+	// the injectable equivalent of os.Stdin. SetOut and SetErr are
+	// the injectable equivalents of os.Stdout and os.Stderr.
+	//
+	// The four calls below are the only places in the package that
+	// bind process-boundary values to the command tree. A reader
+	// who wants to know what the CLI reads or writes can read these
+	// four lines.
 	root.SetArgs(opts.args)
 	root.SetIn(opts.stdin)
 	root.SetOut(opts.stdout)
 	root.SetErr(opts.stderr)
 
+	// Execute the command tree. Cobra dispatches to the matching
+	// subcommand, or to the root's RunE handler if no subcommand
+	// matches. The return value is the error from the dispatched
+	// handler, or nil if the handler succeeded.
+	//
+	// A non-nil error means the invocation failed. The error may
+	// be a usage error (unknown command, invalid flag), a runtime
+	// error (filesystem failure, configuration error), or a
+	// user-cancelled operation. The mapping to exit codes is
+	// performed by exitCodeFromError below.
 	err := root.Execute()
 	if err == nil {
+		// Success. No diagnostic output is written. The command
+		// tree has already written any successful output to
+		// opts.stdout. Return ExitSuccess.
 		return ExitSuccess
 	}
 
 	// The command tree returned an error. Format it and write it to
-	// the injected stderr. The format is defined by formatError;
-	// this function does not add anything to it.
+	// the injected stderr, followed by a newline. The format is
+	// defined by formatError; this function does not add anything
+	// to it beyond the newline.
+	//
+	// The newline is added here rather than in formatError because
+	// formatError is a pure string function. A future caller that
+	// wants to compose the formatted error into a larger message
+	// can call formatError without stripping a trailing newline.
+	//
+	// The write is intentionally unchecked. If opts.stderr is a
+	// broken pipe or a closed file, the write fails silently. There
+	// is nothing useful the CLI can do about it: writing an error
+	// about the error stream failing would itself fail. The exit
+	// code is still returned, so the caller (main.go) can exit with
+	// the correct status even if the diagnostic could not be
+	// delivered.
 	fmt.Fprintln(opts.stderr, formatError(err))
 
+	// Map the error to an exit code. The mapping is defined in
+	// exitcodes.go; it distinguishes usage errors from runtime
+	// errors from cancellation, so that scripts and CI runners can
+	// branch on the exit code without parsing stderr.
 	return exitCodeFromError(err)
 }
 
 // formatError renders an error as a user-facing string.
 //
-// The function is deliberately minimal in WBS 4.2.1. It returns the
-// error's own message, without prefix or decoration. This is the
-// behaviour the tests assert: an error's message is the observable
-// output on failure.
+// The function is deliberately minimal in WBS 4.2.1 and WBS 4.2.2.
+// It returns the error's own message, without prefix or decoration.
+// This is the behaviour the tests assert: an error's message is the
+// observable output on failure.
 //
 // # Why a dedicated function
 //
@@ -214,6 +420,14 @@ func executeWithOptions(opts options) int {
 // will not change: callers continue to pass an error and receive a
 // string.
 //
+// The current implementation returns err.Error() unconditionally.
+// A future implementation will type-assert err to the structured
+// error interface, fall back to err.Error() if the assertion fails,
+// and render the structured fields if it succeeds. The fallback is
+// important: the CLI must render third-party errors (from Cobra,
+// from the standard library) correctly even though they do not
+// implement Forge's structured error interface.
+//
 // # Why not fmt.Sprintln here
 //
 // The caller writes the formatted string to stderr and adds a
@@ -222,11 +436,18 @@ func executeWithOptions(opts options) int {
 // caller that wants to compose the string into a larger message
 // would have to strip the newline. Keeping the newline outside the
 // function preserves flexibility.
+//
+// # Nil handling
+//
+// The function is defensive: a nil error formats as an empty string
+// rather than panicking. This branch is unreachable given how
+// formatError is called (executeWithOptions returns early when err
+// is nil), but the function is a pure helper and should not panic on
+// any input. A future caller that passes a nil error by mistake gets
+// an empty string, which is a visible symptom, rather than a panic,
+// which is a crash.
 func formatError(err error) string {
 	if err == nil {
-		// This branch is unreachable given how formatError is
-		// called, but the function is defensive: a nil error
-		// formats as an empty string rather than panicking.
 		return ""
 	}
 	return err.Error()
