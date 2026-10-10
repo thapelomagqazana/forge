@@ -2,11 +2,11 @@
 
 - **Document type:** Specification
 - **Status:** Draft
-- **Version:** 0.4.0
+- **Version:** 0.5.0
 - **Author:** @thapelomagqazana
 - **Created:** 2026-10-09
 - **Last Updated:** 2026-10-10
-- **Supersedes:** 0.3.0
+- **Supersedes:** 0.4.0
 - **Superseded by:** —
 
 ---
@@ -657,7 +657,10 @@ Available templates
 
 ### 4.6 `forge version`
 
-Displays version information.
+Displays version information. The command supports two output
+formats: `text` (the default) and `json`. The text format is frozen
+by WBS 6.4.1 and documented in § 4.8.1. The JSON format is frozen by
+WBS 6.4.2 and documented in § 4.8.2.
 
 **Syntax:**
 
@@ -665,31 +668,40 @@ Displays version information.
 forge version [flags]
 ```
 
+**Arguments:**
+
+None. Extra arguments are rejected with exit code `ExitUsage` (2).
+
 **Flags:**
 
 | Flag | Type | Default | Description |
-|------|------|-------------|-------------|
-| `--format <format>` | enum | `human` | `human` or `json` |
+|------|------|---------|-------------|
+| `--format <format>` | enum | `text` | `text` or `json` |
 
-**Output (human):**
+`--format text` and `--format=text` are equivalent. `--format json`
+and `--format=json` are equivalent. Any other value is rejected with
+exit code `ExitUsage` (2) and a diagnostic on stderr that names the
+offending value.
+
+**Output (text, default):**
 
 ```text
 forge 0.1.0
-  commit: abc123
-  built:  2026-10-09T08:00:00Z
-  go:     1.23.0
+  commit:     a1b2c3d
+  built:      2026-10-09T08:00:00Z
+  dirty:      false
+  go version: go1.23.0
+  platform:   linux/amd64
 ```
 
-**Output (JSON):**
+**Output (json, `--format json`):**
 
 ```json
-{
-  "version": "0.1.0",
-  "commit": "abc123",
-  "buildDate": "2026-10-09T08:00:00Z",
-  "goVersion": "1.23.0"
-}
+{"version":"0.1.0","commit":"a1b2c3d","build_date":"2026-10-09T08:00:00Z","dirty":false}
 ```
+
+The JSON output is a single line terminated by `\n`. It contains no
+pretty-printing.
 
 ### 4.7 Root Command Identity
 
@@ -782,20 +794,21 @@ quotes them. Freezing the strings is the mechanism by which the
 cost is bounded: a change requires a deliberate update to three
 files, which a reviewer sees.
 
-The freezing does not prevent changes; it makes changes visible.
-A future product decision that renames the CLI, changes its tagline,
-or rewrites its long description is still possible. It simply
-requires the three updates above, and the reviewer of the change
-sees all three in one diff.
-
 ### 4.8 Version Output Contract
 
-The `--version` flag and the `version` subcommand produce identical
-output. Both are derived from a single formatter in
-`internal/app/version`, and the two invocations are interchangeable
-for scripts and for users.
+The `--version` flag and the `version` subcommand produce output
+derived from a single formatter in `internal/app/version`. The
+`version` subcommand supports two output formats: `text` (the
+default) and `json`. The `--version` flag always produces the text
+format, because a flag cannot take a format argument.
 
-#### The format
+#### 4.8.1 Text Format (frozen by WBS 6.4.1)
+
+The text format is the default. It is produced by
+`Format(w io.Writer, info Info) error` in
+[`internal/app/version/format.go`](../internal/app/version/format.go).
+
+**The format:**
 
 ```text
 forge <version>
@@ -806,39 +819,129 @@ forge <version>
   platform:   <os>/<arch>
 ```
 
-The output ends with a trailing newline. It is rendered with no
-colour and no terminal formatting codes, regardless of whether
-stdout is a TTY.
+**Contract properties:**
 
-#### Field values
+- The output is exactly six lines.
+- The header line is `forge` when `<version>` is empty and
+  `forge <version>` otherwise. There is no trailing space on the
+  header in either case.
+- Every detail line has two spaces of indent, the key followed by a
+  colon, padding to a field width of twelve characters, a single
+  space, and the value.
+- The value column is fixed at position 15 (1-indexed) on every
+  detail line.
+- The output ends with a trailing newline.
+- The output contains no ANSI escape sequences, regardless of
+  whether stdout is a TTY.
+
+**Field values:**
 
 | Field | Source | Example |
 |-------|--------|---------|
-| `<version>` | `internal/version.Version` (injected via `-X` at build time) | `0.4.0` |
+| `<version>` | `internal/version.Version` (injected via `-X` at build time) | `0.1.0` |
 | `<commit>` | `internal/version.Commit` (injected via `-X`) | `a1b2c3d` |
-| `<build-date>` | `internal/version.BuildDate` (injected via `-X`) | `2026-10-10T12:00:00Z` |
+| `<build-date>` | `internal/version.BuildDate` (injected via `-X`) | `2026-10-09T08:00:00Z` |
 | `<dirty>` | `internal/version.Dirty` (injected via `-X`) | `false` |
 | `<go-version>` | `runtime.Version()` | `go1.23.4` |
 | `<os>/<arch>` | `runtime.GOOS + "/" + runtime.GOARCH` | `linux/amd64` |
 
-When the binary is built without `-X` flags, the first four values
-are the empty string. The output then reads, for example:
+**The `dirty` rule:** Only the literal `"true"` renders as `true`.
+Every other value — including `"1"`, `"yes"`, `"TRUE"`, and the
+empty string — renders as `false`. The rule is documented on
+`internal/version.Dirty` (WBS 6.1.1) and enforced by the linker
+injection contract (WBS 6.1.2).
+
+**Empty values:** When the binary is built without `-X` flags, the
+first four values are empty. The output then reads, for example:
 
 ```text
 forge
   commit:
   built:
-  dirty:
+  dirty:      false
   go version: go1.23.4
   platform:   linux/amd64
 ```
 
-The empty values are not a defect; they signal that the binary
-carries no build metadata.
+The `commit:` and `built:` lines have trailing spaces from the
+field-width padding; the values themselves are empty. The `dirty:`
+line renders `false` because the formatter parses the empty string
+strictly. The empty values are not a defect; they signal that the
+binary carries no build metadata.
 
-#### Where the format is implemented
+**Why the format is frozen:** Scripts that parse the output depend
+on its shape. The format is a contract with those scripts, in the
+same way that the exit codes are a contract with the shells that
+branch on them. Freezing the format bounds the cost of a change:
+a change requires updating the formatter, the tests, and this
+document in one commit, which a reviewer sees.
 
-The format is implemented in
+#### 4.8.2 JSON Format (frozen by WBS 6.4.2)
+
+The JSON format is selected by `--format json`. It is produced by
+`WriteJSON(w io.Writer, info Info) error` in
+[`internal/app/version/format_json.go`](../internal/app/version/format_json.go).
+
+**The schema:**
+
+```json
+{
+  "version":    "0.1.0",
+  "commit":     "a1b2c3d",
+  "build_date": "2026-10-09T08:00:00Z",
+  "dirty":      false
+}
+```
+
+**Schema properties:**
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `version` | string | Semantic version, or empty for an uninstrumented build. |
+| `commit` | string | Short git SHA, or empty. |
+| `build_date` | string | RFC 3339 UTC timestamp, or empty. |
+| `dirty` | boolean | `true` only if the build was from a tree with uncommitted changes; `false` otherwise (including for empty values). |
+
+**Contract properties:**
+
+- Field names are snake_case.
+- `dirty` is a JSON boolean, not a string.
+- `build_date` is an RFC 3339 UTC string, not a Unix timestamp.
+- Output is a single line terminated by `\n`. No pretty-printing.
+- All four keys are always present, even when their values are
+  empty.
+- Field order is `version`, `commit`, `build_date`, `dirty`.
+- The output contains no ANSI escape sequences.
+
+**Example output:** The line below is the exact output for a
+populated build:
+
+```json
+{"version":"0.1.0","commit":"a1b2c3d","build_date":"2026-10-09T08:00:00Z","dirty":false}
+```
+
+**Uninstrumented example:** The line below is the exact output for
+a build without `-X` flags:
+
+```json
+{"version":"","commit":"","build_date":"","dirty":false}
+```
+
+**Schema versioning:** The JSON schema is versioned by its field
+names. A breaking change to any field name requires an ADR. Adding
+a new field is additive and requires a new WBS item but not an
+ADR.
+
+**Why the schema is frozen:** Machine consumers parse the output.
+The schema is a contract with those consumers, in the same way the
+text format is a contract with human-facing scripts. Freezing the
+schema bounds the cost of a change: a change requires updating the
+encoder, the tests, the JSON Schema document, and this section in
+one commit, which a reviewer sees.
+
+#### 4.8.3 Where the format is implemented
+
+The text format is implemented in
 [`internal/app/version/format.go`](../internal/app/version/format.go),
 in the function `Format`. The function writes to an `io.Writer`. The
 function `Raw` in
@@ -846,10 +949,25 @@ function `Raw` in
 returns the same string as a `string`, for callers that need the
 value rather than a stream.
 
-The two CLI invocations consume the two functions:
+The JSON format is implemented in
+[`internal/app/version/format_json.go`](../internal/app/version/format_json.go),
+in the function `WriteJSON`. The function is symmetric with the
+text formatter: it takes an `io.Writer` and the same `Info` value,
+and it writes the JSON object followed by a newline.
 
-- `forge version` (the subcommand) calls `Format(deps.Stdout, ...)`,
-  writing directly to the injected stdout.
+The dispatcher is `FormatAs(w io.Writer, info Info, format string)`,
+also in `format_json.go`. It routes to `WriteText` for
+`FormatText` and to `WriteJSON` for `FormatJSON`, and returns an
+error wrapping `ErrUnknownFormat` for any other value.
+
+The three CLI invocations consume the formatters:
+
+- `forge version` (the subcommand, default format) calls
+  `FormatAs(deps.Stdout, version.Get(), FormatText)`, which routes
+  to the text formatter.
+- `forge version --format json` calls
+  `FormatAs(deps.Stdout, version.Get(), FormatJSON)`, which routes
+  to the JSON formatter.
 - `forge --version` (the flag) reads `version.Raw()` in `newRootCmd`
   and assigns the result to `root.Version`. Cobra renders the flag's
   output using a version template that prints the value verbatim:
@@ -863,33 +981,41 @@ The two CLI invocations consume the two functions:
   so that the flag's output is exactly the value produced by
   `version.Raw`, with no prefix and no extra newline.
 
-Because both paths derive from the same formatter, they cannot
-diverge without a change to the formatter.
+Because the `--version` flag and the default `forge version` both
+derive from the same text formatter, they cannot diverge without a
+change to the formatter. The JSON formatter is used only by
+`forge version --format json`.
 
-#### Changing the format
+#### 4.8.4 Changing a format
 
-Changing the format requires:
+Changing either format requires:
 
-1. Updating `internal/app/version/format.go`.
-2. Updating the test
-   `TestRootVersion_FlagMatchesSubcommand` in
-   `internal/cli/root_test.go` if the change affects the byte-for-byte
-   comparison.
-3. Updating this section of `docs/cli-ux-spec.md`.
-4. Running `task check` and confirming the full suite passes.
+1. Updating the corresponding formatter in
+   `internal/app/version/` (`format.go` for text, `format_json.go`
+   for JSON).
+2. Updating the golden files under
+   `internal/app/version/testdata/format/`.
+3. Updating the byte-for-byte test for the format
+   (`TestFormat_FullOutput` for text, `TestWriteJSON_FullOutput`
+   for JSON).
+4. Updating the corresponding subsection of § 4.8 above.
+5. For a JSON change that renames or removes a field, opening an
+   ADR. Adding a field is additive and does not require an ADR.
+6. Running `task check` and confirming the full suite passes.
 
-The three updates are in the same commit. A reviewer who sees a
-change to the formatter without the corresponding documentation
-update rejects the PR.
+The updates are in the same commit. A reviewer who sees a change
+to a formatter without the corresponding documentation update
+rejects the PR.
 
-#### Why the format is frozen
+#### 4.8.5 Why the format is frozen
 
-Scripts that parse `forge --version` or `forge version` depend on
-the format. The format is a contract with those scripts, in the same
-way that the exit codes are a contract with the shells that branch
-on them. Freezing the format is the mechanism by which the cost of
-a change is bounded: a change requires the three updates above, and
-a reviewer sees all three in one diff.
+Scripts that parse `forge --version`, `forge version`, or
+`forge version --format json` depend on the format. The format is
+a contract with those scripts, in the same way that the exit codes
+are a contract with the shells that branch on them. Freezing the
+format is the mechanism by which the cost of a change is bounded:
+a change requires the updates listed in § 4.8.4, and a reviewer
+sees all of them in one diff.
 
 ### 4.9 Help Behaviour
 
@@ -950,33 +1076,33 @@ cannot live in a Cobra hook: Cobra's `--help` interception
 short-circuits the hook chain, so a `PersistentPreRunE` or `RunE`
 never sees the malformed invocation.
 
-#### Why the contract is frozen
+#### Why the contract is frozenEvery CLI user encounters the help system. Every script that captures
 
-Every CLI user encounters the help system. Every script that captures
 help output for documentation or for error reporting depends on help
 going to stdout and the exit code being 0. Freezing the contract is
 the mechanism by which the cost of a change is bounded.
 
 ### 4.10 Version Behaviour
 
-The `--version` flag and the `version` subcommand have five
+The `--version` flag and the `version` subcommand have six
 invocations. The table below is the contract.
 
 #### The contract
 
 | Invocation | Behaviour | Exit | Stream |
 |------------|-----------|------|--------|
-| `forge --version` | Print version block | 0 | stdout |
-| `forge -v` | Print version block | 0 | stdout |
-| `forge version` | Print version block (identical output) | 0 | stdout |
+| `forge --version` | Print text version block | 0 | stdout |
+| `forge -v` | Print text version block | 0 | stdout |
+| `forge version` | Print text version block (identical output) | 0 | stdout |
+| `forge version --format json` | Print JSON version object | 0 | stdout |
 | `forge version --help` | Print version command help | 0 | stdout |
 | `forge --version extra` | Rejected (version takes no args) | 2 | stderr |
 
 #### Rules
 
 1. **`forge --version` and `forge version` produce byte-identical
-   output.** The two invocations are interchangeable for scripts and
-   for users. The format is frozen in § 4.8.
+   text output.** The two invocations are interchangeable for
+   scripts and for users. The text format is frozen in § 4.8.1.
 
 2. **`-v` is short for `--version`.** The two forms produce the same
    output, the same exit code, and the same stderr.
@@ -986,23 +1112,32 @@ invocations. The table below is the contract.
    with the convention used by `git`, `go`, `cargo`, and many other
    CLIs.
 
-4. **Version output goes to stdout and exits 0.**
+4. **The `--version` flag always produces the text format.** A flag
+   cannot take a format argument. A consumer that needs the JSON
+   format calls `forge version --format json`.
 
-5. **Extra arguments to a version flag are rejected.** `forge
+5. **Version output goes to stdout and exits 0.**
+
+6. **Extra arguments to a version flag are rejected.** `forge
    --version extra` and `forge -v extra` are usage errors: the
    version flag takes no argument. The CLI rejects the invocation
    with a diagnostic on stderr and exit code 2.
 
-6. **The version format is frozen in § 4.8.** This section does not
-   restate the format; it references the section that defines it.
+7. **The version formats are frozen in § 4.8.** This section does
+   not restate the formats; it references the section that defines
+   them.
 
 #### Where the behaviour is implemented
 
-The version block is produced by `internal/app/version`, in the
-`Format` function (format.go). The `--version` flag's wiring is
-implemented in `newRootCmd` (root.go), which sets `root.Version` to
-the string returned by `version.Raw()` and overrides Cobra's default
-version template.
+The text block is produced by `internal/app/version`, in the
+`Format` function (format.go). The JSON block is produced by
+`internal/app/version`, in the `WriteJSON` function
+(format_json.go). The dispatcher is `FormatAs`, which routes to the
+correct formatter based on the format name.
+
+The `--version` flag's wiring is implemented in `newRootCmd`
+(root.go), which sets `root.Version` to the string returned by
+`version.Raw()` and overrides Cobra's default version template.
 
 The extra-argument rejection is implemented in `validateArgs`
 (validate.go). The check cannot live in a Cobra hook for the same
@@ -1089,6 +1224,18 @@ value is not. The rejection is implemented in `validateArgs`
 `--config=path` form is well-formed and is not rejected; the form
 carries its own value.
 
+#### The `--format` flag is not global
+
+`--format` is a per-command flag. It appears on `forge version`
+(this WBS), and it will appear on every command that produces
+structured output. It is not in the global flag inventory, because
+its value type and its allowed values differ between commands.
+
+A global `--format` flag would force every command to accept the
+same value set. The `forge check` command will accept `sarif`
+(Phase 10+); `forge version` does not. A per-command flag lets each
+command define its own value set without cross-command coupling.
+
 #### Adding a global flag
 
 Adding a global flag requires an ADR. The ADR must:
@@ -1111,6 +1258,75 @@ The flag names, registration, and helpers are defined in
 `newRootCmd` (root.go). The pre-parse rejection of `forge --config`
 with no value is implemented in `validateConfigFlagWithArgs`
 (validate.go).
+
+### 4.12 `--format` Flag Semantics
+
+Commands that produce structured output accept a per-command
+`--format` flag. The flag's value set is defined by the command, not
+by the CLI.
+
+#### The value sets
+
+| Command | Value set | Default | Introduced by |
+|---------|-----------|---------|---------------|
+| `forge version` | `text`, `json` | `text` | WBS 6.4.2 |
+| `forge new` | `human`, `json` | `human` | Phase 5 (future) |
+| `forge init` | `human`, `json` | `human` | Phase 5 (future) |
+| `forge validate` | `human`, `json` | `human` | Phase 5 (future) |
+| `forge explain` | `human`, `json` | `human` | Phase 5 (future) |
+| `forge template list` | `human`, `json` | `human` | Phase 5 (future) |
+| `forge check` | `human`, `json`, `sarif` | `human` | Phase 7 (future) |
+| `forge diff` | `human`, `json` | `human` | Phase 9 (future) |
+
+The value sets differ. `forge version` uses `text` because its
+output is a two-word, machine-friendly format; the other commands
+use `human` because their output is prose. `forge check` will
+accept `sarif` in Phase 10+; no other command will.
+
+#### Behaviour for unsupported values
+
+An unsupported value for a command's `--format` flag produces a
+diagnostic on stderr and exit code `ExitUsage` (2). The diagnostic
+names the flag and the offending value.
+
+The diagnostic format is:
+
+```text
+Error: --format: <command-specific message>
+```
+
+For `forge version`, the message is `version: unknown format:
+"<value>"` (from the service's `ErrUnknownFormat` sentinel).
+
+#### Why per-command, not global
+
+Three reasons:
+
+1. **Different value sets.** `forge version` needs `text`; `forge
+   check` needs `sarif`. A global flag cannot express both.
+
+2. **Different defaults.** `forge version` defaults to `text`;
+   `forge new` defaults to `human`. A global flag has one default.
+
+3. **Different failure modes.** `forge version --format yaml` fails
+   immediately (the format name is unknown). `forge new --format
+   json --dry-run` fails later (the combination is disallowed). The
+   two failures happen at different layers, and the per-command
+   flag lets each command decide where to enforce its own
+   constraints.
+
+#### Cross-cutting requirement
+
+Every command that accepts `--format` must:
+
+- Define its value set in the command's section of this document.
+- Reject unsupported values with exit code 2.
+- Write output to stdout, regardless of format.
+- Ensure that JSON output is a single line terminated by `\n`.
+
+The last requirement is shared across commands. The first JSON
+formatter (`forge version`) is the reference implementation; a
+future command's formatter follows the same shape.
 
 ---
 
@@ -1277,6 +1493,7 @@ Dry-run is **optional** for:
 - `forge diff` (already non-mutating)
 - `forge explain` (already non-mutating)
 - `forge template list` (already non-mutating)
+- `forge version` (already non-mutating)
 
 ---
 
@@ -1327,7 +1544,7 @@ Forge could not interpret the command:
 - Unknown command or subcommand.
 - Unknown flag.
 - Missing required argument.
-- Invalid flag value.
+- Invalid flag value, including an unsupported `--format` value.
 - Malformed `forge.yaml` (a syntax error, not a semantic error).
 - Ambiguous foundation selection in non-interactive mode.
 - Malformed invocations rejected by `validateArgs` (for example,
@@ -1456,13 +1673,15 @@ being assigned a value that collides with an existing code.
 
 ## 8. Machine-Readable Output
 
-Every command that produces structured output supports
-`--format json`. JSON output is governed by schema versions to enable
-safe automation.
+Every command that produces structured output supports a
+per-command `--format json` flag. JSON output is governed by schema
+versions to enable safe automation.
 
 ### 8.1 Schema Versioning
 
-JSON output includes a `schemaVersion` field:
+JSON output from the `forge new`, `forge init`, `forge validate`,
+`forge explain`, and `forge check` commands includes a
+`schemaVersion` field:
 
 ```json
 {
@@ -1478,6 +1697,20 @@ Rules:
 - Consumers must check `schemaVersion` before parsing
 - Adding fields does not require a version bump
 - Removing or renaming fields requires a version bump
+
+**Exception: `forge version --format json`.** The `forge version`
+JSON output does not include a `schemaVersion` field. Its schema is
+trivially small (four fields, all strings or boolean) and stable by
+construction; the four field names are the schema. A future change
+to any field name requires an ADR (per § 4.8.2). The absence of a
+`schemaVersion` field is deliberate: a field that is always `"1"`
+adds no information, and a consumer that needs to detect a version
+change reads the field names.
+
+If the schema grows beyond four fields, or if a second JSON-emitting
+version of the command is added (for example, one that emits more
+fields under a different flag), a `schemaVersion` field is added at
+that point. Until then, the schema is identified by its field names.
 
 ### 8.2 Output Streams
 
@@ -1498,16 +1731,27 @@ commands are also written to stdout, embedded in the JSON document:
 }
 ```
 
+The `forge version --format json` command is an exception to this
+rule. If the command fails (for example, because the format value
+is unknown, or because the writer failed), the diagnostic goes to
+stderr as plain text, not to stdout as JSON. The reason is that the
+failure happens before or during the JSON emission, and a partial
+JSON document on stdout is worse than no JSON document. The
+`forge version` JSON schema has no `status` or `error` field;
+consumers detect failure by the exit code.
+
 ### 8.3 JSON Stability Contract
 
 The following fields are contractually stable and will not be renamed
 or removed within a schema version:
 
-- `schemaVersion`
-- `forgeVersion`
-- `status`
-- `error.code`
-- `error.message`
+- `schemaVersion` (where present; see § 8.1)
+- `forgeVersion` (where present)
+- `status` (where present)
+- `error.code` (where present)
+- `error.message` (where present)
+- For `forge version --format json`: `version`, `commit`,
+  `build_date`, `dirty` (all four; see § 4.8.2)
 
 All other fields are stable within a schema version but may evolve in
 a new schema version.
@@ -1516,13 +1760,37 @@ a new schema version.
 
 Supported `--format` values:
 
-| Value | Meaning |
-|-------|---------|
-| `human` | Default human-readable output |
-| `json` | Machine-readable JSON |
-| `sarif` | SARIF (Phase 10+, for `forge check` only) |
+| Value | Meaning | Commands |
+|-------|---------|----------|
+| `text` | Machine-friendly text | `forge version` |
+| `human` | Default human-readable output | `forge new`, `forge init`, `forge validate`, `forge explain`, `forge template list`, `forge check`, `forge diff` |
+| `json` | Machine-readable JSON | All commands that support `--format` |
+| `sarif` | SARIF | `forge check` (Phase 10+) |
 
-Unsupported format values exit with code 2.
+Unsupported format values exit with code 2. The value set is
+per-command; see § 4.12 for the full table.
+
+### 8.5 JSON Output is a Single Line
+
+Every command that emits JSON emits it as a single line terminated
+by `\n`. The output contains no pretty-printing by default. A future
+`--format json-pretty` would be an additive change and a separate
+value in the per-command value set.
+
+The single-line rule has two reasons:
+
+1. **Line-oriented consumers.** A script that reads one JSON object
+   per line (`while read -r line; do ...; done`) expects each
+   record to occupy exactly one line. Multi-line JSON breaks such
+   scripts.
+
+2. **Log interleaving.** When JSON output is written to a log that
+   interleaves output from multiple processes, a single-line record
+   is easier to filter and parse than a multi-line one.
+
+The rule is enforced by the `forge version` JSON formatter (the
+reference implementation) and must be enforced by every future JSON
+formatter.
 
 ---
 
@@ -1614,10 +1882,11 @@ Default output is optimised for humans:
 
 JSON output is a first-class interface:
 
-- Schema-versioned
+- Schema-versioned (where a schema version is meaningful; see § 8.1)
 - Stable across releases within a schema version
 - Free of terminal formatting codes
 - Deterministic ordering where practical
+- A single line terminated by `\n` (see § 8.5)
 
 ### 9.8 Output Vocabulary
 
@@ -1708,6 +1977,10 @@ Non-interactive mode is triggered by:
 - Absence of TTY (e.g., running in CI)
 - Presence of `--format json` (implies non-interactive)
 
+`forge version` is always non-interactive. It has no prompts, no
+confirmations, and no ambiguity; the command produces output and
+exits.
+
 ---
 
 ## 11. Error Catalogue
@@ -1738,6 +2011,8 @@ Categories:
 Example codes:
 
 - `FORGE_USAGE_UNKNOWN_COMMAND`
+- `FORGE_USAGE_UNKNOWN_FLAG`
+- `FORGE_USAGE_UNKNOWN_FORMAT`
 - `FORGE_INPUT_MISSING_ARGUMENT`
 - `FORGE_CONFIG_NOT_FOUND`
 - `FORGE_CONFIG_INVALID`
@@ -1751,7 +2026,9 @@ Example codes:
 - `FORGE_SECURITY_UNSAFE_TEMPLATE`
 
 Each code maps to an exit code (§ 7) and is included in JSON output
-(§ 8).
+(§ 8) where the JSON schema has an error field. The
+`forge version --format json` schema does not have an error field;
+see § 8.2.
 
 ---
 
@@ -1775,6 +2052,9 @@ implementation:
   any uncommitted Git changes?
 - Should `forge template list` distinguish between local and remote
   templates once a registry exists?
+- Should the JSON format of `forge version` gain a `schemaVersion`
+  field once a second JSON-emitting mode is added (for example,
+  a `--format json-full` that includes additional fields)?
 
 These questions will be addressed in Phase 2 as implementation begins
 and the interaction details become concrete.
@@ -1801,8 +2081,9 @@ becomes **Approved** when:
 ## 14. Document History
 
 | Version | Date | Author | Change |
-|---------|------|------|--------|
+|---------|------|--------|--------|
 | 0.1.0 | 2026-10-09 | @thapelomagqazana | Initial Phase 1 draft. Command hierarchy, per-command reference, exit codes, JSON output, UX principles, error catalogue, and open questions. |
 | 0.2.0 | 2026-10-10 | @thapelomagqazana | Added § 4.7 (Root Command Identity) in response to WBS 5.1.1. Documents the four frozen identity constants, their rules, and the process for changing them. |
 | 0.3.0 | 2026-10-10 | @thapelomagqazana | Added § 4.8 (Version Output Contract) in response to WBS 5.1.2. Documents the frozen format shared by `forge --version` and `forge version`, the field sources, the single formatter, and the process for changing the format. Corrected the "Where each string appears" table in § 4.7: `RootShortDesc` is not rendered by `forge --help`; `RootLongDesc` is the body of the help text, not the text below the short description. |
 | 0.4.0 | 2026-10-10 | @thapelomagqazana | Added § 4.9 (Help Behaviour) in response to WBS 5.2.2. Documents the eight help invocations, the stdout/stderr contract, and the two rejections. Added § 4.10 (Version Behaviour) in response to WBS 5.2.3. Documents the five version invocations, the `-v` alias, and the extra-argument rejection. Added § 4.11 (Global Flags) in response to WBS 5.3.1. Documents the three-flag inventory, the precedence rule, the persistence of the flags, and the process for adding a new flag. Extended § 7.2's usage-error list to cite the pre-parse rejections and updated § 2's in-scope list. |
+| 0.5.0 | 2026-10-10 | @thapelomagqazana | Extended § 4.6, § 4.8, and § 4.10 in response to WBS 6.4.1 and WBS 6.4.2. § 4.8 now has three subsections: § 4.8.1 freezes the text format byte-for-byte; § 4.8.2 freezes the JSON schema field-for-field; § 4.8.3 names the implementation files; § 4.8.4 lists the change process; § 4.8.5 justifies the freeze. § 4.10 lists six version invocations (up from five), adds `forge version --format json` to the contract table, and adds a rule that `--version` always produces the text format. § 4.12 (new) defines the `--format` flag as a per-command flag with a per-command value set, distinct from the global flag inventory; it explains why `--format` is not global, and lists the value sets for every command that has one or will have one. § 8.1 documents the deliberate exception that `forge version --format json` does not carry a `schemaVersion` field and explains why. § 8.2 documents that `forge version --format json` writes errors to stderr rather than embedding them in JSON. § 8.4 adds `text` to the format-value table and adds a per-command column. § 8.5 documents the single-line JSON rule with its rationale. § 9.7 and § 10.10 updated to reference § 8.5 and to note that `forge version` is always non-interactive. § 11 adds `FORGE_USAGE_UNKNOWN_FLAG` and `FORGE_USAGE_UNKNOWN_FORMAT` to the example error codes. § 12 adds an open question about a `schemaVersion` field for a future full version JSON. |
