@@ -12,11 +12,12 @@
 // # Relationship to internal/app/version
 //
 // This file tests the handler. The application service that the
-// handler calls is tested in internal/app/version/service_test.go
-// and internal/app/version/buildinfo_test.go. The two layers are
-// tested separately on purpose: the handler's job is to delegate,
-// and the service's job is to produce and format data. A failure in
-// one layer should not require reading the other layer's tests.
+// handler calls is tested in internal/app/version/service_test.go,
+// internal/app/version/format_test.go, and
+// internal/app/version/buildinfo_test.go. The two layers are tested
+// separately on purpose: the handler's job is to delegate, and the
+// service's job is to produce and format data. A failure in one
+// layer should not require reading the other layer's tests.
 //
 // # The handler / service pattern
 //
@@ -26,10 +27,8 @@
 //
 //   - Parses flags (none yet).
 //   - Collects arguments (none allowed).
-//   - Constructs the service (or calls a package-level service
-//     function, as version does today).
-//   - Calls the service.
-//   - Formats the result by delegating to the service's formatter.
+//   - Calls the application service.
+//   - Writes the result to deps.Stdout.
 //   - Returns an error; never calls os.Exit.
 //
 // # Test organisation
@@ -101,6 +100,16 @@ var _ func(Dependencies) *cobra.Command = newVersionCmd
 // presence of the header prefix and the detail keys, not for specific
 // values. The specific values are injected at link time and vary
 // between builds; the format is what the command guarantees.
+//
+// # Why the header assertion accepts "forge" without a trailing space
+//
+// An uninstrumented build (one built without -ldflags) has an empty
+// Version. The frozen format renders the header as exactly "forge"
+// with no trailing space. A test that required the header to start
+// with "forge " (with a space) would fail for the uninstrumented
+// case, which is the case in `go test` runs. The assertion below
+// accepts both shapes: "forge\n" for an empty version and
+// "forge <version>\n" for a populated one.
 func TestVersionCommand_PrintsVersion(t *testing.T) {
 	t.Parallel()
 
@@ -110,7 +119,11 @@ func TestVersionCommand_PrintsVersion(t *testing.T) {
 		t.Fatalf("exit code: got %d, want %d",
 			got.exitCode, ExitSuccess)
 	}
-	if !strings.HasPrefix(got.stdout, "forge ") {
+	// The header must be "forge" either alone (uninstrumented) or
+	// followed by " <version>". A prefix check for "forge" is the
+	// loosest correct assertion; the stricter format is pinned by
+	// TestFormat_FullOutput in internal/app/version/format_test.go.
+	if !strings.HasPrefix(got.stdout, "forge") {
 		t.Errorf("stdout does not start with the version header: %q",
 			got.stdout)
 	}
@@ -509,7 +522,21 @@ func TestVersionHandler_NilStdoutPanics(t *testing.T) {
 // A binary built without ldflags has empty Version, Commit,
 // BuildDate, and Dirty. The command must still succeed and produce
 // output; the output contains the format's fixed parts (the header
-// prefix and the detail keys) with empty values.
+// and the detail keys) with empty values.
+//
+// # Why this test is separate from TestVersionCommand_PrintsVersion
+//
+// The two tests exercise the same code path but assert different
+// properties. TestVersionCommand_PrintsVersion asserts the format's
+// shape (header, keys, stream separation). This test asserts the
+// format's *robustness* to the uninstrumented case: the command
+// succeeds and produces output even when all four values are empty.
+//
+// The uninstrumented case is the default under `go test`, because
+// the test binary is not built with the linker flags the Taskfile
+// uses. If a future change made the formatter fail on empty values,
+// this test would catch it; a test that only ran against a populated
+// build would not.
 func TestVersionHandler_EmptyBuildInfo(t *testing.T) {
 	t.Parallel()
 
@@ -519,7 +546,10 @@ func TestVersionHandler_EmptyBuildInfo(t *testing.T) {
 		t.Fatalf("exit code: got %d, want %d",
 			got.exitCode, ExitSuccess)
 	}
-	if !strings.HasPrefix(got.stdout, "forge ") {
+	// The header is "forge" with no trailing space when the version
+	// is empty, and "forge <version>" otherwise. A prefix check for
+	// "forge" accepts both.
+	if !strings.HasPrefix(got.stdout, "forge") {
 		t.Errorf("stdout does not start with version header: %q",
 			got.stdout)
 	}

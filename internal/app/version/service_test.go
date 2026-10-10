@@ -120,8 +120,31 @@ func TestFormat_IsDeterministic(t *testing.T) {
 // --- Edge cases ------------------------------------------------------
 
 // TestFormat_EmptyInfo verifies that a zero-value Info renders
-// without error. Every field is empty, but the format is still
-// produced.
+// without error, that the header is exactly "forge" with no
+// trailing space, and that every detail line has the frozen shape
+// with empty (or, for Dirty, false) values.
+//
+// # Why the header is "forge" and not "forge "
+//
+// The frozen format (WBS 6.4.1) specifies that an empty version
+// renders as the header "forge" with no trailing space. A header
+// of "forge " (with a space) would break downstream parsers that
+// split the header line on whitespace and expect either one token
+// or two, but never an empty second token.
+//
+// # Why Dirty renders as "false" and not as an empty value
+//
+// The formatter parses Dirty strictly: only the literal "true"
+// renders as true; everything else — including the empty string —
+// renders as false. See parseDirty in format.go.
+//
+// # Why Commit and BuildDate render as empty values
+//
+// The formatter does not substitute sentinels for empty strings.
+// An empty Commit renders as `  commit:  ` (with trailing spaces
+// from the alignment padding); an empty BuildDate renders as
+// `  built:       ` (with trailing spaces). A reader sees empty
+// values and knows the binary was built without ldflags.
 func TestFormat_EmptyInfo(t *testing.T) {
 	t.Parallel()
 
@@ -131,16 +154,37 @@ func TestFormat_EmptyInfo(t *testing.T) {
 	}
 
 	out := buf.String()
-	if !strings.HasPrefix(out, "forge ") {
-		t.Errorf("output missing header prefix: %q", out)
+
+	// Header: exactly "forge" with no trailing space. The first
+	// line is everything up to the first newline.
+	header, _, found := strings.Cut(out, "\n")
+	if !found {
+		t.Fatalf("output has no newline: %q", out)
 	}
-	// The version is empty, so the header is "forge \n". This is
-	// valid. The reader sees an empty version and knows the binary
-	// was built without ldflags.
-	//
-	// The Dirty field is also empty, so its detail line reads
-	// "  dirty:      " with a trailing space. The formatter does
-	// not trim; an empty value is rendered as an empty value.
+	if header != "forge" {
+		t.Errorf("header: got %q, want %q", header, "forge")
+	}
+
+	// Every detail key is present. The values may be empty, so
+	// the assertions are on the keys, not on the full lines.
+	for _, key := range []string{
+		"  commit:",
+		"  built:",
+		"  dirty:",
+		"  go version:",
+		"  platform:",
+	} {
+		if !strings.Contains(out, key) {
+			t.Errorf("output missing %q: %q", key, out)
+		}
+	}
+
+	// The dirty line renders "false" for the empty-string case,
+	// because the formatter parses Dirty strictly.
+	if !strings.Contains(out, "  dirty:       false\n") {
+		t.Errorf("dirty line: want %q in output, got %q",
+			"  dirty:       false\n", out)
+	}
 }
 
 // TestFormat_SpecialCharactersInFields verifies that values

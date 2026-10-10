@@ -28,3 +28,24 @@ indent_size = 2
 
 [Makefile]
 indent_style = tab
+
+# Golden files under testdata/ record the exact bytes the code
+# produces, including trailing whitespace and the final newline.
+# Editors and linters must not normalise them.
+#
+# The two properties below override the [*] defaults:
+#
+#   trim_trailing_whitespace = false
+#     The `commit:` and `built:` lines in empty.golden have
+#     meaningful trailing spaces from the %-12s format padding.
+#     Trimming them breaks TestFormat_Golden/empty.
+#
+#   insert_final_newline = true
+#     The formatter emits a trailing newline after every line,
+#     including the last. The golden files must contain it.
+#     (This is the same value as [*], restated here because the
+#     override is deliberate and a future change to [*] must not
+#     silently change it.)
+[testdata/**]
+trim_trailing_whitespace = false
+insert_final_newline = true
