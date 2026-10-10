@@ -2,11 +2,11 @@
 
 - **Document type:** Specification
 - **Status:** Draft
-- **Version:** 0.1.0
+- **Version:** 0.2.0
 - **Author:** @thapelomagqazana
 - **Created:** 2026-10-09
-- **Last Updated:** 2026-10-09
-- **Supersedes:** —
+- **Last Updated:** 2026-10-10
+- **Supersedes:** 0.1.0
 - **Superseded by:** —
 
 ---
@@ -40,6 +40,7 @@ coding prevents churn in Phase 2 and Phase 5.
 - Machine-readable output contract
 - CLI UX principles
 - Human-readable output vocabulary
+- Root command identity strings
 
 **Out of scope:**
 
@@ -664,7 +665,7 @@ forge version [flags]
 **Flags:**
 
 | Flag | Type | Default | Description |
-|------|------|---------|-------------|
+|------|------|-------------|-------------|
 | `--format <format>` | enum | `human` | `human` or `json` |
 
 **Output (human):**
@@ -686,6 +687,97 @@ forge 0.1.0
   "goVersion": "1.23.0"
 }
 ```
+
+### 4.7 Root Command Identity
+
+The root command's identity strings are frozen. They are defined as
+package-level constants in
+[`internal/cli/root.go`](../internal/cli/root.go) and consumed by
+tests, documentation, and help output.
+
+#### The four constants
+
+| Constant | Value |
+|----------|-------|
+| `RootName` | `forge` |
+| `RootUsage` | `forge [command]` |
+| `RootShortDesc` | `Forge — Engineering Foundations as Code` |
+| `RootLongDesc` | see below |
+
+`RootLongDesc` is a raw string literal:
+
+```text
+Forge is a cross-platform CLI for defining, generating,
+validating, and evolving software project foundations as code.
+
+The core loop:
+
+    CREATE  →  forge new
+    VERIFY  →  forge check
+    EXPLAIN →  forge explain
+    EVOLVE  →  forge update
+
+Run 'forge <command> --help' for details on any command.
+```
+
+#### Where each string appears
+
+| String | Where |
+|--------|-------|
+| `RootName` | The command name in `forge --help`. The first word of the `Use` field. |
+| `RootUsage` | The "Usage:" line in `forge --help`. |
+| `RootShortDesc` | The one-line description at the top of `forge --help`. |
+| `RootLongDesc` | The extended description below the short description. |
+
+#### Rules
+
+1. `RootName` is lowercase. It is never "Forge" in the CLI's name
+   field. The command a user types is `forge`, not `Forge`.
+2. `RootShortDesc` is a single line of 80 characters or fewer. The
+   limit is measured in runes, not bytes, so the em dash (—) counts
+   as one character.
+3. `RootLongDesc` is a raw string literal. Its line breaks and
+   indentation are preserved verbatim in the help output.
+4. `RootLongDesc` contains the CREATE / VERIFY / EXPLAIN / EVOLVE
+   loop. The four keywords are the product's core loop; removing
+   any of them is a product decision, not a copy edit.
+5. `RootLongDesc` ends with a pointer to `<command> --help`. The
+   pointer tells a user how to learn more about a specific
+   subcommand.
+6. None of the four contains emojis, ANSI colour codes, or tabs.
+   Colour and emphasis belong to the terminal, not to the CLI's
+   identity strings.
+
+#### Changing a string
+
+Changing any of the four constants requires:
+
+1. Updating the constant in `internal/cli/root.go`.
+2. Updating the corresponding assertion in
+   `internal/cli/root_test.go`.
+3. Updating this section of `docs/cli-ux-spec.md` to quote the new
+   value.
+4. Running `task check` and confirming the full suite passes.
+
+The three updates are in the same commit. A reviewer who sees a
+constant change without the corresponding test and documentation
+changes rejects the PR.
+
+#### Why these strings are frozen
+
+The root command's identity appears in every invocation of the CLI,
+in every documentation page that describes the CLI, and in every
+shell script that captures `forge --help` output. Changing the
+strings is cheap in code and expensive in every artefact that
+quotes them. Freezing the strings is the mechanism by which the
+cost is bounded: a change requires a deliberate update to three
+files, which a reviewer sees.
+
+The freezing does not prevent changes; it makes changes visible.
+A future product decision that renames the CLI, changes its tagline,
+or rewrites its long description is still possible. It simply
+requires the three updates above, and the reviewer of the change
+sees all three in one diff.
 
 ---
 
@@ -966,12 +1058,12 @@ An update could not be applied without overwriting developer changes:
 
 See WBS 14.x for the update subsystem specification.
 
-### 7.2 Exit Code Stability
+### 7.3 Exit Code Stability
 
 These codes are part of Forge's public contract. Changing them requires
 an ADR.
 
-### 7.3 The mapping
+### 7.4 The mapping
 
 Errors are mapped to exit codes by the function
 `exitCodeFromError`, defined in `internal/cli/exitcodes.go`. It is
@@ -996,17 +1088,6 @@ An error "carries a category" if it implements the
 `internal/cli/exitcodes.go`. The interface has one method,
 `Category() string`. The values shown in the table above are the
 recognised values. Any other value falls through to `ExitFailure`.
-
-### 7.4 Stability
-
-A code, once shipped in a release, is never renumbered. If a new
-failure category is introduced in a later phase, a new constant is
-added at the next available integer. Existing codes retain their
-meaning.
-
-This is the same rule that applies to error codes in
-`internal/forgeerr` (WBS 10.0). Both change by addition, never by
-renumbering.
 
 ### 7.5 Scripting
 
@@ -1378,3 +1459,12 @@ becomes **Approved** when:
 - The specification has been reviewed for consistency with
   [`docs/product-discovery.md`](./product-discovery.md) § 9 and
   [`docs/mvp-scope.md`](./mvp-scope.md)
+
+---
+
+## 14. Document History
+
+| Version | Date | Author | Change |
+|---------|------|--------|--------|
+| 0.1.0 | 2026-10-09 | @thapelomagqazana | Initial Phase 1 draft. Command hierarchy, per-command reference, exit codes, JSON output, UX principles, error catalogue, and open questions. |
+| 0.2.0 | 2026-10-10 | @thapelomagqazana | Added § 4.7 (Root Command Identity) in response to WBS 5.1.1. Documents the four frozen identity constants, their rules, and the process for changing them. |
