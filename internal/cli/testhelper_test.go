@@ -244,3 +244,36 @@ func testDependencies() Dependencies {
 		Env:    func(string) string { return "" },
 	}
 }
+
+// helpCommandNames returns the names of the visible commands listed
+// in any Cobra help output, in the order they appear.
+//
+// # What "any help output" means
+//
+// Cobra's help output has the same structure regardless of whether
+// it was produced by `forge --help`, `forge help`, or
+// `forge version --help`: it contains a "Usage:" section, an
+// "Available Commands:" section (when the command has subcommands),
+// a "Flags:" section, and a closing line that points at
+// `--help` for more information.
+//
+// The helper extracts the command names from the "Available
+// Commands:" section. For a leaf command (like `version`), the
+// section is absent and the helper returns nil.
+//
+// # Why the helper is general
+//
+// The same parsing logic is used by:
+//
+//   - TestRoot_HelpOutput_MatchesRegistry (checks that the visible
+//     commands match the registry)
+//   - The WBS 5.2.2 help contract tests (check that the help output
+//     lists every command regardless of which invocation produced
+//     it)
+//
+// Sharing the logic ensures the two sets of tests agree on what
+// "the help output" contains. If a future change to Cobra's help
+// format requires updating the parser, both tests see the update.
+func helpCommandNames(help string) []string {
+	return extractVisibleCommandNamesFromHelp(help)
+}

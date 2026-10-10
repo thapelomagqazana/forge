@@ -2,11 +2,11 @@
 
 - **Document type:** Specification
 - **Status:** Draft
-- **Version:** 0.3.0
+- **Version:** 0.4.0
 - **Author:** @thapelomagqazana
 - **Created:** 2026-10-09
 - **Last Updated:** 2026-10-10
-- **Supersedes:** 0.2.0
+- **Supersedes:** 0.3.0
 - **Superseded by:** —
 
 ---
@@ -42,6 +42,8 @@ coding prevents churn in Phase 2 and Phase 5.
 - Human-readable output vocabulary
 - Root command identity strings
 - Version output contract
+- Help behaviour contract
+- Global flag semantics and precedence
 
 **Out of scope:**
 
@@ -889,6 +891,227 @@ on them. Freezing the format is the mechanism by which the cost of
 a change is bounded: a change requires the three updates above, and
 a reviewer sees all three in one diff.
 
+### 4.9 Help Behaviour
+
+Forge's help system has eight entry points. The table below is the
+contract: every release must handle every row consistently.
+
+#### The contract
+
+| Invocation | Behaviour | Exit | Stream |
+|------------|-----------|------|--------|
+| `forge` | Print root help | 0 | stdout |
+| `forge --help` | Print root help | 0 | stdout |
+| `forge -h` | Print root help | 0 | stdout |
+| `forge help` | Print root help | 0 | stdout |
+| `forge help version` | Print version command help | 0 | stdout |
+| `forge version --help` | Print version command help | 0 | stdout |
+| `forge --help version` | Rejected (help has no args) | 2 | stderr |
+| `forge help unknown` | Print "unknown help topic" | 2 | stderr |
+
+#### Rules
+
+1. **All help goes to stdout, never stderr.** The help text is a
+   successful result, not a diagnostic.
+
+2. **All help exits 0.** The user's request was fulfilled.
+
+3. **Errors about unknown help topics go to stderr and exit 2.**
+   `forge help unknown` is a usage error: the user asked for help on
+   a topic that does not exist.
+
+4. **`--help` and `-h` are equivalent.** Both produce the same
+   output and the same exit code.
+
+5. **`forge help <cmd>` and `forge <cmd> --help` are equivalent.**
+   The two forms produce the same output and the same exit code.
+
+6. **`forge --help <cmd>` is rejected.** `--help` is a flag that
+   takes no argument. Passing a positional argument after it is a
+   usage error.
+
+7. **The help output contains the frozen identity strings.** The
+   output includes `RootName`, the composed usage line built from
+   `RootName` and `RootUsage`, and the body of the help text
+   (`RootLongDesc`). `RootShortDesc` is not rendered by
+   `forge --help` for the root command; see § 4.7.
+
+8. **The help output lists every visible registered command.** Every
+   visible constructor in `internal/cli/registry.go` produces a
+   command that appears in the "Available Commands:" section. Hidden
+   commands do not appear; they are documented separately.
+
+#### Where the behaviour is implemented
+
+Six of the eight invocations are handled by Cobra's defaults. The two
+rejections are handled by `validateArgs` (validate.go), which runs in
+`executeWithOptions` before Cobra parses the arguments. The rejection
+cannot live in a Cobra hook: Cobra's `--help` interception
+short-circuits the hook chain, so a `PersistentPreRunE` or `RunE`
+never sees the malformed invocation.
+
+#### Why the contract is frozen
+
+Every CLI user encounters the help system. Every script that captures
+help output for documentation or for error reporting depends on help
+going to stdout and the exit code being 0. Freezing the contract is
+the mechanism by which the cost of a change is bounded.
+
+### 4.10 Version Behaviour
+
+The `--version` flag and the `version` subcommand have five
+invocations. The table below is the contract.
+
+#### The contract
+
+| Invocation | Behaviour | Exit | Stream |
+|------------|-----------|------|--------|
+| `forge --version` | Print version block | 0 | stdout |
+| `forge -v` | Print version block | 0 | stdout |
+| `forge version` | Print version block (identical output) | 0 | stdout |
+| `forge version --help` | Print version command help | 0 | stdout |
+| `forge --version extra` | Rejected (version takes no args) | 2 | stderr |
+
+#### Rules
+
+1. **`forge --version` and `forge version` produce byte-identical
+   output.** The two invocations are interchangeable for scripts and
+   for users. The format is frozen in § 4.8.
+
+2. **`-v` is short for `--version`.** The two forms produce the same
+   output, the same exit code, and the same stderr.
+
+3. **`-v` is not short for `--verbose`.** `--verbose` has no short
+   form in Phase 2. The alias is reserved for `--version`, in keeping
+   with the convention used by `git`, `go`, `cargo`, and many other
+   CLIs.
+
+4. **Version output goes to stdout and exits 0.**
+
+5. **Extra arguments to a version flag are rejected.** `forge
+   --version extra` and `forge -v extra` are usage errors: the
+   version flag takes no argument. The CLI rejects the invocation
+   with a diagnostic on stderr and exit code 2.
+
+6. **The version format is frozen in § 4.8.** This section does not
+   restate the format; it references the section that defines it.
+
+#### Where the behaviour is implemented
+
+The version block is produced by `internal/app/version`, in the
+`Format` function (format.go). The `--version` flag's wiring is
+implemented in `newRootCmd` (root.go), which sets `root.Version` to
+the string returned by `version.Raw()` and overrides Cobra's default
+version template.
+
+The extra-argument rejection is implemented in `validateArgs`
+(validate.go). The check cannot live in a Cobra hook for the same
+reason as the help-flag rejection.
+
+#### Why the contract is frozen
+
+The version output is the most commonly parsed CLI output. Scripts
+extract the version number to decide whether to upgrade; CI systems
+compare versions to decide whether to rebuild; users pipe the output
+to `grep` to answer "am I on the right build?". Freezing the contract
+is what makes those consumers safe.
+
+### 4.11 Global Flags
+
+Forge has exactly three global flags in Phase 2. Global flags are
+**persistent**: they are inherited by every subcommand and may appear
+before or after the subcommand name.
+
+#### The inventory
+
+| Flag | Short | Type | Persistent | Consumer | Semantics |
+|------|-------|------|------------|----------|-----------|
+| `--verbose` | — | bool | yes | WBS 12.0 (logging) | Set log level to DEBUG |
+| `--quiet` | — | bool | yes | WBS 12.0 (logging) | Set log level to ERROR (errors only) |
+| `--config` | — | string | yes | WBS 8.0 (config) | Path to config file; overrides discovery |
+
+No other global flags exist. The inventory is frozen; adding a fourth
+flag requires an ADR (see "Adding a global flag" below).
+
+#### Justification
+
+Each flag has a documented consumer in a later WBS item:
+
+- **`--verbose`** is required by WBS 12.5 (verbose mode). It raises
+  the log level to DEBUG, causing the logger to emit diagnostic
+  messages that are suppressed by default.
+
+- **`--quiet`** is required by WBS 12.6 (quiet mode). It lowers the
+  log level to ERROR, suppressing INFO and WARN messages while
+  preserving ERROR messages and the command's own output.
+
+- **`--config`** is required by WBS 8.4 (configuration loader). It
+  provides a path to a configuration file, overriding the loader's
+  discovery mechanism.
+
+No flag is speculative. A flag that has no consumer in a later WBS
+item is not in the inventory.
+
+#### Precedence
+
+When `--verbose` and `--quiet` are both set, **`--quiet` wins**.
+The effective log level is ERROR.
+
+The rationale is that `--quiet` is the stricter contract: the user
+who asked for quiet asked for a smaller output surface, and honoring
+a smaller surface when a larger one is also requested is the correct
+default.
+
+When both flags are set, the CLI does **not** emit a warning about
+the conflict. The rationale is that a warning about conflicting
+flags is itself output, and the user who asked for quiet asked for
+less output. Emitting a warning would violate the quiet contract.
+
+#### Persistence
+
+All three flags are **persistent**. Persistent flags are inherited
+by every subcommand. This means:
+
+- `forge --verbose config` and `forge config --verbose` are
+  equivalent.
+- `forge --config path version` and `forge version --config path`
+  are equivalent.
+
+Cobra's parser accepts global flags either before or after the
+subcommand name.
+
+#### The `--config` rejection
+
+`--config` takes a value. An invocation like `forge --config` with
+no following value is a usage error: the flag is present but its
+value is not. The rejection is implemented in `validateArgs`
+(validate.go), which runs before Cobra parses the arguments. The
+`--config=path` form is well-formed and is not rejected; the form
+carries its own value.
+
+#### Adding a global flag
+
+Adding a global flag requires an ADR. The ADR must:
+
+1. Name the consumer WBS item that requires the flag.
+2. Define the flag's type, default value, and semantics.
+3. Define the flag's precedence relative to the existing flags (if
+   it conflicts with any).
+4. Update this section of `docs/cli-ux-spec.md` to list the new
+   flag.
+
+The inventory is frozen for Phase 2. The rule exists to prevent flag
+creep: a CLI with fifteen global flags has no global flags, because
+users cannot remember which one does what.
+
+#### Where the flags are implemented
+
+The flag names, registration, and helpers are defined in
+`internal/cli/flags.go`. The registration is called from
+`newRootCmd` (root.go). The pre-parse rejection of `forge --config`
+with no value is implemented in `validateConfigFlagWithArgs`
+(validate.go).
+
 ---
 
 ## 5. Command Reference — Future Commands
@@ -1107,6 +1330,9 @@ Forge could not interpret the command:
 - Invalid flag value.
 - Malformed `forge.yaml` (a syntax error, not a semantic error).
 - Ambiguous foundation selection in non-interactive mode.
+- Malformed invocations rejected by `validateArgs` (for example,
+  `--help <cmd>`, `--version <arg>`, `--config` with no value, or
+  `help <unknown>`).
 
 This is the default for any error that does not carry a category.
 Cobra's own errors (unknown command, unknown flag) are always
@@ -1579,3 +1805,4 @@ becomes **Approved** when:
 | 0.1.0 | 2026-10-09 | @thapelomagqazana | Initial Phase 1 draft. Command hierarchy, per-command reference, exit codes, JSON output, UX principles, error catalogue, and open questions. |
 | 0.2.0 | 2026-10-10 | @thapelomagqazana | Added § 4.7 (Root Command Identity) in response to WBS 5.1.1. Documents the four frozen identity constants, their rules, and the process for changing them. |
 | 0.3.0 | 2026-10-10 | @thapelomagqazana | Added § 4.8 (Version Output Contract) in response to WBS 5.1.2. Documents the frozen format shared by `forge --version` and `forge version`, the field sources, the single formatter, and the process for changing the format. Corrected the "Where each string appears" table in § 4.7: `RootShortDesc` is not rendered by `forge --help`; `RootLongDesc` is the body of the help text, not the text below the short description. |
+| 0.4.0 | 2026-10-10 | @thapelomagqazana | Added § 4.9 (Help Behaviour) in response to WBS 5.2.2. Documents the eight help invocations, the stdout/stderr contract, and the two rejections. Added § 4.10 (Version Behaviour) in response to WBS 5.2.3. Documents the five version invocations, the `-v` alias, and the extra-argument rejection. Added § 4.11 (Global Flags) in response to WBS 5.3.1. Documents the three-flag inventory, the precedence rule, the persistence of the flags, and the process for adding a new flag. Extended § 7.2's usage-error list to cite the pre-parse rejections and updated § 2's in-scope list. |

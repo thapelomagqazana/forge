@@ -42,6 +42,17 @@
 // struct, and every command receives them through the Dependencies
 // struct built from options. This is what enforces AC3, and it is
 // verified by the Taskfile target `verify:two-boundary`.
+//
+// # The pre-parse validation stage
+//
+// executeWithOptions calls validateArgs before constructing the
+// command tree. The validator rejects two malformed help invocations
+// that Cobra would otherwise accept silently (see validate.go and
+// docs/cli-ux-spec.md § 4.10). The validation must run before Cobra
+// parses the arguments: Cobra's --help interception short-circuits
+// the command tree, so a malformed `--help <cmd>` invocation is
+// unobservable from inside the tree. The pre-parse check is the only
+// stage at which both malformed cases are visible.
 package cli
 
 import (
@@ -243,15 +254,39 @@ func Execute() int {
 // from a command back to the process. This is what makes every
 // command testable in-process (AC5) and what enforces AC3.
 //
+// # The validation stage
+//
+// Before the transformation, executeWithOptions calls
+// validateArgs (validate.go) on the raw argument list. The
+// validator rejects two malformed help invocations that Cobra
+// would otherwise accept silently:
+//
+//   - `forge --help <cmd>` — the --help flag takes no argument.
+//   - `forge help <unknown>` — an unknown help topic.
+//
+// The rejection must happen before Cobra parses the arguments:
+// Cobra's --help interception is a short-circuit that runs before
+// any hook, so the malformed invocation is unobservable from
+// inside the command tree. validateArgs is the only stage at which
+// both cases are visible.
+//
+// The validator returns a plain error. This function formats it
+// with the same formatError used for all other errors, writes it
+// to the same stderr, and maps it to an exit code with the same
+// exitCodeFromError. The result is indistinguishable from an error
+// produced by a command: same stream, same message shape, same
+// exit code.
+//
 // # What the function does
 //
-//  1. Transforms options into Dependencies via buildDependencies.
-//  2. Constructs the root command, passing Dependencies to it.
-//  3. Binds the injectable inputs and outputs to the command tree.
-//  4. Executes the command tree.
-//  5. Formats any returned error.
-//  6. Writes the formatted error to the injected stderr.
-//  7. Maps the error to an exit code via exitCodeFromError.
+//  1. Validates the raw argument list via validateArgs.
+//  2. Transforms options into Dependencies via buildDependencies.
+//  3. Constructs the root command, passing Dependencies to it.
+//  4. Binds the injectable inputs and outputs to the command tree.
+//  5. Executes the command tree.
+//  6. Formats any returned error.
+//  7. Writes the formatted error to the injected stderr.
+//  8. Maps the error to an exit code via exitCodeFromError.
 //
 // # What the function does not do
 //
@@ -317,6 +352,21 @@ func Execute() int {
 // diagnostic output. The function returns ExitSuccess immediately,
 // without touching opts.stderr.
 func executeWithOptions(opts options) int {
+	// Validate the raw arguments before Cobra parses them. Two
+	// malformed help invocations are rejected here; see validate.go
+	// for the rationale and docs/cli-ux-spec.md § 4.10 for the
+	// contract.
+	//
+	// The validator returns a plain error. The error path below is
+	// the same path used for errors returned by the command tree:
+	// formatError renders the message, Fprintln writes it to
+	// opts.stderr, and exitCodeFromError maps it to an exit code.
+	// No error type distinction is necessary.
+	if err := validateArgs(opts.args); err != nil {
+		fmt.Fprintln(opts.stderr, formatError(err))
+		return exitCodeFromError(err)
+	}
+
 	// Transform the process-boundary options into the command-
 	// boundary Dependencies. This is the only call site of
 	// buildDependencies in production code (AC4).

@@ -12,7 +12,8 @@ This index is auto-generated. Do not edit it manually.
 
 | ID | Title | Date |
 |----|-------|------|
-| [ADR-003](./ADR-003-cli-framework-foundation-package-execution-injection-registry-and-contract.md) | ADR-003: 'CLI Framework Foundation: Package, Execution, Injection, Registry, and Contract' | 2026-10-10 |
+| [ADR-004](./ADR-004-root-command-identity-and-behavior-contracts.md) | ADR-004: 'Root Command Identity and Behavior Contracts' | 2026-10-10 |
+| [ADR-003](./ADR-003-cli-framework-foundation-package-execution-injection-registry-and-contract.md) | ADR-003: CLI Framework Foundation — Package, Execution, Injection, Registry, and Contract | 2026-10-10 |
 | [ADR-001](./ADR-001-forge-is-a-foundation-manager.md) | ADR-001: Forge is a Foundation Manager | 2026-10-09 |
 
 ## Superseded
