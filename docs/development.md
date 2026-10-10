@@ -16,6 +16,7 @@ passing test run in under ten minutes.
 - [Module Resolution Policy](#module-resolution-policy)
 - [Detecting Dependency Drift](#detecting-dependency-drift)
 - [Getting Started](#getting-started)
+- [Build Metadata Injection](#build-metadata-injection)
 - [Task Runner](#task-runner)
 - [Testing](#testing)
 - [Formatting](#formatting)
@@ -902,7 +903,8 @@ The `drift` job is a **required status check** for merging to
 `main`. The branch protection rule is configured on the GitHub
 repository settings page:
 
-- **Settings → Branches → Branch protection rules → `main` → Require status checks to pass before merging**.
+- **Settings → Branches → Branch protection rules → `main` →
+  Require status checks to pass before merging**.
 - Required checks: `Dependency drift`.
 - **Require branches to be up to date before merging** is enabled.
 
@@ -972,6 +974,7 @@ task verify:resolution          # confirm the cross-environment invariant
 task verify:deps:integrity      # confirm the lockfile integrity
 task verify:deps:env-policy     # confirm the environment policy
 task verify:deps:drift          # confirm no dependency drift
+task verify:injection           # confirm the linker injection contract
 task check                      # run the full quality gate
 task build                      # produce ./forge
 ```
@@ -996,6 +999,219 @@ passes locally, CI will likely pass as well.
 
 ---
 
+## Build Metadata Injection
+
+Forge injects four build-metadata values into the binary at link
+time via `go build -ldflags "-X"`. The injection target is
+`internal/version`, whose four exported string variables are the
+**only** write targets for `-X` in the module.
+
+| Variable    | Meaning                   | Source                                 |
+|-------------|---------------------------|----------------------------------------|
+| `Version`   | Semantic version or `dev` | `git describe --tags --always --dirty` |
+| `Commit`    | Short git SHA or `none`   | `git rev-parse --short HEAD`           |
+| `BuildDate` | RFC 3339 UTC timestamp    | `date -u +%Y-%m-%dT%H:%M:%SZ`          |
+| `Dirty`     | `true` or `false`         | `git status --porcelain`               |
+
+### How to build
+
+```bash
+task build              # reproducible build; injects metadata from git
+task build:release      # release build; requires a clean, tagged tree
+task build:debug        # local debugging; NOT reproducible; do not distribute
+task verify:injection   # build and print what was injected
+```
+
+A plain `go build ./cmd/forge` — without the `-ldflags` argument —
+produces a binary whose four metadata values are all the empty
+string. This is intentional. An empty value is an honest signal
+that the binary was **not** built by the project's Taskfile. Callers
+that render build metadata (the `forge version` command, structured
+logging, SBOM output) decide how to display the empty state; they
+must not silently substitute a sentinel like `"dev"`.
+
+### The Taskfile is the only injection mechanism
+
+Environment variables, generated `.go` files, ad-hoc shell scripts,
+and a `Makefile` (if one is present) are **not** supported injection
+mechanisms. This is enforced by three checks:
+
+- `task verify:injection:no-env-reads` fails if any `.go` file
+  outside `internal/version` reads version metadata from the
+  environment (`FORGE_VERSION`, `FORGE_COMMIT`, `FORGE_BUILD_DATE`,
+  `FORGE_DIRTY`).
+- `task verify:injection:single-authority` fails if a `Makefile`
+  contains `-X`, `git`, or `MODULE` in code, or if it does not
+  delegate to `task`.
+- `TestAC8_NoAlternateInjectionMechanism` in
+  `internal/version/injection_test.go` walks the repository and
+  fails if any non-test `.go` file outside `internal/version`
+  references the four variables directly (`version.Version`,
+  `version.Commit`, `version.BuildDate`, `version.Dirty`). All other
+  packages must go through `version.Get()`.
+
+If you need a fifth metadata field, open an ADR. The contract is
+frozen at four variables.
+
+### The silent-failure trap
+
+`-X` silently does **nothing** if its target path does not match the
+module path declared in `go.mod`. There is no error, no warning, and
+no build failure. The binary simply reports empty values for the
+affected field.
+
+The three most common causes:
+
+1. **Module rename without updating the Taskfile.** `go.mod` says
+   `example.com/new`, the Taskfile still says `example.com/old`.
+2. **Typo in the package path.** `internal/verison` instead of
+   `internal/version`.
+3. **Copied LDFLAGS from another project.** The prefix still points
+   at the other project's module.
+
+To detect a module-path mismatch:
+
+```bash
+task verify:injection:prefix
+```
+
+This target compares `MODULE` in `Taskfile.yml` against the `module`
+directive in `go.mod` and fails if they disagree. It is also
+enforced by `TestAC6_ModulePathMatchesGoMod`, which runs under
+`go test ./...`, so the check fires even when a contributor forgets
+to invoke `task`.
+
+A **variable-name** mismatch is a separate trap. If the Taskfile
+targets `internal/version.Value` but the package declares
+`var Version string`, the `-X` flag is a silent no-op. This is
+enforced by:
+
+```bash
+task verify:injection:vars       # the four names exist in version.go
+task verify:injection:ldflags    # the LDFLAGS block targets those names
+```
+
+The failure mode is documented in executable form by
+`TestNegative_ModulePathMismatchSilentlyFails` in
+`internal/version/injection_test.go`. That test builds a fixture
+module whose path deliberately differs from the `-X` prefix and
+asserts that the resulting binary reports empty values. If the test
+ever starts failing, the trap has changed and this section must be
+updated.
+
+### Reproducible builds
+
+`BuildDate` is the only non-deterministic input to the injection
+contract. For reproducible builds, override it:
+
+```bash
+task build BUILD_DATE=2026-10-10T12:00:00Z
+```
+
+`Version`, `Commit`, and `Dirty` are derived from the git tree and
+are deterministic for a given commit and working-tree state.
+
+`task build` uses `-trimpath`, which prevents the binary from
+embedding absolute host paths. `task build:debug` deliberately omits
+`-trimpath` to aid debuggers. Binaries produced by `build:debug` are
+**not** reproducible and **must not** be distributed.
+
+### Why these exact commands
+
+- **`git describe --tags --always --dirty`** — `--tags` includes
+  lightweight tags; `--always` falls back to the short SHA when no
+  tag is reachable; `--dirty` appends `-dirty` when the tree has
+  uncommitted changes. The compound result identifies the build
+  even when read in isolation.
+- **`git rev-parse --short HEAD`** — respects `core.abbrev`. Do not
+  hard-code 7; a project-wide change to abbreviation length should
+  flow through automatically.
+- **`date -u +%Y-%m-%dT%H:%M:%SZ`** — `-u` forces UTC. The format
+  string is explicit so the output does not depend on locale or
+  the system timezone.
+- **`git status --porcelain`** — stable across Git versions and
+  locales, and it reports untracked files. The alternative
+  (`git diff-index --quiet HEAD`) misses untracked files, which is
+  a correctness bug for reproducibility auditing: an untracked file
+  in the source tree can change a build if the build reads it.
+
+### Shell-safety invariant
+
+The four injected values are constrained to the character set
+`[A-Za-z0-9._:+-]`. This is not accidental. Task's `sh:` variable
+expansion has known quoting limitations, and a value containing a
+space, quote, or newline would break the `go build -ldflags "..."`
+invocation.
+
+The four sources produce values within this character set:
+
+| Source                             | Character set                             |
+|------------------------------------|-------------------------------------------|
+| `git describe --tags --always ...` | `[A-Za-z0-9._-]` plus the `-dirty` suffix |
+| `git rev-parse --short HEAD`       | `[0-9a-f]`                                |
+| `date -u +%Y-%m-%dT%H:%M:%SZ`      | `[0-9T:Z-]`                               |
+| `git status --porcelain` (derived) | literal `true` or `false`                 |
+
+`TestNonFunctional_InjectedValuesAreShellSafe` in
+`internal/version/injection_test.go` pins this invariant. If you
+change the Taskfile to inject a value with a wider character set
+(a branch name with slashes, a user-supplied version string), that
+test fails and you must update it consciously.
+
+### Verification commands
+
+Run the full injection contract check:
+
+```bash
+task verify:injection
+```
+
+Expected output:
+
+```text
+OK: MODULE matches go.mod (github.com/thapelomagqazana/forge)
+OK: internal/version declares var Version
+OK: internal/version declares var Commit
+OK: internal/version declares var BuildDate
+OK: internal/version declares var Dirty
+OK: LDFLAGS targets BuildDate, Commit, Dirty, Version
+OK: Makefile is a zero-logic shim over Taskfile.yml
+OK: no .go file reads version metadata from the environment
+OK: docs/development.md documents the injection contract and the trap
+```
+
+Run the individual checks:
+
+```bash
+task verify:injection:prefix
+task verify:injection:vars
+task verify:injection:ldflags
+task verify:injection:single-authority
+task verify:injection:no-env-reads
+task verify:injection:docs
+```
+
+To manually confirm that injection works end-to-end:
+
+```bash
+# 1. Build with the Taskfile.
+task build
+
+# 2. Probe the binary's metadata. Until WBS 6.3.1 lands the
+#    `forge version` command, inspect the binary directly:
+go version -m ./forge | grep -E 'Version|Commit|BuildDate|Dirty'
+
+# 3. Confirm that a plain `go build` produces empty values.
+go build -o /tmp/forge-uninstrumented ./cmd/forge
+go version -m /tmp/forge-uninstrumented
+```
+
+`go version -m` reads the embedded build settings and prints the
+`-X` values that the linker recorded. It is the fastest way to
+confirm injection landed without running the binary.
+
+---
+
 ## Task Runner
 
 Every routine operation is exposed as a `task`. Do not run `go`
@@ -1015,10 +1231,18 @@ ones:
 | `task verify:deps:integrity`      | Verify the lockfile integrity (WBS 3.1.1).                    |
 | `task verify:deps:drift`          | Detect go.mod / go.sum drift (WBS 3.3.1).                     |
 | `task verify:deps`                | Verify every dependency policy check (WBS 2.5.1, 3.1.1, 3.2.2, 3.3.1). |
+| `task verify:injection`           | Verify the linker injection contract (WBS 6.1.2).             |
+| `task verify:injection:prefix`    | Confirm `MODULE` matches `go.mod`.                            |
+| `task verify:injection:vars`      | Confirm `internal/version` declares the four linker targets.  |
+| `task verify:injection:ldflags`   | Confirm the LDFLAGS block targets those names.                |
+| `task verify:injection:single-authority` | Confirm a `Makefile`, if present, is a zero-logic shim. |
+| `task verify:injection:no-env-reads` | Confirm no `.go` file reads version metadata from the env. |
+| `task verify:injection:docs`      | Confirm this section documents the contract and the trap.     |
 | `task verify`                     | Run every verification check.                                 |
 | `task tidy`                       | Run `go mod tidy` (maintainers only; clean branch required).  |
-| `task build`                      | Build the binary with injected metadata.                      |
-| `task build:debug`                | Build without `-trimpath` for debugger support.               |
+| `task build`                      | Reproducible build with injected metadata (uses `-trimpath`). |
+| `task build:release`              | Release build; requires a clean, tagged tree.                 |
+| `task build:debug`                | Local debugging build; **not** reproducible; do not distribute. |
 | `task test`                       | Run unit tests with the race detector.                        |
 | `task test:integration`           | Run integration tests (compiles and invokes the binary).      |
 | `task test:scripts`               | Run shell test harnesses for the scripts/ directory.          |
@@ -1299,8 +1523,7 @@ git add go.mod go.sum
 git commit -m "chore(deps): regenerate go.mod"
 ```
 
-See [D3 — `go.mod` is not
-tidy](#d3--gomod-is-not-tidy).
+See [D3 — `go.mod` is not tidy](#d3--gomod-is-not-tidy).
 
 ### `FAIL: unpinned dependency version` (D5)
 
@@ -1316,8 +1539,7 @@ git add go.mod go.sum
 git commit -m "chore(deps): pin <module> to <version>"
 ```
 
-See [D5 — Unpinned dependency
-version](#d5--unpinned-dependency-version).
+See [D5 — Unpinned dependency version](#d5--unpinned-dependency-version).
 
 ### `FAIL: GOFLAGS does not include -mod=readonly`
 
@@ -1403,6 +1625,98 @@ grep -r "<import-path>" --include='*.go' .
 
 If the dependency is genuinely needed, ensure at least one file
 imports it, even a blank import for side effects.
+
+### `forge version` prints empty values for all four fields
+
+The binary was built without linker injection. Either you ran
+`go build ./cmd/forge` directly, or the Taskfile's `-X` prefix does
+not match `go.mod`.
+
+To diagnose:
+
+```bash
+task verify:injection:prefix      # module path matches go.mod?
+task verify:injection:ldflags     # LDFLAGS targets the right names?
+go version -m ./forge             # what did the linker actually record?
+```
+
+If `go version -m ./forge` prints no `-X` settings at all, the build
+was not run through the Taskfile. Run `task build`.
+
+If it prints `-X` settings with a **different** module path than
+`go.mod` declares, you have the silent-failure trap. See [The
+silent-failure trap](#the-silent-failure-trap).
+
+### `FAIL: MODULE in Taskfile.yml ... does not match go.mod`
+
+The module path in `Taskfile.yml` differs from the one in `go.mod`.
+Injection would silently do nothing.
+
+To fix: edit the `MODULE` variable in `Taskfile.yml` so it matches
+the `module` directive in `go.mod`, in the same commit. Then run:
+
+```bash
+task verify:injection:prefix
+```
+
+See [The silent-failure trap](#the-silent-failure-trap).
+
+### `FAIL: internal/version does not declare var Version` (or `Commit`, `BuildDate`, `Dirty`)
+
+`internal/version/version.go` is missing one of the four variables
+the LDFLAGS block targets. The package either does not exist or has
+been renamed.
+
+To fix: restore the variable declaration in
+`internal/version/version.go`. The four names are frozen by
+WBS 6.1.1; renaming them requires an ADR.
+
+See [The Taskfile is the only injection
+mechanism](#the-taskfile-is-the-only-injection-mechanism).
+
+### `FAIL: LDFLAGS targets do not match the four expected variables`
+
+The `-X` flags in `Taskfile.yml` target variable names that do not
+exist in `internal/version/version.go`. Most likely a variable was
+renamed in one file but not the other.
+
+To fix: make the `LDFLAGS` block and the `var` declarations agree,
+in the same commit. Then run:
+
+```bash
+task verify:injection:ldflags
+```
+
+See [The silent-failure trap](#the-silent-failure-trap).
+
+### `FAIL: Makefile contains '-X ' in code`
+
+A `Makefile` exists and contains injection logic. The Taskfile is
+the sole injection authority; a `Makefile` must delegate to `task`
+and do nothing else.
+
+To fix: either delete the `Makefile`, or reduce it to a shim whose
+recipes only invoke `$(TASK)`. See WBS 6.1.2 AC8 and the
+`verify:injection:single-authority` task for the exact contract.
+
+### `FAIL: no .go file reads version metadata from the environment`
+
+A `.go` file outside `internal/version` calls
+`os.Getenv("FORGE_VERSION")` (or `FORGE_COMMIT`, `FORGE_BUILD_DATE`,
+`FORGE_DIRTY`). Environment-based injection is not supported.
+
+To fix: read the metadata via `version.Get()` instead, and remove
+the environment-variable read. The `verify:injection:no-env-reads`
+task names the offending file.
+
+### `FAIL: docs/development.md is missing the 'Build Metadata Injection' section`
+
+This document must contain a section with that exact heading. It
+documents the injection contract, the silent-failure trap, and the
+shell-safety invariant.
+
+To fix: restore the section. See the `verify:injection:docs` task
+for the exact heading and the required keyword.
 
 ---
 

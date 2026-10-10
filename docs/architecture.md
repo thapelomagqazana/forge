@@ -2,11 +2,11 @@
 
 - **Document type:** Model
 - **Status:** Draft
-- **Version:** 0.5.0
+- **Version:** 0.6.0
 - **Author:** @thapelomagqazana
 - **Created:** 2026-10-09
 - **Last Updated:** 2026-10-10
-- **Supersedes:** 0.4.0
+- **Supersedes:** 0.5.0
 - **Superseded by:** —
 
 ---
@@ -33,6 +33,7 @@ This document exists to answer:
 - How are errors structured?
 - How is logging structured?
 - What does the architecture look like as a diagram?
+- How does this document stay accurate as the code changes?
 
 This is not a specification of behaviour. Behaviour is defined in the
 other specification documents. This document defines **structure**.
@@ -55,6 +56,7 @@ other specification documents. This document defines **structure**.
 - Error architecture
 - Logging architecture
 - Architecture diagram
+- Document accuracy policy
 
 **Out of scope:**
 
@@ -88,6 +90,25 @@ Each module has one responsibility. Modules do not overlap.
 Modules communicate through interfaces, not concrete types. This
 enables testing and future extension.
 
+**Where interfaces live.** An interface is defined in the package
+that owns the concept it describes, not necessarily in the domain
+layer. The `Filesystem` interface is defined in
+`internal/filesystem` alongside its OS implementation, because the
+interface is a package-level contract for that package, not a
+domain concept. The `Logger` interface is defined in
+`internal/app/logging` for the same reason.
+
+This is a deliberate deviation from the strict ports-and-adapters
+convention, which places all interfaces in the domain layer. The
+deviation is chosen because Phase 2 has a small number of leaf
+packages, and each leaf's interface is consumed only by that leaf
+and its callers. If a future phase introduces a second
+implementation of the same interface for a different reason (for
+example, an in-memory filesystem for testing that is not in the
+same package as the OS filesystem), the interface moves to the
+domain layer at that point. Until then, it lives with its
+implementation.
+
 ### 3.4 Pure Domain Logic
 
 The domain layer contains pure logic. It does not perform I/O. This
@@ -116,25 +137,26 @@ Forge is organised into the following top-level modules.
 
 ### 4.1 Module List
 
-| Module | Layer | Responsibility |
-|--------|-------|----------------|
-| **CLI** | Application | Parse commands, present output, map results to exit codes |
-| **Application** | Application | Orchestrate use cases; coordinate domain and infrastructure |
-| **Domain** | Domain | Express the core concepts of Forge |
-| **Configuration** | Domain | Load, validate, and represent configuration |
-| **Blueprint** | Domain | Represent and validate Blueprints |
-| **Template** | Domain | Represent and resolve templates |
-| **Component** | Domain | Represent and resolve components |
-| **Policy** | Domain | Represent and evaluate policies |
-| **Renderer** | Application | Transform template content into rendered content |
-| **Validator** | Application | Evaluate rules against repository state |
-| **Update Engine** | Application | Compute and apply safe updates |
-| **Version Service** | Application | Report build metadata for the running binary |
-| **Filesystem** | Infrastructure | Provide safe, sandboxed filesystem access |
-| **Process** | Infrastructure | Provide process execution where needed |
-| **Registry** | Infrastructure | Fetch and verify remote artifacts (future) |
-| **Logging** | Infrastructure | Provide structured logging |
-| **Output** | Infrastructure | Format human and machine-readable output |
+| Module | Layer | Responsibility | Introduced by |
+|--------|-------|----------------|---------------|
+| **CLI** | Application | Parse commands, present output, map results to exit codes | WBS 4.1.1 |
+| **Application** | Application | Orchestrate use cases; coordinate domain and infrastructure | WBS 4.2.1 |
+| **Domain** | Domain | Express the core concepts of Forge | WBS 4.2.1 |
+| **Configuration** | Domain | Load, validate, and represent configuration | WBS 4.2.1 |
+| **Blueprint** | Domain | Represent and validate Blueprints | WBS 4.2.1 |
+| **Template** | Domain | Represent and resolve templates | WBS 4.2.1 |
+| **Component** | Domain | Represent and resolve components | WBS 4.2.1 |
+| **Policy** | Domain | Represent and evaluate policies | WBS 4.2.1 |
+| **Renderer** | Application | Transform template content into rendered content | WBS 4.2.1 |
+| **Validator** | Application | Evaluate rules against repository state | WBS 4.2.1 |
+| **Update Engine** | Application | Compute and apply safe updates | WBS 4.2.1 |
+| **Version Service** | Application | Report build metadata for the running binary | WBS 4.3.1 |
+| **Filesystem** | Infrastructure | Provide safe, sandboxed filesystem access | WBS 4.2.1 |
+| **Process** | Infrastructure | Provide process execution where needed | WBS 4.2.1 |
+| **Registry** | Infrastructure | Fetch and verify remote artifacts (future) | Phase 16 |
+| **Logging** | Infrastructure | Provide structured logging | WBS 4.2.1 |
+| **Output** | Infrastructure | Format human and machine-readable output | WBS 4.2.1 |
+| **Version Model** | Leaf | Hold the linker-injected build metadata | WBS 6.1.1 |
 
 ### 4.2 Module Descriptions
 
@@ -147,22 +169,12 @@ results, map to exit codes.
 
 **Depends on:** Application, Output, Logging.
 
-The CLI module is composed of several files within
-`internal/cli/`:
+**Introduced by:** WBS 4.1.1 (single-symbol public surface),
+WBS 4.2.2 (two-boundary execution model), WBS 4.4.1 (command
+registry), WBS 5.2.2 / WBS 5.2.3 (pre-parse validation),
+WBS 5.3.1 (global flags).
 
-- `root.go` — the root command constructor.
-- `registry.go` — the central command registry (§ 11.13).
-- `flags.go` — the global flag registration and readers (§ 11.14).
-- `validate.go` — the pre-parse argument validator (§ 11.15).
-- `execute.go` — the process boundary and the transformation to
-  `Dependencies` (§ 11).
-- `deps.go` — the `Dependencies` struct (§ 11.2).
-- `version.go` — the version handler (a subcommand, not part of the
-  CLI's own architecture).
-- `config.go` — the hidden placeholder for `forge config`.
-- `exitcodes.go` — the exit code constants and the error-to-code
-  mapping.
-- `doc.go` — the package documentation.
+The CLI module is composed of the files listed in § 13.1.
 
 #### 4.2.2 Application
 
@@ -174,6 +186,9 @@ check, diff, update, explain).
 
 **Depends on:** Domain, Renderer, Validator, Update Engine,
 Filesystem, Logging.
+
+**Introduced by:** WBS 4.2.1 (module structure), WBS 4.3.1
+(handler / service boundary).
 
 ##### 4.2.2a Version Service — A Concrete Example
 
@@ -193,6 +208,8 @@ write to process-global streams.
 
 **Depends on:** `internal/version` (for the build metadata). It does
 not depend on `internal/cli` or `github.com/spf13/cobra`.
+
+**Introduced by:** WBS 4.3.1.
 
 #### 4.2.3 Domain
 
@@ -275,6 +292,10 @@ Enforce boundary rules, path resolution, atomic writes.
 
 **Depends on:** Security rules (from Domain).
 
+**Interface placement:** The `Filesystem` interface is defined in
+`internal/filesystem` alongside its OS implementation. See § 3.3
+for the rationale.
+
 #### 4.2.13 Process
 
 **Responsibility:** Execute external processes where explicitly
@@ -302,6 +323,19 @@ required (e.g., Git operations).
 
 **Depends on:** Domain (for result types).
 
+#### 4.2.17 Version Model
+
+**Responsibility:** Hold the four linker-injected build metadata
+values (`Version`, `Commit`, `BuildDate`, `Dirty`) and expose them
+through a pure accessor.
+
+**Depends on:** Nothing. It is a **leaf package** in the module
+graph, so that `internal/cli` and `internal/app/version` can both
+import it without creating a cycle. See § 11.12.
+
+**Introduced by:** WBS 6.1.1. Relocated from `internal/cli` by
+WBS 4.3.1 to break the import cycle.
+
 ---
 
 ## 5. Dependency Direction
@@ -311,30 +345,30 @@ required (e.g., Git operations).
 > **Dependencies point inward.**
 
 ```text
-┌─────────────────────────────────────────────────────────┐
-│                                                         │
-│  ┌───────────────────────────────────────────────┐      │
-│  │  Application Layer                            │      │
-│  │  ┌───────────────────────────────────────┐    │      │
-│  │  │  Domain Layer                         │    │      │
-│  │  │                                       │    │      │
-│  │  │  Configuration  Blueprint  Template   │    │      │
-│  │  │  Component      Policy                │    │      │
-│  │  │                                       │    │      │
-│  │  └───────────────────────────────────────┘    │      │
-│  │                                               │      │
-│  │  Application Services                         │      │
-│  │  Renderer  Validator  Update Engine  Version  │      │
-│  │                                               │      │
-│  └───────────────────────────────────────────────┘      │
-│                                                         │
-│  ┌───────────────────────────────────────────────┐      │
-│  │  Infrastructure Layer                         │      │
-│  │  Filesystem  Process  Registry  Logging       │      │
-│  │  Output                                       │      │
-│  └───────────────────────────────────────────────┘      │
-│                                                         │
-└─────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────┐
+│                                                           │
+│  ┌─────────────────────────────────────────────────┐      │
+│  │  Application Layer                              │      │
+│  │  ┌───────────────────────────────────────────┐  │      │
+│  │  │  Domain Layer                             │  │      │
+│  │  │                                           │  │      │
+│  │  │  Configuration  Blueprint  Template       │  │      │
+│  │  │  Component      Policy                    │  │      │
+│  │  │                                           │  │      │
+│  │  └───────────────────────────────────────────┘  │      │
+│  │                                                 │      │
+│  │  Application Services                           │      │
+│  │  Renderer  Validator  Update Engine  Version    │      │
+│  │                                                 │      │
+│  └─────────────────────────────────────────────────┘      │
+│                                                           │
+│  ┌─────────────────────────────────────────────────┐      │
+│  │  Infrastructure Layer                           │      │
+│  │  Filesystem  Process  Registry  Logging         │      │
+│  │  Output                                         │      │
+│  └─────────────────────────────────────────────────┘      │
+│                                                           │
+└───────────────────────────────────────────────────────────┘
 ```
 
 ### 5.2 Allowed Dependencies
@@ -343,14 +377,19 @@ required (e.g., Git operations).
 |------|----|---------|
 | CLI | Application | Yes |
 | CLI | Infrastructure (Output, Logging) | Yes |
+| CLI | Version Model | Yes (leaf) |
 | Application | Domain | Yes |
 | Application | Infrastructure | Yes |
+| Application | Version Model | Yes (leaf) |
 | Domain | Domain (same layer) | Yes, within submodules |
 | Infrastructure | Domain | Yes (for shared types) |
 | Any | CLI | **No** |
 | Domain | Application | **No** |
 | Domain | Infrastructure (I/O) | **No** |
+| Domain | Version Model | **No** |
 | Infrastructure | CLI | **No** |
+| Infrastructure | Version Model | **No** |
+| Version Model | Any Forge package | **No** (leaf) |
 
 ### 5.3 Forbidden Dependencies
 
@@ -367,6 +406,9 @@ The following are explicitly forbidden:
   dependency direction.
 - **Any package outside `internal/cli` importing Cobra.** The CLI
   framework is a CLI-layer concern. See § 11.12.
+- **Any Forge package importing the Version Model.** The Version
+  Model is a leaf. Nothing in Forge may import it except the two
+  consumers named in § 5.2. See § 11.12.
 
 ### 5.4 Rationale
 
@@ -384,17 +426,25 @@ The dependency rule ensures:
 
 The dependency direction is enforced by:
 
-- Code review
-- Package structure (`internal/` subdirectories)
-- Automated tests that check import graphs (Phase 2)
-- Linting rules (Phase 2)
+- **Code review**, using the checklist in
+  [`docs/development.md`](./development.md).
+- **Package structure** (`internal/` subdirectories).
+- **Taskfile target** `verify:cobra:single-import`, which fails if
+  Cobra is imported outside `internal/cli`.
+- **Go structural tests** in `internal/cli/structure_test.go`
+  (`TestCobraImportedOnlyInCliPackage`) that assert the same rule
+  from the test side.
+- **Future:** a Taskfile target `verify:imports` (Phase 2) that
+  greps each package's imports against an allowlist. Until that
+  target exists, import-direction enforcement is by review and by
+  the two named checks above.
 
 ---
 
 ## 6. Interface Contracts
 
 Interfaces are the contract between modules. They are defined in the
-Domain or Application layer, and implemented by Infrastructure.
+package that owns the concept they describe (see § 3.3).
 
 ### 6.1 Filesystem
 
@@ -426,6 +476,8 @@ type Filesystem interface {
 }
 ```
 
+**Defined in:** `internal/filesystem/filesystem.go`.
+
 **Responsibilities:**
 
 - Enforce boundary rules (no path escapes)
@@ -446,14 +498,6 @@ type ConfigurationLoader interface {
     Load(path string) (*Configuration, error)
 }
 ```
-
-**Responsibilities:**
-
-- Read `forge.yaml`
-- Parse YAML
-- Validate schema
-- Apply defaults
-- Return structured errors
 
 ### 6.3 BlueprintLoader
 
@@ -575,6 +619,9 @@ type Logger interface {
 }
 ```
 
+**Defined in:** `internal/app/logging` (to be created; Phase 2
+placeholder is `internal/cli/deps.go`).
+
 ### 6.11 Output
 
 ```go
@@ -619,6 +666,10 @@ func Raw() string
 - Read files.
 - Write to process-global streams.
 - Import `internal/cli`.
+- Import `github.com/spf13/cobra`.
+- Import `internal/version` directly. It reads the metadata through
+  a small accessor (`buildInfo` in `internal/app/version/buildinfo.go`)
+  that isolates the import to one file. See § 11.12.
 
 The service is documented in § 11.12 as the reference implementation
 of the handler / service pattern.
@@ -780,7 +831,7 @@ CLI → parse args
 
 ```text
 CLI → newVersionCmd(deps).RunE
-  → version.Get()      (pure; reads internal/version)
+  → version.Get()      (pure; reads internal/version via buildInfo)
   → version.Format(deps.Stdout, info)
   → Exit code 0 (or 1 on write failure)
 ```
@@ -907,24 +958,36 @@ Suggestion:
 
 ### 8.7 Exit Code Mapping
 
-| Error category | Exit code |
-|----------------|-----------|
-| Success | 0 |
-| Validation failure | 1 |
-| Usage / input error | 2 |
-| Filesystem failure | 3 |
-| Security violation | 4 |
-| Update conflict | 5 |
-| Internal error | 1 (default) |
+| Error category | Exit code | Notes |
+|----------------|-----------|-------|
+| Success | 0 | |
+| Validation failure | 1 | |
+| Usage / input error | 2 | Includes pre-parse validation (§ 11.15) |
+| Filesystem failure | 3 | |
+| Security violation | 4 | |
+| Update conflict | 5 | |
+| Internal error | 1 | Default for uncategorised errors |
 
 The full exit code contract is defined in
 [`docs/cli-ux-spec.md`](./cli-ux-spec.md) § 7.
 
 ### 8.8 Secret Redaction
 
-Errors never include secret values. If an error's context contains a
-value matching a secret pattern (e.g., API key format), the value is
-replaced with `<redacted>`.
+Errors never include secret values. The secret pattern list is
+defined in one place: `docs/security-model.md` § "Secret patterns".
+The list covers:
+
+- AWS-style access key identifiers (`AKIA[0-9A-Z]{16}` and
+  equivalents).
+- GitHub personal access tokens (`ghp_...`, `gho_...`, `ghs_...`,
+  `ghu_...`).
+- Generic bearer tokens (`Bearer <token>` in HTTP header format).
+- PEM private key headers (`-----BEGIN * PRIVATE KEY-----`).
+
+If an error's context contains a value matching one of these
+patterns, the value is replaced with `<redacted>` before the error
+is formatted. The same pattern list is used by the logging layer;
+see § 9.6.
 
 ---
 
@@ -1009,6 +1072,10 @@ If a value matches a secret pattern, it is redacted:
 [DEBUG] Connection string: postgres://user:<redacted>@host/db
 ```
 
+The secret pattern list is defined once, in
+`docs/security-model.md` § "Secret patterns", and is the same list
+used by the error layer (§ 8.8). Do not maintain a second list.
+
 ### 9.7 Determinism
 
 Log output is deterministic where practical. Timestamps are the only
@@ -1040,73 +1107,79 @@ When running in CI (`CI=true` environment variable):
 ## 10. Architecture Diagram
 
 ```text
-┌───────────────────────────────────────────────────────────────────┐
-│                          USER / CI                                │
-└───────────────────────────────┬───────────────────────────────────┘
-                                │
-                                ▼
-┌───────────────────────────────────────────────────────────────────┐
-│                          CLI LAYER                                │
-│                                                                   │
-│  ┌───────────────┐   Pre-parse validation (§ 11.15)               │
-│  │ validateArgs  │   Rejects malformed invocations                │
-│  └───────┬───────┘                                                │
-│          │                                                        │
-│          ▼                                                        │
-│  ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐       │
-│  │ new       │  │ init      │  │ validate  │  │ update    │  ...  │
-│  └─────┬─────┘  └─────┬─────┘  └─────┬─────┘  └─────┬─────┘       │
-│        │              │              │              │             │
-│        └──────────────┴──────────────┴──────────────┘             │
-│                              │                                    │
-└──────────────────────────────┼────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                          USER / CI                              │
+└──────────────────────────────┬──────────────────────────────────┘
                                │
                                ▼
-┌───────────────────────────────────────────────────────────────────┐
-│                       APPLICATION LAYER                           │
-│                                                                   │
-│  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐   │
-│  │ Renderer   │  │ Validator  │  │ Update     │  │ Explain    │   │
-│  │            │  │            │  │ Engine     │  │ Service    │   │
-│  └─────┬──────┘  └─────┬──────┘  └─────┬──────┘  └─────┬──────┘   │
-│        │               │               │               │          │
-│  ┌─────┴──────┐                                                   │
-│  │ Version    │                                                   │
-│  │ Service    │                                                   │
-│  └────────────┘                                                   │
-│                                                                   │
-└────────┼───────────────┼───────────────┼───────────────┼──────────┘
-         │               │               │               │
-         └───────────────┴───────────────┴───────────────┘
-                         │
-                         ▼
-┌───────────────────────────────────────────────────────────────────┐
-│                          DOMAIN LAYER                             │
-│                                                                   │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐           │
-│  │Blueprint │  │Template  │  │Component │  │Policy    │           │
-│  └──────────┘  └──────────┘  └──────────┘  └──────────┘           │
-│                                                                   │
-│  ┌──────────────┐                                                 │
-│  │Configuration │                                                 │
-│  └──────────────┘                                                 │
-│                                                                   │
-└───────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                          CLI LAYER                              │
+│                                                                 │
+│  ┌──────────────┐   Pre-parse validation (§ 11.15)              │
+│  │ validateArgs │   Rejects malformed invocations               │
+│  └──────┬───────┘                                               │
+│         │                                                       │
+│         ▼                                                       │
+│  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐            │
+│  │ new     │  │ init    │  │ validate│  │ update  │  ...       │
+│  └────┬────┘  └────┬────┘  └────┬────┘  └────┬────┘            │
+│       │            │            │            │                  │
+│       └────────────┴────────────┴────────────┘                  │
+│                              │                                  │
+└──────────────────────────────┼──────────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                       APPLICATION LAYER                         │
+│                                                                 │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐        │
+│  │ Renderer │  │ Validator│  │ Update   │  │ Explain  │        │
+│  │          │  │          │  │ Engine   │  │ Service  │        │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘        │
+│       │             │             │             │               │
+│  ┌────┴─────────────┴─────────────┴─────────────┴─────┐         │
+│  │ Version Service                                     │         │
+│  └─────────────────────────────────────────────────────┘         │
+│                                                                 │
+└──────────┬──────────────┬──────────────┬──────────────┬─────────┘
+           │              │              │              │
+           └──────────────┴──────────────┴──────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                          DOMAIN LAYER                           │
+│                                                                 │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐        │
+│  │Blueprint │  │Template  │  │Component │  │Policy    │        │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘        │
+│                                                                 │
+│  ┌──────────────┐                                               │
+│  │Configuration │                                               │
+│  └──────────────┘                                               │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
                          ▲
                          │ (implements interfaces)
                          │
-┌───────────────────────────────────────────────────────────────────┐
-│                     INFRASTRUCTURE LAYER                          │
-│                                                                   │
-│  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐   │
-│  │ Filesystem │  │ Process    │  │ Registry   │  │ Logging    │   │
-│  └────────────┘  └────────────┘  └────────────┘  └────────────┘   │
-│                                                                   │
-│  ┌────────────┐                                                   │
-│  │ Output     │                                                   │
-│  └────────────┘                                                   │
-│                                                                   │
-└───────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                     INFRASTRUCTURE LAYER                        │
+│                                                                 │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐        │
+│  │Filesystem│  │ Process  │  │ Registry │  │ Logging  │        │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘        │
+│                                                                 │
+│  ┌──────────┐                                                   │
+│  │ Output   │                                                   │
+│  └──────────┘                                                   │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+
+                    ┌─────────────────────┐
+                    │  LEAF: Version      │
+                    │  (build metadata)   │
+                    │  imported by CLI    │
+                    │  and Application    │
+                    └─────────────────────┘
 ```
 
 ### 10.1 Reading the Diagram
@@ -1125,6 +1198,10 @@ When running in CI (`CI=true` environment variable):
   listed alongside Renderer, Validator, and Update Engine because it
   has the same architectural role: it orchestrates a use case on
   behalf of a CLI handler.
+- **The Version Model is a leaf package** — it is drawn outside the
+  three layers because it belongs to none of them. It is imported by
+  `internal/cli` and `internal/app/version` and by nothing else. See
+  § 11.12.
 - **Pre-parse validation is the first stage** — the CLI's pipeline
   begins with `validateArgs`, which rejects malformed invocations
   before the command tree runs. The stage is documented in § 11.15.
@@ -1132,42 +1209,42 @@ When running in CI (`CI=true` environment variable):
 ### 10.2 Alternative View: By Concern
 
 ```text
-┌───────────────────────────────────────────────────────────────────┐
-│                                                                   │
-│  USER-FACING                                                      │
-│  ├── CLI commands                                                 │
-│  ├── Human output                                                 │
-│  └── Machine output (JSON, SARIF)                                 │
-│                                                                   │
-├───────────────────────────────────────────────────────────────────┤
-│                                                                   │
-│  ORCHESTRATION                                                    │
-│  ├── Application services (New, Init, Validate, Check, Diff,      │
-│  │   Update, Explain, Version)                                    │
-│  ├── Renderer                                                     │
-│  ├── Validator                                                    │
-│  └── Update Engine                                                │
-│                                                                   │
-├───────────────────────────────────────────────────────────────────┤
-│                                                                   │
-│  CORE LOGIC                                                       │
-│  ├── Blueprint (parse, validate, default)                         │
-│  ├── Template (parse, resolve, plan)                              │
-│  ├── Component (resolve, compose, conflict)                       │
-│  ├── Policy (parse, evaluate)                                     │
-│  └── Configuration (load, merge)                                  │
-│                                                                   │
-├───────────────────────────────────────────────────────────────────┤
-│                                                                   │
-│  FOUNDATIONS                                                      │
-│  ├── Filesystem (boundary, atomic writes)                         │
-│  ├── Process (Git, subprocess)                                    │
-│  ├── Registry (fetch, verify)                                     │
-│  ├── Logging                                                      │
-│  ├── Output (formatting)                                          │
-│  └── Version (build metadata)                                     │
-│                                                                   │
-└───────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                 │
+│  USER-FACING                                                    │
+│  ├── CLI commands                                               │
+│  ├── Human output                                               │
+│  └── Machine output (JSON, SARIF)                               │
+│                                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  ORCHESTRATION                                                  │
+│  ├── Application services (New, Init, Validate, Check, Diff,    │
+│  │   Update, Explain, Version)                                  │
+│  ├── Renderer                                                   │
+│  ├── Validator                                                  │
+│  └── Update Engine                                              │
+│                                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  CORE LOGIC                                                     │
+│  ├── Blueprint (parse, validate, default)                       │
+│  ├── Template (parse, resolve, plan)                            │
+│  ├── Component (resolve, compose, conflict)                     │
+│  ├── Policy (parse, evaluate)                                   │
+│  └── Configuration (load, merge)                                │
+│                                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  FOUNDATIONS                                                    │
+│  ├── Filesystem (boundary, atomic writes)                       │
+│  ├── Process (Git, subprocess)                                  │
+│  ├── Registry (fetch, verify)                                   │
+│  ├── Logging                                                    │
+│  ├── Output (formatting)                                        │
+│  └── Version (build metadata)                                   │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -1177,7 +1254,8 @@ When running in CI (`CI=true` environment variable):
 ### 11.1 Overview
 
 The Forge CLI is structured around **two boundaries** and **two
-structs**, each serving a distinct purpose:
+structs**, each serving a distinct purpose. This model is established
+by WBS 4.2.2.
 
 | Layer | Type | Visibility | Purpose |
 |-------|------|------------|---------|
@@ -1245,9 +1323,9 @@ interface. No nested structs, no pointers to structs, no maps.
 
 ```go
 type Dependencies struct {
-    Config *config.Config
+    Config config.Config
     Logger Logger
-    FS     filesystem.FS
+    FS     filesystem.Filesystem
     Stdout io.Writer
     Stderr io.Writer
     Env    func(string) string
@@ -1258,12 +1336,24 @@ Each field is a resolved collaborator that a command may use.
 
 | Field | Purpose | Phase 2 placeholder |
 |-------|---------|---------------------|
-| `Config` | Resolved configuration for this invocation. | `&config.Config{}` |
+| `Config` | Resolved configuration for this invocation. | `config.Config{}` (zero value) |
 | `Logger` | Diagnostic logger. | `newLogger(stderr)` (slog-backed). |
 | `FS` | Filesystem abstraction. | `filesystem.NewOSFS(rootPath)`. |
 | `Stdout` | Destination for successful output. | `opts.stdout`. |
 | `Stderr` | Destination for diagnostics. | `opts.stderr`. |
 | `Env` | Environment variable lookup. | `opts.env`. |
+
+**Why `Config` is a value, not a pointer.** Five of the six fields
+are values or interfaces. Making `Config` a pointer would introduce
+a `nil` state that is indistinguishable from "config not loaded",
+and would make `Dependencies` non-comparable in tests that want to
+assert equality. A `config.Config` value has a valid zero value
+(the empty configuration), which is what Phase 2 uses when no
+`forge.yaml` is present.
+
+If a future phase needs to distinguish "no config file" from "empty
+config file", it adds a field (`ConfigSource string` or similar)
+rather than changing the pointer-ness of `Config`.
 
 `Dependencies` is constructed by `buildDependencies(opts)` — **exactly
 once per invocation**, from `executeWithOptions`.
@@ -1281,7 +1371,7 @@ constructor signature changes. This is the property that makes
 two boundaries:
 
 ```text
-process ──► options ──► buildDependencies ──► Dependencies ──► commands
+process ──▶ options ──▶ buildDependencies ──▶ Dependencies ──▶ commands
 ```
 
 The transformation is one-directional and pure:
@@ -1362,13 +1452,17 @@ Two invariants make the two-boundary model auditable:
    in a test helper outside the package, would violate this
    invariant.
 
-Both invariants are verified by:
+Both invariants are enforced by:
 
-- **Structural tests** in `internal/cli/structure_test.go` and
-  `internal/cli/execute_test.go` (white-box package `cli`).
-- **Taskfile targets** `verify:two-boundary` and
-  `verify:handler-boundary`, which grep the source tree.
-- **Code review.**
+- **Taskfile target** `verify:two-boundary`, which greps the source
+  tree for violations (see `Taskfile.yml`).
+- **Code review**, using the checklist in
+  [`docs/development.md`](./development.md).
+- **Future:** Go structural tests in
+  `internal/cli/execute_test.go` that assert the same invariants
+  from the test side. The tests are not yet written; this document
+  records them as required before Phase 2 exit. Until they exist,
+  the invariants rely on the Taskfile target and review alone.
 
 ### 11.6 What Is Not Tested In Process
 
@@ -1442,8 +1536,11 @@ to stdout, diagnostics and errors go to stderr.
 | `internal/app/version/format.go` | The version formatter. Takes an `io.Writer`. |
 | `internal/app/version/buildinfo.go` | Reads build metadata from `internal/version`. |
 | `internal/app/version/service_test.go` | Unit tests for the version service, without Cobra. |
+| `internal/app/version/format_test.go` | Tests for the frozen format. |
+| `internal/app/version/buildinfo_test.go` | Tests for the accessor. |
 | `internal/version/version.go` | The build metadata variables and their accessor. Leaf package; imported by `internal/cli` and `internal/app/version`. |
 | `internal/version/version_test.go` | Unit tests for the metadata accessor. |
+| `internal/version/injection_test.go` | Tests for the linker injection contract (WBS 6.1.2). |
 | `cmd/forge/main.go` | The process entry point. Calls `Execute()` and forwards its return to `os.Exit`. |
 | `cmd/forge/binary_integration_test.go` | Process-boundary tests. |
 
@@ -1454,15 +1551,17 @@ to stdout, diagnostics and errors go to stderr.
 
 2. **`executeWithOptions` reads only from `opts`.** It must not read
    `os.Args`, `os.Stdin`, `os.Stdout`, `os.Stderr`, or `os.Getenv`.
-   This invariant is enforced by a structural test
-   (`TestExecuteWithOptions_NoProcessStreamsReferenced`) in
+   This invariant is enforced by the `verify:two-boundary` Taskfile
+   target and, once written, by
+   `TestExecuteWithOptions_NoProcessStreamsReferenced` in
    `execute_test.go`.
 
 3. **`buildDependencies` is the only function that constructs a
    `Dependencies` value.** A struct literal of the form
    `Dependencies{...}` must not appear outside `deps.go` in
-   production code. This invariant is enforced by a structural test
-   (`TestExecuteWithOptions_DoesNotConstructDependenciesByHand`) in
+   production code. This invariant is enforced by the
+   `verify:two-boundary` Taskfile target and, once written, by
+   `TestExecuteWithOptions_DoesNotConstructDependenciesByHand` in
    `execute_test.go`.
 
 4. **`newRootCmd` accepts `Dependencies`, not `options`.** A wrapper
@@ -1557,6 +1656,19 @@ For every command, there must be:
    formatter renders. The result type is exported from the service
    package. It has no methods and no dependencies.
 
+#### What the service must not import
+
+Three independent constraints, each enforced separately:
+
+| Constraint | Enforcement |
+|------------|-------------|
+| The service must not import `github.com/spf13/cobra`. | `verify:cobra:single-import` Taskfile target; `TestCobraImportedOnlyInCliPackage` in `structure_test.go`. |
+| The service must not import `internal/cli`. | Code review; a future `verify:imports` target. |
+| The service must not receive a `Dependencies` value. | The constructor signature of `newVersionCmd` takes `Dependencies` at the handler level, not at the service level. The service's exported functions take plain parameters. |
+
+The distinction matters: "the service knows nothing about Cobra" is
+a vibe; the three constraints above are checkable properties.
+
 #### Reference implementation
 
 The `forge version` command is the reference implementation. Its
@@ -1584,6 +1696,21 @@ Every future command follows this shape. The handler receives a
 the work. The service knows nothing about Cobra, flags, or
 `Dependencies`.
 
+#### Line-count enforcement
+
+The handler body line limit (20 lines) is enforced by the
+`verify:handler-boundary:line-count` Taskfile target. The target
+extracts the `RunE` closure by scanning for the `RunE:` line and
+the matching closing brace. The extraction relies on
+gofmt-canonical formatting: `RunE:` on its own line, and the closing
+`},` at the same indentation as the `RunE:` line. A handler that is
+formatted differently (for example, with the closure on one line,
+or with the closing brace indented differently) will be reported as
+"could not locate RunE closure" rather than "over the limit". This
+is intentional: the check prefers a false negative to a false
+positive, and the extraction is documented in the Taskfile's
+comment for that target.
+
 #### The build-metadata leaf package
 
 The version service needs four values — `Version`, `Commit`,
@@ -1592,7 +1719,7 @@ The version service needs four values — `Version`, `Commit`,
 import cycle:
 
 ```text
-internal/cli  ──────►  internal/app/version
+internal/cli  ──────▶  internal/app/version
      ▲                        │
      │                        │
      └────────────────────────┘
@@ -1619,6 +1746,52 @@ The relocation is not optional. "Treat the values as internal" is not
 a construct that Go supports; either the import exists or it does
 not, and if it exists, the cycle exists.
 
+The leaf package's public surface is four exported `var`s and one
+exported function:
+
+```go
+// internal/version/version.go
+var Version string
+var Commit string
+var BuildDate string
+var Dirty string
+
+func Get() (version, commit, buildDate, dirty string)
+```
+
+The four variables are the only `-X` write targets in the module.
+Their names are frozen. The `Get` accessor returns the four values
+as a tuple. See WBS 6.1.1 and WBS 6.1.2 for the model and the
+linker injection contract.
+
+#### Import isolation in the service
+
+The version service does not import `internal/version` directly.
+It reads the metadata through a small accessor,
+`internal/app/version/buildinfo.go`, whose only job is to isolate
+the import to one file:
+
+```go
+// internal/app/version/buildinfo.go
+func buildInfo() (version, commit, buildDate, dirty string) {
+    return forgeversion.Get()
+}
+```
+
+This has two benefits:
+
+1. **The import appears in one place.** A reader of `service.go`
+   sees a pure `Get` that reads no Forge packages except the local
+   call to `buildInfo`.
+2. **The seam is refactorable.** If a future change moves the
+   metadata source (for example, to `runtime/debug.ReadBuildInfo`),
+   only `buildinfo.go` changes. `Get` and its callers are unchanged.
+
+`TestNonFunctional_BuildInfoIsolatesTheImport` in
+`internal/app/version/buildinfo_test.go` pins the property: the
+import line must be in `buildinfo.go` and must not be in
+`service.go`.
+
 #### Enforcement
 
 The boundary is enforced by:
@@ -1629,6 +1802,11 @@ The boundary is enforced by:
   The tests strip comments before searching, so that the handler's
   docstring may name the forbidden tokens while explaining that the
   handler does not use them.
+- **The `verify:handler-boundary` Taskfile target**, which runs
+  the line-count check, the direct-I/O check, the `os.Exit` check,
+  the filesystem-I/O check, and the leaf-package check.
+- **The `verify:cobra:single-import` Taskfile target**, which
+  enforces the "no Cobra outside `internal/cli`" rule.
 - **Code review**, using the checklist in
   [`docs/development.md`](./development.md).
 - **The example itself.** `version.go` is the shortest handler in the
@@ -1716,15 +1894,24 @@ for _, ctor := range registry {
 
 #### Adding a command
 
-The four-step procedure is documented in the package docstring of
-`registry.go`. In summary:
+The complete procedure is documented in the package docstring of
+`registry.go` and repeated here so that a contributor reading the
+architecture document does not have to find the file:
 
-1. Create `internal/cli/<name>.go`.
+1. Create `internal/cli/<name>.go`. The file must define exactly
+   one constructor with the signature
+   `func new<Name>Cmd(deps Dependencies) *cobra.Command`.
 2. Append `new<Name>Cmd` to the registry slice in the correct
-   position.
+   position (alphabetical within the user-facing group; see the
+   ordering convention in `registry.go`).
 3. Add the file to `expectedSourceFiles` in
    `internal/cli/structure_test.go`.
-4. Add tests.
+4. Add the file to `HANDLER_FILES` in `Taskfile.yml` so that
+   `verify:handler-boundary` checks it.
+5. Add tests: handler tests in `internal/cli/<name>_test.go`,
+   service tests in `internal/app/<name>/`.
+6. If the command is user-facing, add its contract to
+   `docs/cli-ux-spec.md`.
 
 #### Enforcement
 
@@ -1738,7 +1925,7 @@ The registry is enforced by:
   contract (WBS 4.4.2).
 - **Structural tests** in `internal/cli/root_test.go` that assert
   the registry order matches the help output order.
-- **Code review.**
+- **Code review**.
 
 ### 11.14 Global Flags
 
@@ -1832,6 +2019,10 @@ The inventory is enforced by:
   registrations in `flags.go`.
 - **Code review.**
 
+If the `verify:global-flags` target does not yet exist in
+`Taskfile.yml`, that is a gap that must be closed before Phase 2
+exit. This document records the target as required.
+
 ### 11.15 Pre-Parse Argument Validation
 
 WBS 5.2.2 and WBS 5.2.3 establish a pre-parse argument validator: a
@@ -1859,7 +2050,7 @@ defines:
 
 - `validateArgs(args []string) error` — the entry point. Dispatches
   to the three sub-validators.
-- `validateHelpFlagWithArgs(args)` — rejects shapes 1.
+- `validateHelpFlagWithArgs(args)` — rejects shape 1.
 - `validateVersionFlagWithArgs(args)` — rejects shape 2.
 - `validateConfigFlagWithArgs(args)` — rejects shape 3.
 - `validateHelpTopic(args)` — rejects shape 4.
@@ -1907,9 +2098,24 @@ The validator reads two inputs:
    command tree, because the tree is not available at this stage
    (`newRootCmd` runs after `validateArgs`).
 
+#### Cobra-generated command names
+
 The validator also accepts Cobra's auto-generated `help` and
 `completion` command names as valid help topics. They are not in the
 registry; the validator handles them by name.
+
+**This is a coupling to Cobra's naming.** If a future Cobra version
+renames `completion`, or adds a new auto-generated command, the
+validator will start rejecting valid invocations.
+
+The coupling is made safe by a unit test
+(`TestValidateHelpTopic_CobraGeneratedNames` in `validate_test.go`)
+that asserts the two names exist in a constructed command tree. If
+Cobra renames them, the test fails and the contributor updates both
+the test and `validate.go`. This is the pragmatic option: the
+alternative (constructing the root command before validation) would
+add a second command-tree construction to the pipeline for the sole
+purpose of discovering two names.
 
 #### Enforcement
 
@@ -1924,6 +2130,9 @@ The validator is enforced by:
   `verify:version-contract`, which run the contract tests and grep
   for accidental regressions.
 - **Code review.**
+
+If the two Taskfile targets do not yet exist, they must be added
+before Phase 2 exit. This document records them as required.
 
 #### Why the validator is not a Cobra hook
 
@@ -2035,8 +2244,9 @@ forge/
 │   ├── update/       # Update engine
 │   ├── state/        # State store
 │   ├── version/      # Build metadata (WBS 4.3.1) — leaf package
-│   └── infra/        # Infrastructure
-│       ├── fs/       # Filesystem
+│   ├── filesystem/   # Filesystem interface and OS implementation
+│   ├── config/       # Configuration type
+│   └── infra/        # Infrastructure (future)
 │       ├── process/  # Process execution
 │       ├── registry/ # Registry (future)
 │       ├── logging/  # Logging
@@ -2057,13 +2267,15 @@ forge/
 | `internal/validator` | Validation rules and engine |
 | `internal/update` | Update planning, merging, application |
 | `internal/state` | Reading and writing `.forge/state.yaml` |
-| `internal/version` | Build metadata (version, commit, build date) |
-| `internal/infra/fs` | Filesystem interface and OS implementation |
+| `internal/version` | Build metadata (version, commit, build date) — leaf |
+| `internal/filesystem` | Filesystem interface and OS implementation |
+| `internal/config` | Configuration type |
+| `internal/infra/process` | Process execution (future) |
 | `internal/infra/logging` | Logger interface and implementation |
 | `internal/infra/output` | Human and JSON output formatters |
 | `templates/` | Bundled templates |
 
-Within `internal/cli`, the files are:
+### 13.2 Files in `internal/cli`
 
 | File | Purpose |
 |------|---------|
@@ -2077,8 +2289,9 @@ Within `internal/cli`, the files are:
 | `validate.go` | The pre-parse argument validator |
 | `version.go` | The `forge version` handler |
 | `config.go` | The hidden `forge config` placeholder |
+| `*_test.go` | Tests colocated with their subjects. The complete list is in § 11.9. |
 
-### 13.2 Import Rules
+### 13.3 Import Rules
 
 - `internal/domain/*` may not import any other `internal/*` package
   (except other `internal/domain/*`).
@@ -2089,6 +2302,8 @@ Within `internal/cli`, the files are:
   types) but not `internal/app/*` or `internal/cli`.
 - `internal/version` may not import any other `internal/*` package.
   It is a leaf.
+- `internal/filesystem` may import `internal/domain/*` (for shared
+  types) but not `internal/app/*` or `internal/cli`.
 - No package outside `internal/cli` may import
   `github.com/spf13/cobra`. The CLI framework is a CLI-layer
   concern.
@@ -2152,6 +2367,8 @@ behaviour.
 
 ### 15.1 Adding a New Command
 
+See § 11.13 for the complete procedure. In summary:
+
 1. Define the handler in `internal/cli/<name>.go`. It must be thin
    (under 20 lines of body) and follow the pattern in § 11.12.
 2. Define the use case in `internal/app/<name>/`. The service must
@@ -2163,6 +2380,8 @@ behaviour.
 5. Add the handler file to `HANDLER_FILES` in `Taskfile.yml`.
 6. Add tests: handler tests in `internal/cli/<name>_test.go`,
    service tests in `internal/app/<name>/`.
+7. If the command is user-facing, add its contract to
+   `docs/cli-ux-spec.md`.
 
 ### 15.2 Adding a New Domain Concept
 
@@ -2173,9 +2392,11 @@ behaviour.
 
 ### 15.3 Adding a New Infrastructure Provider
 
-1. Define the interface (in domain or application)
-2. Implement the provider in `internal/infra/<provider>`
-3. Wire it into the CLI
+1. Define the interface (in the package that owns the concept; see
+   § 3.3).
+2. Implement the provider in `internal/<provider>` or
+   `internal/infra/<provider>`.
+3. Wire it into the CLI.
 
 ### 15.4 Adding a Global Flag
 
@@ -2186,6 +2407,8 @@ behaviour.
 4. Add the reader and (if needed) the resolver.
 5. Update § 4.11 of `docs/cli-ux-spec.md`.
 6. Add tests.
+7. Add the flag to the `verify:global-flags` Taskfile target's
+   expected count.
 
 ### 15.5 Adding a Pre-Parse Rejection
 
@@ -2195,8 +2418,26 @@ behaviour.
 3. Add the sub-validator to the `validateArgs` dispatcher.
 4. Add unit tests in `internal/cli/validate_test.go`.
 5. Add a contract test in `internal/cli/root_test.go`.
+6. If the rejection involves an interception flag, extend
+   `TestValidateHelpTopic_CobraGeneratedNames` or write an
+   equivalent test to pin the coupling.
 
-### 15.6 Plugin System
+### 15.6 Adding a Field to `Dependencies`
+
+1. Add the field to the `Dependencies` struct in
+   `internal/cli/deps.go`.
+2. Construct the field in `buildDependencies`.
+3. Add a test to `internal/cli/deps_test.go` that asserts the field
+   is constructed.
+4. If the field is a new collaborator (not a primitive), add its
+   interface to the appropriate package and its implementation to
+   the appropriate infrastructure package.
+5. Update the § 11.2.2 table.
+
+No command constructor signature changes. This is the property that
+makes `Dependencies` a stable boundary across phases.
+
+### 15.7 Plugin System
 
 A plugin system is not supported in Phase 1. The architecture reserves
 space for future plugins:
@@ -2212,85 +2453,92 @@ Plugins will be introduced in a future phase (see
 
 ## 16. Anti-Patterns to Avoid
 
-The following are explicitly discouraged.
+The following are explicitly discouraged. They are organised in two
+tiers: **cardinal sins**, which are the ones reviewers should catch
+without thinking, and **additional rules**, which are documented for
+completeness.
 
-### 16.1 Business Logic in the CLI
+### 16.1 Cardinal Sins
+
+#### 16.1.1 Business Logic in the CLI
 
 The CLI layer is for command parsing and output formatting only. Any
-business logic belongs in the Application or Domain layer. See § 11.12
-for the operational rule.
+business logic belongs in the Application or Domain layer. See
+§ 11.12 for the operational rule.
 
-### 16.2 Direct Filesystem Access from Domain
+#### 16.1.2 Direct Filesystem Access from Domain
 
-Domain code never calls `os.ReadFile`, `os.WriteFile`, or similar. All
-filesystem access goes through the `Filesystem` interface.
+Domain code never calls `os.ReadFile`, `os.WriteFile`, or similar.
+All filesystem access goes through the `Filesystem` interface.
 
-### 16.3 God Objects
-
-No single object orchestrates everything. Responsibilities are split
-across modules.
-
-### 16.4 Global State
+#### 16.1.3 Global State
 
 No global mutable variables. Dependencies are injected via
 constructors.
 
-### 16.5 Implicit Dependencies
-
-Every dependency is explicit in a constructor. No hidden globals, no
-service locators.
-
-### 16.6 Circular Dependencies
+#### 16.1.4 Circular Dependencies
 
 Packages do not import each other cyclically. The dependency
 direction is strictly enforced.
 
-### 16.7 Silent Failures
+#### 16.1.5 Cobra Outside the CLI Layer
+
+No package outside `internal/cli` may import
+`github.com/spf13/cobra`. The CLI framework is a CLI-layer concern;
+an application service that imports Cobra has collapsed the boundary
+between the handler and the service.
+
+### 16.2 Additional Rules
+
+#### 16.2.1 God Objects
+
+No single object orchestrates everything. Responsibilities are split
+across modules.
+
+#### 16.2.2 Implicit Dependencies
+
+Every dependency is explicit in a constructor. No hidden globals, no
+service locators.
+
+#### 16.2.3 Silent Failures
 
 Every error is reported. No swallowed errors, no ignored returns.
 
-### 16.8 Unstructured Errors
+#### 16.2.4 Unstructured Errors
 
-Every error uses the `ForgeError` type. No `errors.New("something
-failed")`.
+Every error uses the `ForgeError` type. No
+`errors.New("something failed")`.
 
-### 16.9 Unstructured Logs
+#### 16.2.5 Unstructured Logs
 
-Every log message has a level and structured fields. No `fmt.Println`
-for diagnostics.
+Every log message has a level and structured fields. No
+`fmt.Println` for diagnostics.
 
-### 16.10 Environment-Dependent Behaviour
+#### 16.2.6 Environment-Dependent Behaviour
 
 Forge behaves the same regardless of environment. Environment
-variables do not change behaviour except through explicit, documented
-configurations.
+variables do not change behaviour except through explicit,
+documented configurations.
 
-### 16.11 Cobra Outside the CLI Layer
-
-No package outside `internal/cli` may import
-`github.com/spf13/cobra`. The CLI framework is a CLI-layer concern; an
-application service that imports Cobra has collapsed the boundary
-between the handler and the service.
-
-### 16.12 Build Metadata Outside the Leaf Package
+#### 16.2.7 Build Metadata Outside the Leaf Package
 
 The build metadata variables (`Version`, `Commit`, `BuildDate`,
 `Dirty`) live in `internal/version` and only there. Defining them
 elsewhere would recreate the import cycle that WBS 4.3.1 broke. See
 § 11.12.
 
-### 16.13 `init()`-Based Command Registration
+#### 16.2.8 `init()`-Based Command Registration
 
 Commands are registered in the `registry` slice in `registry.go`. A
 command file must not append to the registry from an `init()`
 function. See § 11.13.
 
-### 16.14 Speculative Global Flags
+#### 16.2.9 Speculative Global Flags
 
 A global flag must have a documented consumer in a later WBS item. A
 flag without a consumer is not added. See § 11.14.
 
-### 16.15 Pre-Parse Rejection in a Cobra Hook
+#### 16.2.10 Pre-Parse Rejection in a Cobra Hook
 
 Malformed invocations that involve interception flags (`--help`,
 `--version`) cannot be rejected in a Cobra hook, because Cobra
@@ -2299,7 +2547,64 @@ pre-parse stage. See § 11.15.
 
 ---
 
-## 17. Relationship to Other Specifications
+## 17. Keeping This Document Accurate
+
+This document describes the code. When the code changes, the
+document changes in the same commit.
+
+### 17.1 The Rule
+
+> A pull request that changes a structural property described by
+> this document must update the corresponding section of this
+> document in the same commit. "Structural property" means any of:
+> module boundaries, dependency direction, interface contracts,
+> the two-boundary model, the handler / service pattern, the
+> command registry, the global flag inventory, the pre-parse
+> validation contract, error architecture, or logging architecture.
+
+A PR that renames `validateArgs`, or moves a file between packages,
+or adds a `Dependencies` field, or changes the exit-code mapping, is
+incomplete without a corresponding document update.
+
+### 17.2 How to Reference Sections
+
+Use section headings, not section numbers, in commit messages, PR
+descriptions, and code comments:
+
+- Good: `// See docs/architecture.md "Handler / Service Boundary".`
+- Bad: `// See docs/architecture.md § 11.12.`
+
+The heading is stable. The number changes when a section is inserted
+or removed.
+
+### 17.3 How the Document Is Verified
+
+This document is reviewed by human reviewers, not by a linter. The
+three mechanical claims it makes — that certain tests exist, that
+certain Taskfile targets exist, and that certain structural rules
+are enforced — are verified by running the named tests and targets.
+A reviewer who suspects a drift runs the tests.
+
+If you find a claim in this document that does not match the code,
+fix the code or fix the document, in the same commit, and note which
+you did.
+
+### 17.4 What Is Not Verified
+
+The document does not claim to be complete. It describes the
+structure that Phase 2 has established; future phases will add
+structure that this document does not yet describe. When a future
+WBS introduces a new module, boundary, or contract, it adds the
+corresponding section here.
+
+### 17.5 Document History
+
+Every substantive change to this document is recorded in § 19, with
+the WBS item that motivated it.
+
+---
+
+## 18. Relationship to Other Specifications
 
 | Specification | Relationship |
 |---------------|--------------|
@@ -2308,30 +2613,31 @@ pre-parse stage. See § 11.15.
 | [Template](./template-spec.md) | Domain model consumed by the Template package |
 | [Component](./component-spec.md) | Domain model consumed by the Component package |
 | [Validation](./validation-spec.md) | Implemented by the Validator package |
-| [Security Model](./security-model.md) | Enforced by the Filesystem package |
+| [Security Model](./security-model.md) | Enforced by the Filesystem package; defines the secret pattern list |
 | [Update Model](./update-model.md) | Implemented by the Update Engine package |
-| [CLI UX Spec](./cli-ux-spec.md) | Implemented by the CLI layer |
+| [CLI UX Spec](./cli-ux-spec.md) | Implemented by the CLI layer; pins the flag inventory and the pre-parse rejection contract |
+| [Development Guide](./development.md) | Contributor-facing companion; describes how to build, test, and diagnose the structures this document defines |
+| [Dependency Policy](./dependency-policy.md) | Governs what this architecture may depend on |
 | [Product Discovery](./product-discovery.md) | Defines the product this architecture implements |
 
 ---
 
-## 18. Open Questions
+## 19. Open Questions
 
 The following questions remain open and should be resolved before
 implementation:
 
-- Should the CLI layer be built with **Cobra** (the de facto standard)
-  or with a lighter framework?
 - Should the Application layer use a **use case** pattern (one service
   per command) or a **service** pattern (one service per domain
-  concept)?
+  concept)? Current code uses the use-case pattern; the document
+  records it as the accepted choice pending further services.
 - Should the Domain layer use **value objects** or plain structs?
 - Should the Filesystem interface be **narrow** (few methods) or
-  **wide** (all operations)?
+  **wide** (all operations)? Current code uses a wide interface.
 - Should the Update Engine use a library for **three-way merge** or
   implement one?
 - Should logging use a library (e.g., `slog`, `zap`) or a custom
-  implementation?
+  implementation? Current code uses `log/slog`.
 - Should the CLI support **shell completion** out of the box?
 - Should the architecture support **parallelism** for large
   repositories, and if so, where?
@@ -2340,11 +2646,12 @@ implementation:
   resolution?
 
 These questions will be addressed in Phase 2 as implementation
-begins.
+begins. Answers that affect the structure described in this document
+will be added to the relevant section.
 
 ---
 
-## 19. Document History
+## 20. Document History
 
 | Version | Date | Author | Change |
 |---------|------|--------|--------|
@@ -2352,4 +2659,5 @@ begins.
 | 0.2.0 | 2026-10-09 | @thapelomagqazana | Added module list, dependency direction, interface contracts, and data flow. |
 | 0.3.0 | 2026-10-09 | @thapelomagqazana | Refined § 11 to describe the two-boundary execution model introduced by WBS 4.2.2. Added the `Dependencies` struct, the `options`/`Dependencies` split, the transformation, the two testability seams, the two auditable invariants, and the seven rules for extending the model. Renamed § 11 from "The Two-Layer Execution Model" to "The Two-Boundary Execution Model". |
 | 0.4.0 | 2026-10-10 | @thapelomagqazana | Added § 11.12 (Handler / Service Boundary) in response to WBS 4.3.1. Added the reference implementation (`forge version`), the allowed / forbidden table, the enforcement rules, and the rationale for the `internal/version` leaf package. Added § 4.2.2a (Version Service) as a concrete example of the Application module. Updated § 5.3, § 7.2, § 7.4, § 10, § 11.9, § 13, § 16, and the module list to reflect the new service. Added rules for adding a command in § 15.1. |
-| 0.5.0 | 2026-10-10 | @thapelomagqazana | Added § 11.13 (Command Registration) in response to WBS 4.4.1. Documents the central registry, its rules, the four-step procedure for adding a command, and the enforcement. Added § 11.14 (Global Flags) in response to WBS 5.3.1. Documents the three-flag inventory, the persistence, the precedence rule, the rationale for reading flags from the command rather than `Dependencies`, and the ADR requirement for a fourth flag. Added § 11.15 (Pre-Parse Argument Validation) in response to WBS 5.2.2 and WBS 5.2.3. Documents the four rejected shapes, the file's structure, the pipeline placement, the data sources, and the reasoning for the pre-parse stage. Extended § 4.2.1 to list the CLI's files; extended § 7.1 and § 10 to show the pre-parse validation stage; extended § 11.9's related-files table; added § 15.4 and § 15.5 (adding a global flag, adding a pre-parse rejection); extended § 16 with three new anti-patterns (init-based registration, speculative flags, rejection in a Cobra hook). |
+| 0.5.0 | 2026-10-10 | @thapelomagqazana | Added § 11.13 (Command Registration) in response to WBS 4.4.1. Added § 11.14 (Global Flags) in response to WBS 5.3.1. Added § 11.15 (Pre-Parse Argument Validation) in response to WBS 5.2.2 and WBS 5.2.3. Extended § 4.2.1, § 7.1, § 10, § 11.9, § 13, § 15, § 16. |
+| 0.6.0 | 2026-10-10 | @thapelomagqazana | Structural-review response. Added WBS attribution to every module in § 4.1. Resolved the `Filesystem` interface placement in § 3.3 and § 13.1. Changed `Dependencies.Config` from `*config.Config` to `config.Config` in § 11.2.2, with rationale. Made the "Cobra-generated command names" coupling explicit in § 11.15 and required a test for it. Made the enforcement claims in § 11.5, § 11.13, § 11.14, and § 11.15 honest: where a Taskfile target or Go test does not yet exist, the document says so and records the gap. Added § 11.12's three explicit import constraints (Cobra, `internal/cli`, `Dependencies`). Added § 11.12's line-count enforcement paragraph. Consolidated the file lists into § 11.9 and § 13.2 with a single source of truth. Added § 17 (Keeping This Document Accurate). Added § 4.2.17 (Version Model). Added the leaf-package rule to § 5.2 and § 5.3. Added the leaf-package box to § 10. Added § 15.6 (Adding a Field to `Dependencies`). Reorganised § 16 into two tiers: five cardinal sins and ten additional rules. Added the § 8.8 / § 9.6 cross-reference for the secret pattern list. Added the § 8.7 exit-code row for pre-parse validation. Added § 18's new entries (Development Guide, Dependency Policy). |

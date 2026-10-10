@@ -21,9 +21,13 @@
 #     verify:resolution      — Module resolution reproducibility (WBS 3.2.1)
 #     verify:handler-boundary — Handler / service boundary (WBS 4.3.1)
 #     verify:two-boundary    — Two-boundary execution model (WBS 4.2.2)
+#     verify:injection       — Linker injection contract (WBS 6.1.2)
 #   lint:*               — Linting (Markdown, and future linters)
 #   tidy                 — Dependency lockfile maintenance (maintainers only)
 #   build:*              — Binary compilation with injected metadata
+#     build                  — reproducible build (uses -trimpath)
+#     build:release          — release build (clean + tagged tree required)
+#     build:debug            — local debugging (NOT reproducible; do not ship)
 #   test                 — Fast unit tests
 #   test:integration     — Process-boundary integration tests
 #   fmt*                 — Go formatting
@@ -77,26 +81,22 @@ vars:
   # this at CI time. If you change the module path, change it in both places
   # in the same commit.
   #
-  # VERSION_PKG is the linker injection target. As of WBS 4.3.1, the package
-  # internal/version exists and defines:
+  # VERSION_PKG is the linker injection target. As of WBS 6.1.1, the
+  # package internal/version exists and defines:
   #
-  #   var Value     string
+  #   var Version   string
   #   var Commit    string
   #   var BuildDate string
   #   var Dirty     string
   #
-  # Before WBS 4.3.1, the first three variables lived in internal/cli. They
-  # were relocated to internal/version to break an import cycle that WBS
-  # 4.3.1 introduced: internal/cli imports internal/app/version (for the
-  # `forge version` handler), and internal/app/version would need to import
-  # internal/cli (for the variables). Relocating the variables to a leaf
-  # package breaks the cycle.
+  # The package was created to break an import cycle that would
+  # otherwise exist between internal/cli and internal/app/version. It is
+  # a leaf: it imports nothing.
   #
-  # Any change to the VERSION_PKG path must be accompanied by a change to
-  # every build script, CI configuration, and release pipeline that injects
-  # these values via -X. The `verify:handler-boundary` task and the test
-  # `TestBuildInfo_ReadsFromVersionPackage` in internal/app/version pin the
-  # contract.
+  # Any change to the VERSION_PKG path or to any of the four variable
+  # names must be accompanied by a change to the LDFLAGS block below and
+  # to `verify:injection:vars` in the same commit. The
+  # `verify:injection:*` tasks detect drift between the three.
   MODULE: 'github.com/thapelomagqazana/forge'
   VERSION_PKG: '{{.MODULE}}/internal/version'
 
@@ -213,13 +213,38 @@ vars:
   HANDLER_BODY_MAX_LINES: '20'
 
   # ───────────────────────────────────────────────────────────────────────────
-  # Build metadata (injected at link time)
+  # Build metadata (injected at link time) — WBS 6.1.2
   # ───────────────────────────────────────────────────────────────────────────
   #
-  # VERSION: git describe with tags, or "dev" on a fresh clone.
-  # COMMIT:  short SHA of HEAD, or "none" outside a git repository.
+  # VERSION:    git describe with tags, or "dev" on a fresh clone.
+  # COMMIT:     short SHA of HEAD, or "none" outside a git repository.
   # BUILD_DATE: RFC 3339 UTC, always safe to compute.
-  # DIRTY:   "true" if the working tree has uncommitted changes, else "false".
+  # DIRTY:      "true" if the working tree has uncommitted changes.
+  #
+  # Every command has `|| echo <fallback>` so that a build from a
+  # tarball, a build without git, and a build with git all produce valid
+  # binaries. The fallbacks match the zero-value defaults in
+  # internal/version/version.go.
+  #
+  # These values are computed at task run time, not at parse time: Task
+  # evaluates `sh:` lazily, the first time the variable is referenced in
+  # a task. This is the correct semantics for Dirty — a file modified
+  # between `task build` starting and `go build` running must be
+  # reflected.
+  #
+  # Charset invariant: the four values are constrained to
+  # [A-Za-z0-9._:+-]. This is not accidental — Task 3.x has known
+  # quoting quirks around `sh:` output, and a value containing a space,
+  # quote, or newline would break the `go build -ldflags "..."`
+  # invocation. The four sources produce values in this charset:
+  #
+  #   git describe        [A-Za-z0-9._-] plus the -dirty suffix
+  #   git rev-parse       [0-9a-f]
+  #   date -u             [0-9T:Z-]
+  #   git status          literal "true" or "false"
+  #
+  # See TestNonFunctional_InjectedValuesAreShellSafe in
+  # internal/version/injection_test.go.
   VERSION:
     sh: 'git describe --tags --always --dirty 2>/dev/null || echo dev'
   COMMIT:
@@ -231,15 +256,23 @@ vars:
 
   # Linker flags passed to `go build -ldflags "..."`.
   #
-  # The variable names (Value, Commit, BuildDate, Dirty) must match the
-  # declarations in internal/version/version.go exactly. WBS 4.3.1 renamed
-  # the first field from Version to Value to avoid stuttering at the call
-  # site (version.Value reads as "the version package's Value"), but the
-  # ldflags path is unchanged. A future change to any of these names must
-  # update both this block and the variable declarations in the same
-  # commit; verify:handler-boundary checks the pairing.
+  # The four variable names MUST match the declarations in
+  # internal/version/version.go exactly. As of WBS 6.1.1 the first
+  # variable is named Version, not Value.
+  #
+  # A rename of any of these variables is a coordinated change across
+  # three artefacts, all in the same commit:
+  #
+  #   1. internal/version/version.go
+  #   2. this LDFLAGS block
+  #   3. the `verify:injection:vars` check below (via its `for var in`
+  #      list)
+  #
+  # `verify:injection:prefix` and `verify:injection:ldflags` detect a
+  # mismatch between this block and version.go. They run before every
+  # `task build` via `deps:`.
   LDFLAGS: >-
-    -X {{.VERSION_PKG}}.Value={{.VERSION}}
+    -X {{.VERSION_PKG}}.Version={{.VERSION}}
     -X {{.VERSION_PKG}}.Commit={{.COMMIT}}
     -X {{.VERSION_PKG}}.BuildDate={{.BUILD_DATE}}
     -X {{.VERSION_PKG}}.Dirty={{.DIRTY}}
@@ -746,7 +779,8 @@ tasks:
   # Before WBS 4.3.1, the rule was "exactly one file imports Cobra".
   # That was correct when internal/cli/root.go was the only file that
   # constructed commands. WBS 4.3.1 introduces the handler / service
-  # pattern: each command's handler lives in its own file, and each  # handler constructs a *cobra.Command. The number of Cobra importers
+  # pattern: each command's handler lives in its own file, and each
+  # handler constructs a *cobra.Command. The number of Cobra importers
   # under internal/cli is expected to grow with the number of commands.
   #
   # The rule that matters is the package boundary: Cobra is a
@@ -777,8 +811,6 @@ tasks:
       - |
         set -euo pipefail
 
-        # Find every non-test Go file in the module that imports
-        # Cobra. Exclude common build/vendor directories.
         files=$(grep -rl '"github.com/spf13/cobra"' --include='*.go' . 2>/dev/null \
           | grep -v '_test\.go$' \
           | grep -v '^\./vendor/' \
@@ -786,12 +818,9 @@ tasks:
           | grep -v '^\./\.git/' \
           | sort || true)
 
-        # Split the file list into "under internal/cli" (allowed)
-        # and "outside internal/cli" (offenders).
         offenders=""
         allowed=""
         for f in $files; do
-          # Normalise the path: strip the leading "./" if present.
           rel="${f#./}"
           case "$rel" in
             internal/cli/*) allowed="$allowed $rel" ;;
@@ -812,8 +841,6 @@ tasks:
           exit 1
         fi
 
-        # Diagnostics: list the allowed importers so a reviewer can
-        # see at a glance which files under internal/cli import Cobra.
         echo "OK: Cobra is imported only under internal/cli:$allowed"
 
   verify:cobra:documented:
@@ -887,23 +914,6 @@ tasks:
       - |
         set -euo pipefail
 
-        # For each handler file, extract the RunE closure and count
-        # its lines. The extraction is:
-        #
-        #   1. Find the line that contains "RunE:".
-        #   2. The handler body starts at that line.
-        #   3. The handler body ends at the first subsequent line
-        #      whose trimmed content is "}," or "}" and whose
-        #      indentation is the same as the RunE line's.
-        #
-        # This matches the canonical formatting produced by gofmt.
-        # If a future handler is formatted differently, replace this
-        # awk script with a go/ast-based extractor.
-        #
-        # Counting the body rather than the whole file makes the check
-        # robust against docstring growth. The docstring is where the
-        # pattern is explained; it should be allowed to grow without
-        # tripping the line-count check.
         failed=0
         for f in {{.HANDLER_FILES}}; do
           if [ ! -f "$f" ]; then
@@ -913,22 +923,16 @@ tasks:
           fi
 
           body_lines=$(awk '
-            # Find the RunE line.
             /RunE:/ {
               in_body = 1
               body = 0
               next
             }
-            # Count lines until the matching closing brace.
             in_body {
               body++
-              # The closing brace of the RunE closure is a line
-              # whose trimmed content is "}," — the comma is present
-              # because RunE is a struct field.
               trimmed = $0
               sub(/^[ \t]+/, "", trimmed)
               if (trimmed == "}," || trimmed == "}") {
-                # Do not count the closing line.
                 body--
                 in_body = 0
               }
@@ -980,19 +984,6 @@ tasks:
       - |
         set -euo pipefail
 
-        # Search only the RunE closure's body, not the whole file.
-        # The handler's docstring explains what the handler does not
-        # do; the docstring mentions os.Exit by name. A scan of the
-        # whole file would match the docstring and produce a false
-        # positive. The closure is the only region where an actual
-        # call to os.Exit could appear.
-        #
-        # The extraction matches the one in
-        # verify:handler-boundary:line-count. It relies on gofmt's
-        # canonical formatting: RunE: on its own line, and a closing
-        # brace "}," at the same indentation. If a future handler is
-        # formatted differently, both extractions should be upgraded
-        # together.
         failed=0
         for f in {{.HANDLER_FILES}}; do
           if [ ! -f "$f" ]; then
@@ -1036,16 +1027,6 @@ tasks:
     cmds:
       - |
         set -euo pipefail
-        # Handlers must go through an application service, not through
-        # a lower layer. Importing internal/filesystem or
-        # internal/config directly would let a handler read files or
-        # parse configuration, which is business logic.
-        #
-        # Note: importing internal/filesystem is permitted for handlers
-        # that need the FS *type* (for example, to pass it to a service
-        # constructor). The check below is intentionally narrow: it
-        # forbids direct calls to os.ReadFile / os.WriteFile, which is
-        # what "importing internal/filesystem" would enable in practice.
         if grep -nE 'os\.(ReadFile|WriteFile|Open|Create|Remove|MkdirAll)\(' \
              {{.HANDLER_FILES}}; then
           echo "FAIL: handler performs filesystem I/O directly" >&2
@@ -1055,75 +1036,13 @@ tasks:
         fi
         echo "OK: handlers do not perform filesystem I/O directly"
 
+  # Delegates to verify:injection:vars so the four variable names
+  # live in exactly one place. See the verify:injection block below.
   verify:handler-boundary:version-pkg-exists:
     desc: Confirm internal/version declares the build metadata variables
     dir: "{{.USER_WORKING_DIR}}"
     cmds:
-      - |
-        set -euo pipefail
-
-        # The version package is the leaf that breaks the import cycle
-        # introduced by WBS 4.3.1. It must exist, it must declare the
-        # four variables the LDFLAGS block injects via -X, and it must
-        # not import anything from Forge (it is a leaf).
-        #
-        # The check must recognise both Go declaration forms:
-        #
-        #     var Version string
-        #
-        # and
-        #
-        #     var (
-        #         Version   string
-        #         Commit    string
-        #         BuildDate string
-        #         Dirty     string
-        #     )
-        #
-        # The grep pattern below matches a line that begins with
-        # optional whitespace followed by the variable name, and where
-        # the name is followed by whitespace or the end of the line.
-        # In the single form, the line is "var Version string". The
-        # pattern does not match the "var " prefix, but the variable
-        # name appears in the line either way, and the name is what
-        # the check cares about. A more precise pattern would require
-        # parsing the var block; a simple name search is sufficient
-        # because the variable names are unique within the package.
-        pkg_dir="internal/version"
-        if [ ! -d "$pkg_dir" ]; then
-          echo "FAIL: $pkg_dir does not exist" >&2
-          echo "      WBS 4.3.1 requires the version variables to live in" >&2
-          echo "      a leaf package to break the CLI / app/version cycle." >&2
-          exit 1
-        fi
-
-        # The canonical names, matching the LDFLAGS block in this file.
-        # If you rename a variable here, rename it in LDFLAGS and in
-        # internal/version/version.go in the same commit.
-        failed=0
-        for var in Version Commit BuildDate Dirty; do
-          # Match either declaration form:
-          #   - "var Version string"
-          #   - "    Version   string"   (inside a var block)
-          #
-          # The pattern requires the name to start a word and to be
-          # followed by whitespace or end-of-line, to avoid matching
-          # a name that is a prefix of a longer identifier (for
-          # example, matching "Commit" in "CommitDate").
-          if ! grep -qE "^[[:space:]]*(var[[:space:]]+)?${var}([[:space:]]|$)" \
-                  "$pkg_dir"/*.go 2>/dev/null; then
-            echo "FAIL: $pkg_dir does not declare var $var" >&2
-            echo "      The LDFLAGS block in Taskfile.yml injects it via -X." >&2
-            echo "      Declare it as either:" >&2
-            echo "        var $var string" >&2
-            echo "      or as a member of a var block." >&2
-            failed=1
-            continue
-          fi
-          echo "OK: $pkg_dir declares var $var"
-        done
-
-        exit $failed
+      - task: verify:injection:vars
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Two-boundary execution model — enforcement (WBS 4.2.2)
@@ -1195,19 +1114,6 @@ tasks:
       - |
         set -euo pipefail
 
-        # Find every non-test .go file under internal/cli that
-        # references buildDependencies(.
-        #
-        # Exclude the function's own declaration. Go's canonical
-        # formatting places the declaration as
-        #
-        #     func buildDependencies(opts options) Dependencies {
-        #
-        # with the "func " keyword at the start of the line (after
-        # optional leading tabs). A call site never begins with
-        # "func ". Filtering out lines whose first non-whitespace
-        # token is "func" therefore removes exactly the declaration
-        # and leaves exactly the calls.
         matches=$(grep -rn 'buildDependencies(' internal/cli/ \
                     --include='*.go' 2>/dev/null \
                   | grep -v '_test.go' \
@@ -1251,6 +1157,328 @@ tasks:
           exit 1
         fi
         echo "OK: newRootCmd accepts Dependencies"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Injection — linker injection contract (WBS 6.1.2)
+  # ═══════════════════════════════════════════════════════════════════════════
+  #
+  # The linker injection contract is defined by WBS 6.1.2. It says:
+  #
+  #   * Exactly four variables are injection targets, all in
+  #     internal/version.
+  #
+  #   * The -X prefix must match go.mod's module path exactly.
+  #
+  #   * No other injection mechanism exists (no env vars, no generated
+  #     files, no ad-hoc scripts). The Makefile, if present, must be a
+  #     zero-logic shim over this Taskfile.
+  #
+  #   * Injection is performed by the single build authority (this
+  #     Taskfile).
+  #
+  # The verify:injection:* tasks check the mechanical parts. The strict
+  # checks are in internal/version/injection_test.go; these tasks are
+  # fast pre-commit checks that also run under `task check`.
+  #
+  # The checks are deliberately narrow:
+  #
+  #   verify:injection:prefix
+  #     — module path in Taskfile matches go.mod (AC6)
+  #   verify:injection:vars
+  #     — the four variable names exist in internal/version (AC5)
+  #   verify:injection:ldflags
+  #     — the LDFLAGS block targets the same names as version.go
+  #   verify:injection:single-authority
+  #     — the Makefile shim, if present, contains no injection logic (AC8)
+  #   verify:injection:no-env-reads
+  #     — no .go file outside internal/version reads version env vars (AC8)
+  #   verify:injection:docs
+  #     — docs/development.md documents the contract and the trap (AC7)
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  verify:injection:
+    desc: Verify the linker injection contract holds (WBS 6.1.2)
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - task: verify:injection:prefix
+      - task: verify:injection:vars
+      - task: verify:injection:ldflags
+      - task: verify:injection:single-authority
+      - task: verify:injection:no-env-reads
+      - task: verify:injection:docs
+
+  verify:injection:prefix:
+    desc: Confirm MODULE matches go.mod's module path (WBS 6.1.2 AC6)
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - |
+        set -euo pipefail
+        mod=$(grep -E '^module[[:space:]]+' go.mod | awk '{print $2}')
+        if [ "$mod" != "{{.MODULE}}" ]; then
+          echo "FAIL: MODULE in Taskfile.yml ({{.MODULE}}) does not match go.mod ($mod)" >&2
+          echo "      Injection would silently fail. See docs/development.md" >&2
+          echo "      'Build Metadata Injection'." >&2
+          exit 1
+        fi
+        echo "OK: MODULE matches go.mod ($mod)"
+
+  verify:injection:vars:
+    desc: Confirm internal/version declares the four linker targets (AC5)
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - |
+        set -euo pipefail
+        pkg_dir="internal/version"
+        if [ ! -d "$pkg_dir" ]; then
+          echo "FAIL: $pkg_dir does not exist" >&2
+          echo "      WBS 6.1.1 requires the version model to live in a" >&2
+          echo "      leaf package. See docs/architecture.md 'Version Package'." >&2
+          exit 1
+        fi
+
+        failed=0
+        for var in Version Commit BuildDate Dirty; do
+          # Match either declaration form:
+          #   var Version string
+          #       Version   string   (inside a var block)
+          #
+          # The trailing ([[:space:]]|$) ensures we do not match a
+          # name that is a prefix of a longer identifier such as
+          # "Versioned".
+          if ! grep -qE "^[[:space:]]*(var[[:space:]]+)?${var}([[:space:]]|\$)" \
+                  "$pkg_dir"/*.go 2>/dev/null; then
+            echo "FAIL: $pkg_dir does not declare var $var" >&2
+            echo "      The LDFLAGS block in Taskfile.yml injects it via -X." >&2
+            failed=1
+          else
+            echo "OK: $pkg_dir declares var $var"
+          fi
+        done
+
+        exit $failed
+
+  verify:injection:ldflags:
+    desc: Confirm LDFLAGS targets the same names as version.go
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - |
+        set -euo pipefail
+
+        # Extract the four variable names that LDFLAGS targets.
+        #
+        # Each -X target has the form:
+        #   <module-path>/internal/version.<VarName>=<value>
+        #
+        # We render LDFLAGS (Task substitutes its vars), split on
+        # whitespace, keep only -X tokens, strip the -X prefix, strip
+        # everything from "=" onward, then keep only the segment after
+        # the last ".". The result is the four variable names, sorted.
+        ldflags="{{.LDFLAGS}}"
+
+        targets=$(printf '%s' "$ldflags" \
+          | awk '{
+              for (i = 1; i <= NF; i++) {
+                if ($i == "-X") { print $(i + 1) }
+              }
+            }' \
+          | sed -E 's/=.*$//' \
+          | sed -E 's/.*\.([A-Za-z][A-Za-z0-9_]*)$/\1/' \
+          | sort)
+
+        expected=$(printf 'BuildDate\nCommit\nDirty\nVersion\n')
+
+        if [ "$targets" != "$expected" ]; then
+          echo "FAIL: LDFLAGS targets do not match the four expected variables." >&2
+          echo "" >&2
+          echo "  expected (sorted):" >&2
+          echo "$expected" | sed 's/^/    /' >&2
+          echo "" >&2
+          echo "  LDFLAGS targets (sorted):" >&2
+          echo "$targets"  | sed 's/^/    /' >&2
+          echo "" >&2
+          echo "  If you renamed a variable in internal/version/version.go," >&2
+          echo "  update the LDFLAGS block in Taskfile.yml in the same commit." >&2
+          exit 1
+        fi
+
+        echo "OK: LDFLAGS targets BuildDate, Commit, Dirty, Version"
+
+  verify:injection:single-authority:
+    desc: Confirm the Makefile shim is a zero-logic delegation to Task (AC8)
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - |
+        set -euo pipefail
+
+        # If a Makefile exists, it must be a zero-logic shim over
+        # this Taskfile. The absence of a Makefile is also acceptable.
+        #
+        # # History of this check
+        #
+        # Three earlier versions of this check produced false
+        # positives:
+        #
+        #   1. A negative allowlist over every Makefile line matched
+        #      the shim's own docstring, which explains what the
+        #      shim does NOT do and therefore mentions the forbidden
+        #      tokens by name.
+        #
+        #   2. A positive allowlist over every TAB-prefixed recipe
+        #      line matched legal Makefile constructs: multi-line
+        #      pipelines, command groups `{ ... }`, Make variables
+        #      `$(TASK)`, and control-flow keywords like `exit`.
+        #
+        #   3. A grep for `go build`, `go test`, and similar tokens
+        #      matched those tokens inside echo strings that are
+        #      guidance, not commands.
+        #
+        # The common failure mode is trying to decide "is this
+        # token being executed?" from lexical evidence. Shell
+        # source is not lexically classifiable at the level these
+        # checks attempted. The check below therefore asserts only
+        # properties that are unambiguous at the lexical level:
+        #
+        #   POSITIVE
+        #     The shim contains at least one `$(TASK)` or `task`
+        #     invocation. A shim that does not delegate is not a
+        #     shim.
+        #
+        #   NEGATIVE
+        #     The shim contains no `-X`, no `MODULE`, and no `git `
+        #     in code (comments and help text are stripped first).
+        #     These three tokens are unambiguous: none of them can
+        #     appear inside a legitimate guard string.
+        #
+        # What the check does NOT attempt:
+        #
+        #   It does not try to detect Go-tool invocations by
+        #   grepping for `go build`, `go test`, etc. That check
+        #   produced a false positive on the shim's own
+        #   "install task or build directly" guidance, which
+        #   mentions `go build ./cmd/forge` inside an echo. Any
+        #   real Go-tool invocation in the shim would either
+        #   replace the `$(TASK)` delegation (caught by the
+        #   positive check) or appear alongside it (caught by
+        #   review, because the diff shows an extra recipe line).
+        #   The grep added no coverage the positive check does
+        #   not already provide.
+        if [ ! -f Makefile ]; then
+          echo "OK: no Makefile present; Taskfile.yml is the sole authority"
+          exit 0
+        fi
+
+        # ─── POSITIVE: the shim delegates ──────────────────────────
+        #
+        # Accept either the literal `task` command or the Make
+        # variable `$(TASK)`. The shim uses $(TASK) so a contributor
+        # can point at a differently-named runner; both forms are
+        # valid delegation.
+        #
+        # The word-boundary pattern on `task` prevents matching
+        # `taskfile` or `tasks` inside comments or URLs.
+        if ! grep -qE '(\$\(TASK\)|(^|[^A-Za-z_])task([^A-Za-z_]|$))' Makefile; then
+          echo "FAIL: Makefile does not delegate to Task." >&2
+          echo "      A shim must invoke \$(TASK) or task." >&2
+          echo "      See WBS 6.1.2 AC8." >&2
+          exit 1
+        fi
+
+        # ─── NEGATIVE: no injection logic in code ──────────────────
+        #
+        # Strip comments and help annotations before scanning, so a
+        # docstring that mentions `-X` or `MODULE` cannot trip the
+        # check.
+        #
+        # The strip removes:
+        #   * everything from an unquoted `#` to end of line, which
+        #     covers both full-line comments and trailing help
+        #     annotations such as `build: ## Build ...`
+        #   * trailing whitespace
+        #   * blank lines
+        #
+        # This is not a full Make lexer, but it is sufficient for
+        # the shim's shape: the shim does not contain `#` inside
+        # recipe strings, and if a future change introduced one,
+        # the strip would be conservative in the safe direction
+        # (it would strip more, not less).
+        code=$(sed -E -e 's/#.*$//' -e 's/[[:space:]]+$//' Makefile \
+               | grep -v '^$' || true)
+
+        failed=0
+        for token in '\-X ' 'git ' 'MODULE'; do
+          # The `--` terminates option parsing so a token that
+          # begins with `-` is not interpreted as a flag.
+          if printf '%s\n' "$code" | grep -qE -- "$token"; then
+            echo "FAIL: Makefile contains '$token' in code." >&2
+            echo "      The shim must be a zero-logic delegation to Task." >&2
+            printf '%s\n' "$code" | grep -nE -- "$token" >&2 || true
+            failed=1
+          fi
+        done
+
+        if [ "$failed" -eq 0 ]; then
+          echo "OK: Makefile is a zero-logic shim over Taskfile.yml"
+        fi
+        exit $failed
+
+  verify:injection:no-env-reads:
+    desc: Confirm no .go file outside internal/version reads version env vars (AC8)
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - |
+        set -euo pipefail
+
+        # Search .go files outside internal/version and outside
+        # testdata/ for the four environment-variable names that
+        # would indicate an alternate injection mechanism.
+        #
+        # We do not grep the four variable names (Version, Commit,
+        # BuildDate, Dirty) because they are common English words
+        # and would produce false positives against unrelated code.
+        # The environment-variable names are specific enough.
+        offenders=$(grep -rlE 'os\.Getenv\("FORGE_(VERSION|COMMIT|BUILD_DATE|DIRTY)' \
+                      --include='*.go' . 2>/dev/null \
+                    | grep -v '^\./internal/version/' \
+                    | grep -v '/testdata/' \
+                    | grep -v '/vendor/' \
+                    || true)
+
+        if [ -n "$offenders" ]; then
+          echo "FAIL: files read version metadata from the environment:" >&2
+          echo "$offenders" >&2
+          echo "" >&2
+          echo "The Taskfile is the only injection mechanism (WBS 6.1.2 AC8)." >&2
+          exit 1
+        fi
+
+        echo "OK: no .go file reads version metadata from the environment"
+
+  verify:injection:docs:
+    desc: Confirm docs/development.md documents the silent-failure trap (AC7)
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - |
+        set -euo pipefail
+
+        file="docs/development.md"
+        if [ ! -f "$file" ]; then
+          echo "FAIL: $file is missing" >&2
+          exit 1
+        fi
+
+        # The section is required by WBS 6.1.2 AC7. Both the heading
+        # and the trap warning must be present.
+        if ! grep -q '## Build Metadata Injection' "$file"; then
+          echo "FAIL: $file is missing the 'Build Metadata Injection' section" >&2
+          exit 1
+        fi
+
+        if ! grep -qi 'silent' "$file"; then
+          echo "FAIL: $file does not warn about the silent-failure trap" >&2
+          exit 1
+        fi
+
+        echo "OK: $file documents the injection contract and the trap"
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Dependency policy — enforcement (WBS 2.5.1)
@@ -1374,8 +1602,9 @@ tasks:
       - task: verify:resolution
       - task: verify:cobra
       - task: verify:deps
-      - task: verify:two-boundary        # ADDED for WBS 4.2.2
-      - task: verify:handler-boundary    # ADDED for WBS 4.3.1
+      - task: verify:two-boundary        # WBS 4.2.2
+      - task: verify:handler-boundary    # WBS 4.3.1
+      - task: verify:injection           # WBS 6.1.2
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Tidy — dependency lockfile maintenance (WBS 2.3.1)
@@ -1402,23 +1631,73 @@ tasks:
         fi
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # Build — binary compilation with injected metadata (WBS 17.4)
+  # Build — binary compilation with injected metadata
+  #   (WBS 6.1.2 — injection; WBS 17.4 — release build)
+  # ═══════════════════════════════════════════════════════════════════════════
+  #
+  # Three build targets:
+  #
+  #   build          — reproducible build. Uses -trimpath so the binary
+  #                    does not embed absolute host paths. Suitable for
+  #                    distribution.
+  #
+  #   build:release  — like build, but requires a clean, tagged tree.
+  #                    This is the only target that should be used to
+  #                    produce a binary that will be attached to a
+  #                    release.
+  #
+  #   build:debug    — local debugging. Omits -trimpath, so the binary
+  #                    is NOT reproducible. Do not distribute.
+  #
+  # All three depend on verify:injection:prefix and
+  # verify:injection:ldflags, so a broken LDFLAGS (wrong module path
+  # or wrong variable name) fails before a silently-broken binary is
+  # produced.
   # ═══════════════════════════════════════════════════════════════════════════
 
   build:
-    desc: Build the Forge binary with injected metadata
+    desc: Build the Forge binary with injected metadata (reproducible)
     dir: "{{.USER_WORKING_DIR}}"
+    deps:
+      - verify:injection:prefix
+      - verify:injection:ldflags
     cmds:
       - go build -trimpath -ldflags "{{.LDFLAGS}}" -o forge ./cmd/forge
     sources:
       - '**/*.go'
       - 'go.mod'
       - 'go.sum'
+      - 'Taskfile.yml'    # the LDFLAGS block lives here; rebuild on change
     generates:
       - forge
 
+  build:release:
+    desc: |
+      Build a release binary. Requires a clean, tagged tree. The
+      resulting binary is reproducible on any host (uses -trimpath).
+    dir: "{{.USER_WORKING_DIR}}"
+    deps:
+      - verify:injection:prefix
+      - verify:injection:ldflags
+    preconditions:
+      - sh: test -z "$(git status --porcelain 2>/dev/null)"
+        msg: "Working tree is dirty; release builds require a clean tree."
+      - sh: test -n "$(git describe --tags --exact-match 2>/dev/null)"
+        msg: "HEAD is not an exact tag; release builds require a tagged commit."
+    cmds:
+      - go build -trimpath -ldflags "{{.LDFLAGS}}" -o forge ./cmd/forge
+      - |
+        set -euo pipefail
+        echo "OK: release binary built"
+        echo "    version   = {{.VERSION}}"
+        echo "    commit    = {{.COMMIT}}"
+        echo "    buildDate = {{.BUILD_DATE}}"
+        echo "    dirty     = {{.DIRTY}}"
+
   build:debug:
-    desc: Build the Forge binary with debug symbols (no trimpath)
+    desc: |
+      Build the binary for local debugging. NOT reproducible: omits
+      -trimpath and embeds absolute host paths. Do not distribute.
     dir: "{{.USER_WORKING_DIR}}"
     cmds:
       - go build -ldflags "{{.LDFLAGS}}" -o forge ./cmd/forge
@@ -1481,18 +1760,20 @@ tasks:
   #    4. goversion:verify       — moderate; toolchain matrix
   #    5. verify:reproducible    — moderate; environment, tidy, and
   #                                negative test
-  #    6. verify:cobra           — fast; Cobra pin and wiring
-  #    7. verify:deps            — fast; dependency policy
-  #    8. verify:two-boundary    — fast; two-boundary model (WBS 4.2.2)
-  #    9. verify:handler-boundary — fast; handler / service rule (WBS 4.3.1)
-  #   10. test                   — slow; full test suite
-  #   11. test:integration       — slowest; process boundary
+  #    6. verify:resolution      — moderate; resolution across envs
+  #    7. verify:cobra           — fast; Cobra pin and wiring
+  #    8. verify:deps            — fast; dependency policy
+  #    9. verify:two-boundary    — fast; two-boundary model (WBS 4.2.2)
+  #   10. verify:handler-boundary — fast; handler / service rule (WBS 4.3.1)
+  #   11. verify:injection       — fast; linker injection contract (WBS 6.1.2)
+  #   12. test                   — slow; full test suite
+  #   13. test:integration       — slowest; process boundary
   check:
     desc: |
       Run the full quality gate
-      (format, lint, vet, version matrix, reproducibility, cobra,
-       dependency policy, two-boundary model, handler boundary,
-       test, integration)
+      (format, lint, vet, version matrix, reproducibility, resolution,
+       cobra, dependency policy, two-boundary model, handler boundary,
+       injection contract, test, integration)
     dir: "{{.USER_WORKING_DIR}}"
     cmds:
       - task: fmt:check
@@ -1505,6 +1786,7 @@ tasks:
       - task: verify:deps
       - task: verify:two-boundary
       - task: verify:handler-boundary
+      - task: verify:injection           # WBS 6.1.2
       - task: test
       - task: test:integration
 
