@@ -19,7 +19,7 @@
 #     verify:cobra           — Cobra pin and wiring (WBS 2.4.1)
 #     verify:deps            — Dependency policy enforcement (WBS 2.5.1)
 #     verify:resolution      — Module resolution reproducibility (WBS 3.2.1)
-#     verify:handler-boundary — Handler / service boundary (WBS 4.3.1)  [NEW]
+#     verify:handler-boundary — Handler / service boundary (WBS 4.3.1)
 #     verify:two-boundary    — Two-boundary execution model (WBS 4.2.2)
 #   lint:*               — Linting (Markdown, and future linters)
 #   tidy                 — Dependency lockfile maintenance (maintainers only)
@@ -149,10 +149,28 @@ vars:
   # updating this variable AND adding a registry entry to the policy
   # document. The two changes must be made in the same commit.
   #
-  #   Phase 2 permits exactly one direct dependency: Cobra.
-  #   The list grows as future WBS items introduce dependencies.
+  #   Phase 2 permits two direct dependencies:
+  #
+  #     - github.com/spf13/cobra — the CLI framework. Cobra provides
+  #       the command tree, the flag parser, and the help and version
+  #       subsystems.
+  #
+  #     - github.com/spf13/pflag — POSIX/GNU-style flag parsing. pflag
+  #       is a first-class part of Cobra's public API: Cobra exposes
+  #       cobra.Command.Flags() as a *pflag.FlagSet, and any code that
+  #       inspects or iterates a command's flags names pflag types.
+  #       The Go toolchain classifies pflag as a direct dependency
+  #       because of those references.
+  #
+  #   The list grows as future WBS items introduce dependencies. Adding
+  #   a new direct dependency requires an ADR that names the consumer
+  #   WBS item and justifies the addition. See docs/cli-ux-spec.md
+  #   section 4.11 for the flag-inventory freeze and
+  #   docs/dependency-policy.md for the full policy.
   DEP_POLICY: 'docs/dependency-policy.md'
-  DEP_ALLOWED_DIRECT: 'github.com/spf13/cobra'
+  DEP_ALLOWED_DIRECT: |
+    github.com/spf13/cobra
+    github.com/spf13/pflag
 
   # ───────────────────────────────────────────────────────────────────────────
   # Markdown lint configuration (WBS 2.1.x — documentation quality)
@@ -184,19 +202,15 @@ vars:
   # are subject to the boundary rules. As new commands are added in WBS 5.x,
   # 6.x, 7.x, and 9.x, they are appended here.
   #
-  # HANDLER_MAX_LINES — the maximum line count for a handler file. The rule
-  # is "under 20 lines of handler body". The file-level limit is set higher
-  # to accommodate the docstring, imports, and the command's metadata. A
-  # file that exceeds this limit fails `verify:handler-boundary` and forces
-  # a review.
+  # HANDLER_BODY_MAX_LINES — the maximum number of lines in the RunE
+  # closure of a handler. The rule is "under 20 lines of handler body".
   #
   # The strict check on the handler body is in
-  # `internal/cli/version_test.go` (`TestNewVersionCmd_HandlerIsThin`). The
+  # internal/cli/version_test.go (TestNewVersionCmd_HandlerIsThin). The
   # Taskfile target is a fast pre-commit check; the test is the source of
   # truth.
   HANDLER_FILES: 'internal/cli/version.go'
   HANDLER_BODY_MAX_LINES: '20'
-
 
   # ───────────────────────────────────────────────────────────────────────────
   # Build metadata (injected at link time)
@@ -223,9 +237,9 @@ vars:
   # site (version.Value reads as "the version package's Value"), but the
   # ldflags path is unchanged. A future change to any of these names must
   # update both this block and the variable declarations in the same
-  # commit; `verify:handler-boundary` checks the pairing.
+  # commit; verify:handler-boundary checks the pairing.
   LDFLAGS: >-
-    -X {{.VERSION_PKG}}.Version={{.VERSION}}
+    -X {{.VERSION_PKG}}.Value={{.VERSION}}
     -X {{.VERSION_PKG}}.Commit={{.COMMIT}}
     -X {{.VERSION_PKG}}.BuildDate={{.BUILD_DATE}}
     -X {{.VERSION_PKG}}.Dirty={{.DIRTY}}
@@ -725,15 +739,14 @@ tasks:
         fi
         echo "OK: go.sum has $count checksum entries for Cobra"
 
-    # AC6 — Cobra is imported only under internal/cli.
+  # AC6 — Cobra is imported only under internal/cli.
   #
   # # Why the rule is about packages, not files
   #
   # Before WBS 4.3.1, the rule was "exactly one file imports Cobra".
   # That was correct when internal/cli/root.go was the only file that
   # constructed commands. WBS 4.3.1 introduces the handler / service
-  # pattern: each command's handler lives in its own file, and each
-  # handler constructs a *cobra.Command. The number of Cobra importers
+  # pattern: each command's handler lives in its own file, and each  # handler constructs a *cobra.Command. The number of Cobra importers
   # under internal/cli is expected to grow with the number of commands.
   #
   # The rule that matters is the package boundary: Cobra is a
@@ -825,12 +838,12 @@ tasks:
         echo "OK: Cobra is documented in $file"
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # Handler / Service boundary — enforcement (WBS 4.3.1)   [NEW SECTION]
+  # Handler / Service boundary — enforcement (WBS 4.3.1)
   # ═══════════════════════════════════════════════════════════════════════════
   #
   # verify:handler-boundary enforces the mechanical parts of the
-  # handler / service boundary defined in docs/architecture.md § 11.12
-  # and enforced by the reviewer checklist in docs/development.md.
+  # handler / service boundary defined in docs/architecture.md section
+  # 11.12 and enforced by the reviewer checklist in docs/development.md.
   #
   # The rule: a Cobra handler (RunE closure) parses flags, constructs
   # an application service, calls it, and returns an error. It does
@@ -840,7 +853,7 @@ tasks:
   #
   # The Taskfile target checks:
   #
-  #   AC3  — the handler file is under HANDLER_MAX_LINES lines.
+  #   AC3  — the handler body is under HANDLER_BODY_MAX_LINES lines.
   #   AC4  — the handler file contains no direct fmt.Fprintln,
   #          fmt.Fprintf, fmt.Println, or fmt.Printf calls.
   #   AC5  — the handler file contains no os.Exit call.
@@ -936,7 +949,7 @@ tasks:
                  "limit is {{.HANDLER_BODY_MAX_LINES}}" >&2
             echo "      If the handler grew, business logic likely" >&2
             echo "      leaked into it. Move the logic to" >&2
-            echo "      internal/app/<name>/. See docs/architecture.md § 11.12." >&2
+            echo "      internal/app/<name>/. See docs/architecture.md section 11.12." >&2
             failed=1
             continue
           fi
@@ -955,7 +968,7 @@ tasks:
              {{.HANDLER_FILES}}; then
           echo "FAIL: handler writes output directly" >&2
           echo "      Handlers must delegate formatting to the service" >&2
-          echo "      package. See docs/architecture.md § 11.12." >&2
+          echo "      package. See docs/architecture.md section 11.12." >&2
           exit 1
         fi
         echo "OK: handlers do not write output directly"
@@ -1007,7 +1020,7 @@ tasks:
           if echo "$body" | grep -n 'os\.Exit'; then
             echo "FAIL: $f calls os.Exit" >&2
             echo "      Handlers return an error; executeWithOptions maps it" >&2
-            echo "      to an exit code. See docs/architecture.md § 11.7." >&2
+            echo "      to an exit code. See docs/architecture.md section 11.7." >&2
             failed=1
             continue
           fi
@@ -1018,7 +1031,7 @@ tasks:
         exit $failed
 
   verify:handler-boundary:no-infra-imports:
-    desc: Confirm handlers do not import infrastructure packages
+    desc: Confirm handlers do not perform filesystem I/O
     dir: "{{.USER_WORKING_DIR}}"
     cmds:
       - |
@@ -1037,7 +1050,7 @@ tasks:
              {{.HANDLER_FILES}}; then
           echo "FAIL: handler performs filesystem I/O directly" >&2
           echo "      Handlers must delegate filesystem access to the" >&2
-          echo "      application service. See docs/architecture.md § 11.12." >&2
+          echo "      application service. See docs/architecture.md section 11.12." >&2
           exit 1
         fi
         echo "OK: handlers do not perform filesystem I/O directly"
@@ -1080,7 +1093,7 @@ tasks:
         if [ ! -d "$pkg_dir" ]; then
           echo "FAIL: $pkg_dir does not exist" >&2
           echo "      WBS 4.3.1 requires the version variables to live in" >&2
-          echo "      a leaf package to break the CLI ↔ app/version cycle." >&2
+          echo "      a leaf package to break the CLI / app/version cycle." >&2
           exit 1
         fi
 
@@ -1113,19 +1126,20 @@ tasks:
         exit $failed
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # Two-boundary execution model — enforcement (WBS 4.2.2)   [NEW SECTION]
+  # Two-boundary execution model — enforcement (WBS 4.2.2)
   # ═══════════════════════════════════════════════════════════════════════════
   #
   # verify:two-boundary enforces the mechanical parts of the two-boundary
   # execution model introduced by WBS 4.2.2 and documented in
-  # docs/architecture.md § 11. It is the task the WBS 4.2.2 acceptance
-  # criteria named as `verify:deps` and `verify:two-boundary`. The two
-  # are merged here into a single target to keep the Taskfile legible.
+  # docs/architecture.md section 11. It is the task the WBS 4.2.2
+  # acceptance criteria named as verify:deps and verify:two-boundary.
+  # The two are merged here into a single target to keep the Taskfile
+  # legible.
   #
-  # The rule: `executeWithOptions` is the single transformation point
+  # The rule: executeWithOptions is the single transformation point
   # between the process boundary (options) and the command boundary
-  # (Dependencies). `buildDependencies` is the only function that
-  # constructs a Dependencies value. `defaultOptions` is the only
+  # (Dependencies). buildDependencies is the only function that
+  # constructs a Dependencies value. defaultOptions is the only
   # function that reads os.Args, os.Stdin, os.Stdout, os.Stderr,
   # os.Getenv, or os.Getwd.
   #
@@ -1215,7 +1229,7 @@ tasks:
           echo "buildDependencies must be called exactly once, from" >&2
           echo "executeWithOptions in internal/cli/execute.go. Constructing" >&2
           echo "a Dependencies value anywhere else violates AC4 of WBS 4.2.2." >&2
-          echo "See docs/architecture.md § 11.5." >&2
+          echo "See docs/architecture.md section 11.5." >&2
           exit 1
         fi
 
