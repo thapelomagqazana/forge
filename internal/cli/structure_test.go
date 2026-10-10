@@ -552,10 +552,31 @@ func collectExportedFunctions(t *testing.T, files []string) []string {
 // expectedConstants enumerates every exported constant the package is
 // permitted to expose, along with the WBS item that introduced it.
 //
+// # Two kinds of exported constant
+//
+// The map contains two categories of exported constant:
+//
+//  1. The exit-code constants (ExitSuccess through ExitConflict).
+//     These form a stable numeric vocabulary. They are exported
+//     because downstream code and tests may reference them by name
+//     to interpret the CLI's exit codes.
+//
+//  2. The root identity constants (RootName through RootLongDesc),
+//     added by WBS 5.1.1. These form a stable string vocabulary.
+//     They are exported because the tests in root_test.go assert on
+//     them and the specification in docs/cli-ux-spec.md § 4.7
+//     quotes them.
+//
+// # Why the map is explicit
+//
 // The map is deliberately explicit. Adding a constant requires
 // updating this map, which forces the contributor to justify the
 // addition. Removing a constant is a breaking change and requires an
 // ADR, because downstream code may depend on the name.
+//
+// The update is a review checkpoint: a reviewer who sees the map
+// change asks "why did the exported surface grow?" and the answer
+// must be in the diff.
 var expectedConstants = map[string]string{
 	"ExitSuccess":    "WBS 2.4.2 — successful command exit code",
 	"ExitFailure":    "WBS 2.4.2 — general failure exit code",
@@ -565,18 +586,31 @@ var expectedConstants = map[string]string{
 	"ExitValidation": "WBS 2.4.2 — validation failure exit code (reserved)",
 	"ExitSecurity":   "WBS 2.4.2 — security failure exit code (reserved)",
 	"ExitConflict":   "WBS 4.1.2 — update conflict exit code (reserved)",
+
+	// WBS 5.1.1 freezes the root command's identity strings as
+	// exported constants. They are exported because they are
+	// referenced by tests (root_test.go) and quoted by the
+	// documentation (docs/cli-ux-spec.md § 4.7). The exported
+	// surface is a vocabulary of frozen strings, not a set of
+	// functions downstream packages depend on.
+	"RootName":      "WBS 5.1.1 — frozen CLI name (lowercase)",
+	"RootUsage":     "WBS 5.1.1 — frozen usage line",
+	"RootShortDesc": "WBS 5.1.1 — frozen short description (<= 80 chars)",
+	"RootLongDesc":  "WBS 5.1.1 — frozen long description (raw string)",
 }
 
 // TestOnlyExpectedConstantsAreExported verifies that the package
-// exports exactly the exit code constants that the CLI contract
-// requires, and nothing more.
+// exports exactly the constants that the CLI contract requires, and
+// nothing more.
 //
-// The exit code constants form a stable vocabulary that downstream
-// code and tests may reference by name.
+// The exported constants form a stable vocabulary that downstream
+// code and tests may reference by name. The vocabulary has two
+// parts: the exit-code integers and the root identity strings. Both
+// are enumerated in the expectedConstants map above.
 //
-// Adding a new exported constant requires updating the
-// expectedConstants map in this file. The update is a review
-// checkpoint: it forces the contributor to justify the addition.
+// Adding a new exported constant requires updating the map. The
+// update is a review checkpoint: it forces the contributor to
+// justify the addition.
 func TestOnlyExpectedConstantsAreExported(t *testing.T) {
 	t.Parallel()
 
@@ -784,23 +818,17 @@ func TestExitCodesHaveDocComment(t *testing.T) {
 //
 // The split is enforced so that a contributor who moves a test file
 // to the wrong package is told immediately why the move is wrong.
-//
-// As of WBS 4.3.1, the package has four test files:
-//
-//   - root_test.go      — white-box tests for the root command.
-//   - execute_test.go   — white-box tests for the execution boundary.
-//   - version_test.go   — white-box tests for the version handler.
-//   - deps_test.go      — white-box tests for the Dependencies struct.
-//   - structure_test.go — black-box structural tests (this file).
 func TestTestFilePackageDeclarations(t *testing.T) {
 	t.Parallel()
 
 	expected := map[string]string{
 		// White-box: need unexported symbols.
-		"root_test.go":    "package cli",
-		"execute_test.go": "package cli",
-		"version_test.go": "package cli",
-		"deps_test.go":    "package cli",
+		"root_test.go":     "package cli",
+		"execute_test.go":  "package cli",
+		"version_test.go":  "package cli",
+		"deps_test.go":     "package cli",
+		"registry_test.go": "package cli",
+		"contract_test.go": "package cli",
 
 		// Black-box: read source files as data.
 		"structure_test.go": "package cli_test",

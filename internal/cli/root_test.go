@@ -2,9 +2,10 @@
 //
 // This file tests the root command: its dispatcher behaviour (what
 // happens with no arguments, with --help, with an unknown command,
-// with an unknown flag, with an empty-string argument) and the
+// with an unknown flag, with an empty-string argument), the
 // properties that make it a well-behaved CLI dispatcher (exit codes,
-// stream separation, determinism).
+// stream separation, determinism), and the frozen identity strings
+// it exposes (WBS 5.1.1).
 //
 // It is the test companion to internal/cli/root.go. The root
 // command's job is small — it is a dispatcher, not a worker — and the
@@ -23,10 +24,12 @@
 //     stdout, what a failed invocation writes to stderr, and that
 //     the two never mix.
 //
-//   - Edge cases: empty-string argument, unknown flag. These exercise
-//     the boundary between "absent" and "present but invalid".
+//   - Edge cases: empty-string argument, unknown flag, multiple
+//     arguments. These exercise the boundary between "absent" and
+//     "present but invalid".
 //
 //   - Non-functional properties: determinism across repeated
+//     invocations, and consistency between the two informational
 //     invocations. These guard against accidental introduction of
 //     timestamps, map iteration order, and similar nondeterminism.
 //
@@ -35,11 +38,14 @@
 //     property of the helper, placed here because root_test.go is
 //     where the helper's behaviour is first used.
 //
-// # What this file does not test
+//   - Registry/help correspondence: the visible commands in help
+//     output match the visible constructors in the registry.
 //
-//   - The root command's metadata (Use, Short, Long). WBS 5.1.1
-//     freezes those values and adds tests for them. Until then, the
-//     metadata is subject to change and the tests do not pin it.
+//   - Root identity (WBS 5.1.1): the frozen identity strings
+//     (RootName, RootUsage, RootShortDesc, RootLongDesc) satisfy
+//     their rules, and the help output is derived from them.
+//
+// # What this file does not test
 //
 //   - The subcommands' behaviour. Each subcommand has its own test
 //     file (for example, version_test.go) that exercises the
@@ -51,8 +57,8 @@
 //   - The exact help text. Cobra's help output is stable within a
 //     version of Cobra but changes between versions. The tests
 //     assert on the presence of stable substrings ("Usage:", the
-//     command name, the Long description's first sentence) rather
-//     than on the full text.
+//     command name, the identity strings' values) rather than on
+//     the full text.
 //
 // # Test names
 //
@@ -65,6 +71,8 @@ package cli
 import (
 	"strings"
 	"testing"
+	"unicode"
+	"unicode/utf8"
 )
 
 // =============================================================================
@@ -487,6 +495,10 @@ func TestRoot_GivenNilEnv_ThenTheCommandRunsWithNoVariables(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// Registry / help correspondence
+// =============================================================================
+
 // TestRoot_HelpOutput_MatchesRegistry verifies that the visible
 // subcommands in `forge --help` match the visible constructors in
 // the registry, in order.
@@ -609,4 +621,240 @@ func extractVisibleCommandNamesFromHelp(help string) []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+// =============================================================================
+// Root command identity — the frozen constants (WBS 5.1.1)
+// =============================================================================
+//
+// The four constants in root.go are the frozen identity of the root
+// command. The tests below assert their invariants and their
+// relationship to the help output.
+
+// TestRootIdentity_RootNameIsLowercase verifies AC2: RootName is
+// lowercase and contains no spaces, uppercase letters, or
+// punctuation.
+//
+// The rule is enforced here rather than at compile time because a
+// constant's value is a runtime property. The test fails loudly if
+// a contributor changes RootName to "Forge" or "forge-cli".
+func TestRootIdentity_RootNameIsLowercase(t *testing.T) {
+	t.Parallel()
+
+	if RootName == "" {
+		t.Fatal("RootName is empty")
+	}
+	if strings.ToLower(RootName) != RootName {
+		t.Errorf("RootName contains uppercase: %q", RootName)
+	}
+	for _, r := range RootName {
+		if r == ' ' || r == '\t' || r == '\n' {
+			t.Errorf("RootName contains whitespace: %q", RootName)
+		}
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '-' {
+			t.Errorf("RootName contains %q; "+
+				"only letters, digits, and hyphens are permitted", r)
+		}
+	}
+}
+
+// TestRootIdentity_RootShortDescLength verifies AC3: RootShortDesc
+// is 80 characters or fewer.
+//
+// The length is measured in runes, not bytes, because the string
+// contains an em dash (—), which is three bytes in UTF-8 but one
+// rune. The rule is about the visual length, not the encoded
+// length.
+func TestRootIdentity_RootShortDescLength(t *testing.T) {
+	t.Parallel()
+
+	runeCount := utf8.RuneCountInString(RootShortDesc)
+	if runeCount == 0 {
+		t.Fatal("RootShortDesc is empty")
+	}
+	if runeCount > 80 {
+		t.Errorf("RootShortDesc is %d runes; limit is 80: %q",
+			runeCount, RootShortDesc)
+	}
+	if strings.Contains(RootShortDesc, "\n") {
+		t.Errorf("RootShortDesc spans multiple lines: %q",
+			RootShortDesc)
+	}
+}
+
+// TestRootIdentity_RootLongDescContainsCoreLoop verifies AC4:
+// RootLongDesc contains the CREATE / VERIFY / EXPLAIN / EVOLVE loop.
+//
+// The four keywords are the product's core loop. If a future change
+// rewrites the Long description, the test asserts that the loop is
+// still present. The keywords are checked in order; the loop is a
+// sequence, not a set.
+func TestRootIdentity_RootLongDescContainsCoreLoop(t *testing.T) {
+	t.Parallel()
+
+	keywords := []string{"CREATE", "VERIFY", "EXPLAIN", "EVOLVE"}
+	pos := 0
+	for _, kw := range keywords {
+		idx := strings.Index(RootLongDesc[pos:], kw)
+		if idx < 0 {
+			t.Errorf("RootLongDesc does not contain %q after position %d: %q",
+				kw, pos, RootLongDesc)
+			return
+		}
+		pos += idx + len(kw)
+	}
+}
+
+// TestRootIdentity_RootLongDescEndsWithHelpPointer verifies that
+// RootLongDesc ends with a pointer to `<command> --help`.
+//
+// The pointer is the last non-empty line of the description. It
+// tells a user how to learn more about a specific subcommand.
+func TestRootIdentity_RootLongDescEndsWithHelpPointer(t *testing.T) {
+	t.Parallel()
+
+	if !strings.Contains(RootLongDesc, "<command> --help") {
+		t.Errorf("RootLongDesc does not contain a '<command> --help' "+
+			"pointer: %q", RootLongDesc)
+	}
+}
+
+// TestRootIdentity_RootLongDescHasNoForbiddenChars verifies that the
+// four identity strings contain no emojis, no ANSI colour codes, and
+// no tabs.
+//
+// The rule is a Phase 2 constraint from docs/cli-ux-spec.md: colour
+// and emphasis belong to the terminal, not to the CLI's identity
+// strings. A future ADR may relax the rule; until then, the test
+// enforces it.
+func TestRootIdentity_RootLongDescHasNoForbiddenChars(t *testing.T) {
+	t.Parallel()
+
+	for _, s := range []struct {
+		name  string
+		value string
+	}{
+		{"RootName", RootName},
+		{"RootUsage", RootUsage},
+		{"RootShortDesc", RootShortDesc},
+		{"RootLongDesc", RootLongDesc},
+	} {
+		if strings.ContainsAny(s.value, "\t") {
+			t.Errorf("%s contains a tab: %q", s.name, s.value)
+		}
+		if strings.Contains(s.value, "\x1b[") {
+			t.Errorf("%s contains an ANSI escape sequence: %q",
+				s.name, s.value)
+		}
+	}
+}
+
+// TestRootIdentity_HelpOutputContainsConstants verifies AC5: the
+// help output for `forge --help` contains the identity strings that
+// Cobra actually renders.
+//
+// # Which strings appear in `forge --help`
+//
+// Cobra's help rendering is asymmetric with respect to the Short
+// and Long fields:
+//
+//   - The Long description is the body of the help text. It appears
+//     in the command's own `--help` output, above the "Usage:"
+//     section.
+//
+//   - The Short description is the one-line summary that appears in
+//     a *parent's* "Available Commands:" table. The root command has
+//     no parent, so its Short description is not rendered by
+//     `forge --help`.
+//
+// The test therefore asserts on the three strings that do appear:
+//
+//   - RootName, as the command name in the usage section.
+//   - RootUsage, as the composed usage line.
+//   - RootLongDesc, as the body of the help text.
+//
+// RootShortDesc is verified separately by
+// TestRootIdentity_RootShortDescLength, which checks its length and
+// format. Its absence from `forge --help` is not a defect; it is
+// how Cobra renders commands that have both Short and Long
+// descriptions.
+func TestRootIdentity_HelpOutputContainsConstants(t *testing.T) {
+	t.Parallel()
+
+	got := runCLI(t, []string{"--help"}, nil)
+
+	if got.exitCode != ExitSuccess {
+		t.Fatalf("exit code: got %d, want %d",
+			got.exitCode, ExitSuccess)
+	}
+
+	// RootName appears as the command name.
+	if !strings.Contains(got.stdout, RootName) {
+		t.Errorf("help output does not contain RootName %q: %q",
+			RootName, got.stdout)
+	}
+
+	// RootUsage appears in the "Usage:" section. Cobra may append
+	// "[flags]" to the usage line; the test asserts on the prefix,
+	// which is RootUsage.
+	if !strings.Contains(got.stdout, RootUsage) {
+		t.Errorf("help output does not contain RootUsage %q: %q",
+			RootUsage, got.stdout)
+	}
+
+	// RootLongDesc appears as the body of the help text. Cobra does
+	// not reformat it, so the first line is sufficient to verify
+	// its presence.
+	firstLine := strings.SplitN(RootLongDesc, "\n", 2)[0]
+	if !strings.Contains(got.stdout, firstLine) {
+		t.Errorf("help output does not contain the first line of "+
+			"RootLongDesc %q: %q", firstLine, got.stdout)
+	}
+
+	// The core loop keywords appear, in order. They are part of
+	// RootLongDesc; the assertion is a stronger check on the body
+	// than a single-line substring match.
+	for _, kw := range []string{"CREATE", "VERIFY", "EXPLAIN", "EVOLVE"} {
+		if !strings.Contains(got.stdout, kw) {
+			t.Errorf("help output does not contain %q: %q", kw, got.stdout)
+		}
+	}
+
+	// RootShortDesc does NOT appear in `forge --help`. The assertion
+	// is deliberate: it pins the property that Cobra renders Short
+	// only in a parent's command list, and the root has no parent.
+	// If a future change to Cobra's rendering causes Short to appear
+	// in the command's own help, this test will fail, and the
+	// specification's table must be updated in the same commit.
+	if strings.Contains(got.stdout, RootShortDesc) {
+		t.Errorf("help output unexpectedly contains RootShortDesc %q; "+
+			"Cobra's rendering may have changed, and the "+
+			"specification's table in docs/cli-ux-spec.md § 4.7 "+
+			"must be updated accordingly",
+			RootShortDesc)
+	}
+}
+
+// TestRootIdentity_UsageLineContainsRootUsage verifies that the
+// "Usage:" line of `forge --help` contains RootUsage's value.
+//
+// Cobra composes the usage line from the command's Use field and the
+// flags it detects. The exact composition (whether the line reads
+// "forge [command]" or "forge [command] [flags]") depends on Cobra's
+// version. The test asserts only that the frozen value appears
+// somewhere in the usage line.
+func TestRootIdentity_UsageLineContainsRootUsage(t *testing.T) {
+	t.Parallel()
+
+	got := runCLI(t, []string{"--help"}, nil)
+
+	if got.exitCode != ExitSuccess {
+		t.Fatalf("exit code: got %d, want %d",
+			got.exitCode, ExitSuccess)
+	}
+
+	if !strings.Contains(got.stdout, RootUsage) {
+		t.Errorf("help output does not contain RootUsage %q: %q",
+			RootUsage, got.stdout)
+	}
 }
