@@ -64,3 +64,6 @@ vendor/
 forge-repro-*/
 forge-resolution-*/
 forge
+# Task's per-target checksum and timestamp cache. Regenerated on
+# each task run; not a source file.
+.task/
