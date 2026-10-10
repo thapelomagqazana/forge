@@ -4,8 +4,8 @@
 // happens with no arguments, with --help, with an unknown command,
 // with an unknown flag, with an empty-string argument), the
 // properties that make it a well-behaved CLI dispatcher (exit codes,
-// stream separation, determinism), and the frozen identity strings
-// it exposes (WBS 5.1.1).
+// stream separation, determinism), the frozen identity strings it
+// exposes (WBS 5.1.1), and the version flag it exposes (WBS 5.1.2).
 //
 // It is the test companion to internal/cli/root.go. The root
 // command's job is small — it is a dispatcher, not a worker — and the
@@ -44,6 +44,10 @@
 //   - Root identity (WBS 5.1.1): the frozen identity strings
 //     (RootName, RootUsage, RootShortDesc, RootLongDesc) satisfy
 //     their rules, and the help output is derived from them.
+//
+//   - Version flag (WBS 5.1.2): `forge --version` produces the same
+//     output as `forge version`, exits with the same code, and
+//     writes to stdout.
 //
 // # What this file does not test
 //
@@ -856,5 +860,131 @@ func TestRootIdentity_UsageLineContainsRootUsage(t *testing.T) {
 	if !strings.Contains(got.stdout, RootUsage) {
 		t.Errorf("help output does not contain RootUsage %q: %q",
 			RootUsage, got.stdout)
+	}
+}
+
+// =============================================================================
+// Version flag (WBS 5.1.2)
+// =============================================================================
+//
+// Cobra's built-in --version flag is enabled by setting root.Version
+// to a non-empty string. The tests below assert that the flag works
+// and that its output is identical to the `forge version`
+// subcommand's output.
+
+// TestRootVersion_FlagIsRegistered verifies AC1: setting
+// root.Version to a non-empty string enables Cobra's --version flag.
+//
+// The test constructs the root command directly and asserts that
+// the Version field is non-empty. It does not depend on the help
+// output, because Cobra does not list --version in the "Flags:"
+// section of help.
+//
+// Constructing the root command directly is necessary: the field is
+// not observable through the CLI boundary. The runCLI helper does
+// not expose the constructed command. The direct construction is
+// safe because it uses the same deps the CLI uses and does not
+// execute the command.
+func TestRootVersion_FlagIsRegistered(t *testing.T) {
+	t.Parallel()
+
+	deps := testDependencies()
+	root := newRootCmd(deps)
+
+	if root.Version == "" {
+		t.Error("root.Version is empty; --version will not be enabled")
+	}
+}
+
+// TestRootVersion_FlagPrintsToStdoutAndExitsZero verifies AC2 and
+// AC3: `forge --version` exits with success and writes to stdout,
+// not stderr.
+//
+// The test invokes the CLI through the shared runCLI helper, so it
+// exercises the full path from args to output. If Cobra wrote the
+// version to stderr, the test would fail on the stderr assertion; if
+// the exit code were non-zero, the test would fail on the exit-code
+// assertion.
+func TestRootVersion_FlagPrintsToStdoutAndExitsZero(t *testing.T) {
+	t.Parallel()
+
+	got := runCLI(t, []string{"--version"}, nil)
+
+	if got.exitCode != ExitSuccess {
+		t.Fatalf("exit code: got %d, want %d",
+			got.exitCode, ExitSuccess)
+	}
+	if got.stdout == "" {
+		t.Error("stdout is empty; want version output")
+	}
+	if got.stderr != "" {
+		t.Errorf("stderr is non-empty on success: %q", got.stderr)
+	}
+}
+
+// TestRootVersion_FlagMatchesSubcommand is the central test for
+// WBS 5.1.2: `forge --version` and `forge version` produce identical
+// output.
+//
+// The test runs both invocations and compares their stdout
+// byte-for-byte. It also asserts that their exit codes and stderr
+// match. If the two ever diverge — for example, because a future
+// change edits one formatter but not the other — this test fails,
+// and the fix is local: the format is defined in exactly one place
+// (version.Raw and version.Format share the underlying formatter),
+// and the two paths consume it.
+//
+// # Why byte-identical, not merely similar
+//
+// The contract is that the two invocations are interchangeable for
+// scripts and for users. A script that parses `forge --version` and
+// a script that parses `forge version` must see the same input.
+// "Similar" is not enough; the two must be byte-identical for the
+// contract to hold.
+func TestRootVersion_FlagMatchesSubcommand(t *testing.T) {
+	t.Parallel()
+
+	flagRun := runCLI(t, []string{"--version"}, nil)
+	cmdRun := runCLI(t, []string{"version"}, nil)
+
+	if flagRun.exitCode != cmdRun.exitCode {
+		t.Errorf("exit codes differ: --version=%d, version=%d",
+			flagRun.exitCode, cmdRun.exitCode)
+	}
+	if flagRun.stdout != cmdRun.stdout {
+		t.Errorf("stdout differs between `forge --version` and "+
+			"`forge version`:\n"+
+			"  --version: %q\n"+
+			"  version:   %q",
+			flagRun.stdout, cmdRun.stdout)
+	}
+	if flagRun.stderr != cmdRun.stderr {
+		t.Errorf("stderr differs:\n"+
+			"  --version: %q\n"+
+			"  version:   %q",
+			flagRun.stderr, cmdRun.stderr)
+	}
+}
+
+// TestRootVersion_OutputStartsWithRootName verifies that the version
+// output begins with the CLI's name.
+//
+// The assertion is weaker than the byte-identical check above; it
+// exists as a stable, human-readable property that a reader of the
+// test file can see without parsing the format. The format itself
+// is pinned by TestRootVersion_FlagMatchesSubcommand and by the
+// specification.
+func TestRootVersion_OutputStartsWithRootName(t *testing.T) {
+	t.Parallel()
+
+	got := runCLI(t, []string{"--version"}, nil)
+
+	if got.exitCode != ExitSuccess {
+		t.Fatalf("exit code: got %d, want %d",
+			got.exitCode, ExitSuccess)
+	}
+	if !strings.HasPrefix(got.stdout, RootName) {
+		t.Errorf("stdout does not start with RootName %q: %q",
+			RootName, got.stdout)
 	}
 }

@@ -2,11 +2,11 @@
 
 - **Document type:** Specification
 - **Status:** Draft
-- **Version:** 0.2.0
+- **Version:** 0.3.0
 - **Author:** @thapelomagqazana
 - **Created:** 2026-10-09
 - **Last Updated:** 2026-10-10
-- **Supersedes:** 0.1.0
+- **Supersedes:** 0.2.0
 - **Superseded by:** —
 
 ---
@@ -41,6 +41,7 @@ coding prevents churn in Phase 2 and Phase 5.
 - CLI UX principles
 - Human-readable output vocabulary
 - Root command identity strings
+- Version output contract
 
 **Out of scope:**
 
@@ -724,10 +725,16 @@ Run 'forge <command> --help' for details on any command.
 
 | String | Where |
 |--------|-------|
-| `RootName` | The command name in `forge --help`. The first word of the `Use` field. |
+| `RootName` | The command name in `forge --help` and in the composed `Use` field. |
 | `RootUsage` | The "Usage:" line in `forge --help`. |
-| `RootShortDesc` | The one-line description at the top of `forge --help`. |
-| `RootLongDesc` | The extended description below the short description. |
+| `RootShortDesc` | The one-line description shown in a parent's "Available Commands:" table. For the root command, this field is **not** rendered by `forge --help` (the root has no parent). It is consumed by any future tool that nests `forge` as a subcommand. |
+| `RootLongDesc` | The body of `forge --help`, above the "Usage:" section. |
+
+Cobra's help rendering uses the `Long` field as the body of the help
+text and the `Short` field only in a parent's command list. Because
+the root command has no parent, its `Short` field is not rendered by
+`forge --help`. This is documented behaviour and is pinned by the test
+`TestRootIdentity_HelpOutputContainsConstants`.
 
 #### Rules
 
@@ -778,6 +785,109 @@ A future product decision that renames the CLI, changes its tagline,
 or rewrites its long description is still possible. It simply
 requires the three updates above, and the reviewer of the change
 sees all three in one diff.
+
+### 4.8 Version Output Contract
+
+The `--version` flag and the `version` subcommand produce identical
+output. Both are derived from a single formatter in
+`internal/app/version`, and the two invocations are interchangeable
+for scripts and for users.
+
+#### The format
+
+```text
+forge <version>
+  commit:     <commit>
+  built:      <build-date>
+  dirty:      <dirty>
+  go version: <go-version>
+  platform:   <os>/<arch>
+```
+
+The output ends with a trailing newline. It is rendered with no
+colour and no terminal formatting codes, regardless of whether
+stdout is a TTY.
+
+#### Field values
+
+| Field | Source | Example |
+|-------|--------|---------|
+| `<version>` | `internal/version.Version` (injected via `-X` at build time) | `0.4.0` |
+| `<commit>` | `internal/version.Commit` (injected via `-X`) | `a1b2c3d` |
+| `<build-date>` | `internal/version.BuildDate` (injected via `-X`) | `2026-10-10T12:00:00Z` |
+| `<dirty>` | `internal/version.Dirty` (injected via `-X`) | `false` |
+| `<go-version>` | `runtime.Version()` | `go1.23.4` |
+| `<os>/<arch>` | `runtime.GOOS + "/" + runtime.GOARCH` | `linux/amd64` |
+
+When the binary is built without `-X` flags, the first four values
+are the empty string. The output then reads, for example:
+
+```text
+forge
+  commit:
+  built:
+  dirty:
+  go version: go1.23.4
+  platform:   linux/amd64
+```
+
+The empty values are not a defect; they signal that the binary
+carries no build metadata.
+
+#### Where the format is implemented
+
+The format is implemented in
+[`internal/app/version/format.go`](../internal/app/version/format.go),
+in the function `Format`. The function writes to an `io.Writer`. The
+function `Raw` in
+[`internal/app/version/service.go`](../internal/app/version/service.go)
+returns the same string as a `string`, for callers that need the
+value rather than a stream.
+
+The two CLI invocations consume the two functions:
+
+- `forge version` (the subcommand) calls `Format(deps.Stdout, ...)`,
+  writing directly to the injected stdout.
+- `forge --version` (the flag) reads `version.Raw()` in `newRootCmd`
+  and assigns the result to `root.Version`. Cobra renders the flag's
+  output using a version template that prints the value verbatim:
+
+  ```go
+  root.SetVersionTemplate("{{.Version}}")
+  ```
+
+  Cobra's default template prepends `"forge version "` to the value
+  and appends its own trailing newline. Forge overrides the default
+  so that the flag's output is exactly the value produced by
+  `version.Raw`, with no prefix and no extra newline.
+
+Because both paths derive from the same formatter, they cannot
+diverge without a change to the formatter.
+
+#### Changing the format
+
+Changing the format requires:
+
+1. Updating `internal/app/version/format.go`.
+2. Updating the test
+   `TestRootVersion_FlagMatchesSubcommand` in
+   `internal/cli/root_test.go` if the change affects the byte-for-byte
+   comparison.
+3. Updating this section of `docs/cli-ux-spec.md`.
+4. Running `task check` and confirming the full suite passes.
+
+The three updates are in the same commit. A reviewer who sees a
+change to the formatter without the corresponding documentation
+update rejects the PR.
+
+#### Why the format is frozen
+
+Scripts that parse `forge --version` or `forge version` depend on
+the format. The format is a contract with those scripts, in the same
+way that the exit codes are a contract with the shells that branch
+on them. Freezing the format is the mechanism by which the cost of
+a change is bounded: a change requires the three updates above, and
+a reviewer sees all three in one diff.
 
 ---
 
@@ -1465,6 +1575,7 @@ becomes **Approved** when:
 ## 14. Document History
 
 | Version | Date | Author | Change |
-|---------|------|--------|--------|
+|---------|------|------|--------|
 | 0.1.0 | 2026-10-09 | @thapelomagqazana | Initial Phase 1 draft. Command hierarchy, per-command reference, exit codes, JSON output, UX principles, error catalogue, and open questions. |
 | 0.2.0 | 2026-10-10 | @thapelomagqazana | Added § 4.7 (Root Command Identity) in response to WBS 5.1.1. Documents the four frozen identity constants, their rules, and the process for changing them. |
+| 0.3.0 | 2026-10-10 | @thapelomagqazana | Added § 4.8 (Version Output Contract) in response to WBS 5.1.2. Documents the frozen format shared by `forge --version` and `forge version`, the field sources, the single formatter, and the process for changing the format. Corrected the "Where each string appears" table in § 4.7: `RootShortDesc` is not rendered by `forge --help`; `RootLongDesc` is the body of the help text, not the text below the short description. |

@@ -4,6 +4,8 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+
+	"github.com/thapelomagqazana/forge/internal/app/version"
 )
 
 // =============================================================================
@@ -190,6 +192,13 @@ Run 'forge <command> --help' for details on any command.`
 // Cobra prints usage on every error and writes errors to stdout, both
 // of which break the CLI UX contract.
 //
+// Version is set to a non-empty string so that Cobra's built-in
+// --version flag is enabled. The value is produced by version.Raw,
+// which yields the same text as the `forge version` subcommand. See
+// docs/cli-ux-spec.md § 4.8 for the format contract and
+// internal/cli/root_test.go for the test that enforces the two
+// invocations' output being byte-identical.
+//
 // TraverseChildren is left at its default (false). If the command
 // tree ever requires traversal before dispatch, this is the field
 // to revisit; the default is correct for a tree whose subcommands
@@ -242,6 +251,31 @@ func newRootCmd(deps Dependencies) *cobra.Command {
 		Short: RootShortDesc,
 		Long:  RootLongDesc,
 
+		// Version enables Cobra's built-in --version flag. The
+		// value is produced by version.Raw, the same function that
+		// underlies the `forge version` subcommand's output. The
+		// two invocations therefore produce identical text; see
+		// docs/cli-ux-spec.md § 4.8 for the format contract.
+		//
+		// # Why the value is computed here and not in
+		// # buildDependencies
+		//
+		// The value depends on deps, which is threaded into this
+		// function. Computing it here keeps the two-boundary model
+		// intact: buildDependencies constructs the collaborators;
+		// newRootCmd assembles the command tree. Adding a
+		// pre-computed Version to Dependencies would make the
+		// struct carry a derived value, which is a category error
+		// — the struct holds collaborators, not their outputs.
+		//
+		// # Why version.Raw and not version.Format
+		//
+		// Format writes to an io.Writer; Raw returns a string.
+		// Cobra's Version field is a string, so Raw is the correct
+		// function. The two share the underlying formatter; a
+		// change to the format is made in one place.
+		Version: version.Raw(),
+
 		SilenceUsage:  true,
 		SilenceErrors: true,
 
@@ -260,6 +294,16 @@ func newRootCmd(deps Dependencies) *cobra.Command {
 		// before RunE runs. RunE is responsible for validating them.
 		Args: cobra.ArbitraryArgs,
 	}
+
+	// Override Cobra's default --version template.
+	//
+	// Cobra's default template prepends "forge version " to the
+	// Version value and appends its own trailing newline. Forge's
+	// own `forge version` subcommand prints the Version value
+	// verbatim. The template "{{.Version}}" produces the verbatim
+	// output, so that `forge --version` and `forge version` are
+	// byte-identical. See docs/cli-ux-spec.md § 4.8.
+	root.SetVersionTemplate("{{.Version}}")
 
 	// Register every subcommand in the central registry. See the
 	// docstring above and docs/architecture.md § 11.13.

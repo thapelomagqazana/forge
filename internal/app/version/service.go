@@ -1,5 +1,9 @@
 package version
 
+import (
+	"strings"
+)
+
 // Info is the result of the version application service.
 //
 // It is a plain struct with no methods, no embedded types, and no
@@ -63,35 +67,37 @@ type Info struct {
 //
 // # Purity
 //
-// Get is pure. It reads package-level variables, constructs an Info
-// value, and returns it. It does not touch the filesystem, the
-// network, the environment, or any other global state. Two calls with
-// no intervening mutation return equal values.
+// Get is pure. It reads package-level variables from
+// internal/version, constructs an Info value, and returns it. It
+// does not touch the filesystem, the network, the environment, or
+// any other global state. Two calls with no intervening mutation
+// return equal values.
 //
 // The purity is what makes the version command testable without a
 // subprocess. A test can stub the build variables (by assigning to
-// them in the test package), call Get, and assert on the result. See
-// service_test.go for the pattern.
+// them in the test package), call Get, and assert on the result.
+// See service_test.go for the pattern.
 //
-// # Why build variables live in internal/cli (for now)
+// # Where the build variables live
 //
-// The build variables (Version, Commit, BuildDate) are injected at
-// link time via ldflags:
+// The build variables (Version, Commit, BuildDate, Dirty) live in
+// internal/version and are injected at link time via ldflags:
 //
 //	go build -ldflags "\
-//	  -X github.com/thapelomagqazana/forge/internal/cli.Version=0.1.0 \
-//	  -X github.com/thapelomagqazana/forge/internal/cli.Commit=$(git rev-parse --short HEAD) \
-//	  -X github.com/thapelomagqazana/forge/internal/cli.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+//	  -X github.com/thapelomagqazana/forge/internal/version.Version=0.1.0 \
+//	  -X github.com/thapelomagqazana/forge/internal/version.Commit=$(git rev-parse --short HEAD) \
+//	  -X github.com/thapelomagqazana/forge/internal/version.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+//	  -X github.com/thapelomagqazana/forge/internal/version.Dirty=false"
 //
-// The variables currently live in internal/cli because that is where
-// the first WBS item that needed them put them. WBS 4.3.2 will
-// relocate them to a new internal/version package, which is a more
-// natural home and breaks the (currently benign) dependency from
-// internal/app/version back to internal/cli.
+// The relocation of the variables from internal/cli to
+// internal/version happened as part of WBS 4.3.1, when the version
+// handler was introduced. The relocation broke the import cycle
+// between internal/cli and internal/app/version that would
+// otherwise have existed. See docs/architecture.md § 11.12 for the
+// full account.
 //
-// Until WBS 4.3.2 lands, Get reads the variables through an internal
-// accessor. The accessor is unexported and exists only so that the
-// relocation in WBS 4.3.2 touches one file, not two.
+// Get reads the variables through buildInfo, a small accessor that
+// isolates the import of internal/version to one file.
 func Get() Info {
 	version, commit, buildDate, dirty := buildInfo()
 	return Info{
@@ -100,4 +106,63 @@ func Get() Info {
 		BuildDate: buildDate,
 		Dirty:     dirty,
 	}
+}
+
+// Raw returns the version string that the CLI prints for the version
+// command, in the format documented in docs/cli-ux-spec.md § 4.8.
+//
+// # What Raw produces
+//
+// Raw renders the same text that `forge version` writes to stdout:
+//
+//	forge <version>
+//	  commit:     <commit>
+//	  built:      <build-date>
+//	  dirty:      <dirty>
+//	  go version: <go-version>
+//	  platform:   <os>/<arch>
+//
+// The string ends with a trailing newline.
+//
+// # Why Raw exists
+//
+// Cobra has a built-in --version flag that prints a one-line string
+// when root.Version is non-empty. Forge's own `forge version`
+// subcommand prints a longer, structured report. WBS 5.1.2 requires
+// that `forge --version` and `forge version` produce identical
+// output, so the CLI needs a single canonical function that returns
+// the string. Raw is that function.
+//
+// The alternative — that newRootCmd formats the string itself —
+// would duplicate the formatter and create a maintenance hazard:
+// a change to the format would have to be applied in two places.
+// Raw centralises the format.
+//
+// # Relationship to Format
+//
+// Format writes the same string to an io.Writer. Raw returns it as
+// a string. The two are two views of the same format. The CLI uses
+// Format when writing to a stream (as in the version handler), and
+// Raw when it needs the string itself (as in root.Version).
+//
+// # Purity
+//
+// Raw is pure. It reads the same values that Get reads and formats
+// them. Two calls with no intervening mutation return the same
+// string.
+func Raw() string {
+	var b strings.Builder
+	if err := Format(&b, Get()); err != nil {
+		// Format writes to an io.Writer; a strings.Builder cannot
+		// fail. The error branch is unreachable but is kept so that
+		// the function's behaviour is identical to Format's, and so
+		// that a future change to Format's signature does not
+		// silently break Raw.
+		//
+		// The fallback returns a minimal, well-formed string so that
+		// the CLI's --version flag always produces output, even in
+		// the impossible case.
+		return "forge\n"
+	}
+	return b.String()
 }
