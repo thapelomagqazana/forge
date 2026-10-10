@@ -1,82 +1,95 @@
-// Package version holds the build-time version metadata for the
-// running Forge binary.
+// Package version holds the canonical build metadata for Forge.
 //
-// # What this package is
+// # Purpose
 //
-// This package is the single source of truth for the values that
-// describe a Forge build: the semantic version, the short Git commit
-// hash, and the build timestamp. Every consumer — the CLI, the
-// version application service, and any future subsystem — reads them
-// from here.
+// The four values in this package — Version, Commit, BuildDate, and
+// Dirty — describe a single build of the Forge binary. They are domain
+// data, not presentation, and they do not belong in internal/cli:
 //
-// # Why a dedicated package
+//   - internal/cli has a frozen single-symbol public surface
+//     (WBS 4.1.1). Widening it to host a data model would violate
+//     that contract.
 //
-// Before WBS 4.3.1, the three variables lived in internal/cli. That
-// worked while the CLI was the only consumer. WBS 4.3.1 introduced
-// internal/app/version as a second consumer, and an import cycle
-// appeared:
+//   - The values are consumed by multiple packages (the CLI root
+//     command, the formatter, the binary entrypoint) and by future
+//     phases (release tooling, SBOM generation, SARIF output) that
+//     must not depend on the CLI layer.
 //
-//	internal/cli  ──────►  internal/app/version
-//	     ▲                        │
-//	     │                        │
-//	     └────────────────────────┘
-//	              (cycle)
+//   - The variables are the write targets for linker injection
+//     (-ldflags "-X"), which requires a stable, dedicated package
+//     path. Putting them in internal/cli would couple the linker
+//     prefix to a package whose name is chosen for a different
+//     reason.
 //
-// internal/cli imports internal/app/version for the `forge version`
-// handler. internal/app/version would need to import internal/cli for
-// the build variables. Go rejects the cycle.
+// # Contract
 //
-// Moving the variables to this package breaks the cycle. This package
-// imports nothing from Forge; both internal/cli and
-// internal/app/version import it. The dependency graph becomes a
-// directed acyclic graph:
+//   - Version, Commit, BuildDate, and Dirty are package-level string
+//     variables. They are the ONLY write targets for -X in the
+//     module. Their names are frozen.
 //
-//	internal/cli        internal/app/version
-//	         \            /
-//	          v          v
-//	          internal/version
+//   - Every variable defaults to the empty string. This is
+//     intentional: an empty value is an honest signal that the
+//     binary was built without linker injection. Callers that want a
+//     sentinel ("dev", "none", "unknown") apply it at the
+//     presentation layer, not here.
 //
-// # Why the package lives at internal/version, not internal/cli/version
+//   - Get returns the four values as a 4-tuple. It is pure: no I/O,
+//     no side effects, no allocation beyond the tuple itself (which
+//     the compiler keeps on the stack). Callers may cache the
+//     result; the values cannot change after package init.
 //
-// Go's cycle rules operate at package granularity, not directory
-// granularity. A package at internal/cli/version would still be
-// imported as a distinct package, but the cycle would remain if any
-// package that internal/cli imports — directly or transitively — also
-// imports internal/cli/version. The safe location is outside any
-// package that could close the cycle. internal/version is that
-// location.
+//   - The package imports nothing. It is a leaf in the dependency
+//     graph. The edge internal/cli → internal/version is one-way.
 //
-// # Why not define the variables in internal/app/version
+// # Boundary
 //
-// The variables are injected at link time via the -X flag. The -X
-// flag requires the fully-qualified package path of the variable:
+//	internal/cli         ──imports──▶ internal/version
+//	internal/app/version ──imports──▶ internal/version
+//	cmd/forge            ──imports──▶ internal/version (wiring only)
 //
-//	-X github.com/thapelomagqazana/forge/internal/version.Version=<value>
+// The reverse edges must never exist. See docs/architecture.md
+// "Version Package" for the full rationale.
 //
-// If the variables were defined in internal/app/version, the ldflags
-// path would be:
+// # Linker Injection
 //
-//	-X github.com/thapelomagqazana/forge/internal/app/version.Version=<value>
+// Values are injected at build time via:
 //
-// That path is longer, and it couples the build system to an
-// application-layer package. The build system should not need to know
-// which layer of Forge owns the version metadata. A dedicated
-// internal/version package is a neutral home.
+//	go build -ldflags "\
+//	  -X github.com/thapelomagqazana/forge/internal/version.Version=1.2.3 \
+//	  -X github.com/thapelomagqazana/forge/internal/version.Commit=abc1234 \
+//	  -X github.com/thapelomagqazana/forge/internal/version.BuildDate=2026-10-09T12:00:00Z \
+//	  -X github.com/thapelomagqazana/forge/internal/version.Dirty=false"
 //
-// # Why the variables are exported
+// The prefix "github.com/thapelomagqazana/forge/internal/version."
+// must match the module path declared in go.mod exactly. Any drift
+// between the module path and the linker target silently produces a
+// binary with empty values; this is caught by
+// scripts/reproducible/verify-resolution.sh.
 //
-// The -X flag requires the target variable to be exported. The
-// variables are therefore declared as `var Version string`, not
-// `const`. A `const` cannot be injected at link time.
+// # Why exported variables
 //
-// The variables must not be assigned after package initialization.
-// Code that reads them should call Get, which is the stable API.
+// The -X linker flag requires exported identifiers. An earlier draft
+// proposed unexported variables plus a build-tag-selected declaration
+// to hide them; that adds a second declaration and a second build
+// path for no benefit. The package is a leaf, so there is no public
+// surface to widen.
 //
-// # Stability
+// # Why empty defaults
 //
-// The import path of this package is part of the build system's
-// contract. Any change to the path must be accompanied by a change to
-// every build script, CI configuration, and release pipeline that
-// injects these values. After WBS 4.3.1, the path is stable; future
-// relocations are not anticipated.
+// A non-empty default such as "dev" collapses two distinct states —
+// "this binary was built without version information" and "this
+// binary is a development build" — into one. The first state is a
+// signal that the build pipeline is misconfigured; the second is
+// normal during development. Keeping the default empty lets the
+// formatter (internal/app/version) decide how to render each state
+// distinctly.
+//
+// # Why Dirty is a string
+//
+// The -X linker flag can only set string variables. A bool field
+// would require either a two-variable convention (e.g. Clean and
+// Dirty) or a parse step. A single string is simpler to inject; the
+// consumer compares against "true", or treats "" as "unknown" rather
+// than "clean". The package does not validate the value; the build
+// system is responsible for producing "true" or "false".
 package version
