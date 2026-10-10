@@ -277,3 +277,73 @@ func testDependencies() Dependencies {
 func helpCommandNames(help string) []string {
 	return extractVisibleCommandNamesFromHelp(help)
 }
+
+// assertOnlyStdout verifies that got has output on stdout and none
+// on stderr.
+//
+// # Why the helper exists
+//
+// The output stream boundary (WBS 7.4.1) requires each piece of
+// output to go to exactly one stream. A test that asserts the
+// boundary for a successful command uses this helper: it asserts
+// that stdout is non-empty and stderr is empty. The helper
+// produces a specific failure message if either assertion fails.
+//
+// # What the helper does not assert
+//
+// The helper does not assert the content of stdout. Content is the
+// job of the command's own tests. The helper asserts only the
+// stream: output on stdout, nothing on stderr.
+//
+// # Exit code
+//
+// The helper does not assert the exit code. A caller that wants to
+// assert the exit code does so separately. The helper is called
+// from tests that have already asserted the exit code (usually
+// ExitSuccess).
+func assertOnlyStdout(t *testing.T, got testRun) {
+	t.Helper()
+	if got.stdout == "" {
+		t.Errorf("stdout is empty; want output on stdout\n"+
+			"stderr: %q", got.stderr)
+	}
+	if got.stderr != "" {
+		t.Errorf("stderr is non-empty; want nothing on stderr\n"+
+			"stderr: %q", got.stderr)
+	}
+}
+
+// assertOnlyStderr verifies that got has output on stderr and none
+// on stdout.
+//
+// # Why the helper exists
+//
+// The output stream boundary (WBS 7.4.1) requires errors and
+// diagnostics to go to stderr. A test that asserts the boundary
+// for a failing command uses this helper: it asserts that stderr
+// is non-empty and stdout is empty. The helper produces a
+// specific failure message if either assertion fails.
+//
+// # What the helper does not assert
+//
+// The helper does not assert the content of stderr. Content is the
+// job of the command's own tests (or the errors tests). The helper
+// asserts only the stream: output on stderr, nothing on stdout.
+//
+// # Exit code
+//
+// The helper does not assert the exit code. A caller that wants to
+// assert the exit code does so separately. The helper is called
+// from tests that have already asserted the exit code (usually
+// ExitUsage).
+func assertOnlyStderr(t *testing.T, got testRun) {
+	t.Helper()
+	if got.stderr == "" {
+		t.Errorf("stderr is empty; want a diagnostic on stderr\n"+
+			"stdout: %q", got.stdout)
+	}
+	if got.stdout != "" {
+		t.Errorf("stdout is non-empty; want nothing on stdout\n"+
+			"stdout: %q", got.stdout)
+	}
+}

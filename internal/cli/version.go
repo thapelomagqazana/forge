@@ -70,6 +70,30 @@ import (
 // Both are returned by the handler; neither is written to stderr
 // by the handler. The error-to-message and error-to-exit-code
 // mapping is done one layer up, in executeWithOptions.
+//
+// # The Example field (WBS 7.1.3)
+//
+// The per-command help contract (WBS 7.1.3) requires an Examples
+// block for any command that takes arguments, has command-specific
+// flags, or has subcommands. The version command has a
+// command-specific flag (`--format`), so it must declare an
+// Example.
+//
+// Cobra renders the Example field under an "Examples:" heading,
+// between the Usage section and the Flags section. The content is
+// rendered verbatim; the leading two spaces on each line are part
+// of the field's value, not added by Cobra.
+//
+// The two examples are the command's two primary invocations: the
+// default text output and the JSON output. They are deliberately
+// minimal; a user who needs more detail reads the Long
+// description or the CLI UX spec.
+//
+// The golden file internal/cli/testdata/help/version.golden.txt
+// records the rendered output, including this Examples block. A
+// change to the field's content changes the rendered output and
+// fails TestHelpGolden_Subcommands/version until the golden file
+// is regenerated.
 func newVersionCmd(deps Dependencies) *cobra.Command {
 	var format string
 
@@ -83,7 +107,11 @@ The default output is a stable, line-oriented format suitable for
 humans. The --format flag selects an alternative representation:
 
   --format text   the human-readable format (default)
-  --format json   a single-line JSON object suitable for machines`,
+  --format json   a single-line JSON object suitable for machines
+
+See the CLI UX specification for the frozen format of each.`,
+		Example: `  forge version
+  forge version --format json`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := appversion.FormatAs(deps.Stdout, appversion.Get(), format); err != nil {

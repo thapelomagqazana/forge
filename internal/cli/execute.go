@@ -53,6 +53,16 @@
 // the command tree, so a malformed `--help <cmd>` invocation is
 // unobservable from inside the tree. The pre-parse check is the only
 // stage at which both malformed cases are visible.
+//
+// # The error message format
+//
+// Errors are rendered through the frozen format defined by WBS
+// 7.3.2: a first line prefixed with "Error: ", optional context
+// lines, and an optional Suggestion block. The rendering is done
+// by formatError (below), which delegates to formatErrorMessage
+// (errors.go). The format is documented in docs/cli-ux-spec.md
+// "Error Message Format" and enforced by the tests in
+// format_error_test.go and errors_test.go.
 package cli
 
 import (
@@ -258,19 +268,22 @@ func Execute() int {
 //
 // Before the transformation, executeWithOptions calls
 // validateArgs (validate.go) on the raw argument list. The
-// validator rejects two malformed help invocations that Cobra
-// would otherwise accept silently:
+// validator rejects malformed invocations that Cobra would
+// otherwise accept silently:
 //
 //   - `forge --help <cmd>` — the --help flag takes no argument.
 //   - `forge help <unknown>` — an unknown help topic.
+//   - `forge --version <arg>` — the --version flag takes no
+//     argument.
+//   - `forge --config` with no value — the flag requires a value.
 //
 // The rejection must happen before Cobra parses the arguments:
-// Cobra's --help interception is a short-circuit that runs before
-// any hook, so the malformed invocation is unobservable from
-// inside the command tree. validateArgs is the only stage at which
-// both cases are visible.
+// Cobra's --help and --version interceptions are short-circuits
+// that run before any hook, so the malformed invocations are
+// unobservable from inside the command tree. validateArgs is the
+// only stage at which all four cases are visible.
 //
-// The validator returns a plain error. This function formats it
+// The validator returns a plain error. This function renders it
 // with the same formatError used for all other errors, writes it
 // to the same stderr, and maps it to an exit code with the same
 // exitCodeFromError. The result is indistinguishable from an error
@@ -284,8 +297,8 @@ func Execute() int {
 //  3. Constructs the root command, passing Dependencies to it.
 //  4. Binds the injectable inputs and outputs to the command tree.
 //  5. Executes the command tree.
-//  6. Formats any returned error.
-//  7. Writes the formatted error to the injected stderr.
+//  6. Renders any returned error with formatError.
+//  7. Writes the rendered error to the injected stderr.
 //  8. Maps the error to an exit code via exitCodeFromError.
 //
 // # What the function does not do
@@ -293,7 +306,7 @@ func Execute() int {
 //   - It does not read os.Args, os.Stdin, os.Stdout, os.Stderr, or
 //     os.Getenv. Every input is read from the options value.
 //   - It does not perform I/O of its own beyond writing the
-//     formatted error to opts.stderr. The command tree performs the
+//     rendered error to opts.stderr. The command tree performs the
 //     rest.
 //   - It does not interpret exit codes beyond calling
 //     exitCodeFromError. The mapping is defined in exitcodes.go.
@@ -302,8 +315,11 @@ func Execute() int {
 //
 // When the command tree returns a non-nil error, the function:
 //
-//   - Formats the error via formatError.
-//   - Writes the formatted string to opts.stderr, followed by a
+//   - Renders the error via formatError into the frozen error
+//     message format (WBS 7.3.2): a first line prefixed with
+//     "Error: ", optional context lines, and an optional
+//     Suggestion block.
+//   - Writes the rendered string to opts.stderr, followed by a
 //     newline.
 //   - Returns the exit code for the error's category.
 //
@@ -352,16 +368,15 @@ func Execute() int {
 // diagnostic output. The function returns ExitSuccess immediately,
 // without touching opts.stderr.
 func executeWithOptions(opts options) int {
-	// Validate the raw arguments before Cobra parses them. Two
-	// malformed help invocations are rejected here; see validate.go
-	// for the rationale and docs/cli-ux-spec.md § 4.10 for the
-	// contract.
+	// Validate the raw arguments before Cobra parses them. The
+	// malformed invocations are rejected here; see validate.go
+	// for the rationale and docs/cli-ux-spec.md for the contract.
 	//
 	// The validator returns a plain error. The error path below is
 	// the same path used for errors returned by the command tree:
-	// formatError renders the message, Fprintln writes it to
-	// opts.stderr, and exitCodeFromError maps it to an exit code.
-	// No error type distinction is necessary.
+	// formatError renders the message in the frozen format,
+	// Fprintln writes it to opts.stderr, and exitCodeFromError maps
+	// it to an exit code. No error type distinction is necessary.
 	if err := validateArgs(opts.args); err != nil {
 		fmt.Fprintln(opts.stderr, formatError(err))
 		return exitCodeFromError(err)
@@ -420,10 +435,10 @@ func executeWithOptions(opts options) int {
 		return ExitSuccess
 	}
 
-	// The command tree returned an error. Format it and write it to
-	// the injected stderr, followed by a newline. The format is
-	// defined by formatError; this function does not add anything
-	// to it beyond the newline.
+	// The command tree returned an error. Render it in the frozen
+	// format (WBS 7.3.2) and write it to the injected stderr,
+	// followed by a newline. The format is applied by formatError;
+	// this function adds only the trailing newline.
 	//
 	// The newline is added here rather than in formatError because
 	// formatError is a pure string function. A future caller that
@@ -446,12 +461,34 @@ func executeWithOptions(opts options) int {
 	return exitCodeFromError(err)
 }
 
-// formatError renders an error as a user-facing string.
+// formatError renders an error as a user-facing string in the
+// frozen error message format (WBS 7.3.2).
 //
-// The function is deliberately minimal in WBS 4.2.1 and WBS 4.2.2.
-// It returns the error's own message, without prefix or decoration.
-// This is the behaviour the tests assert: an error's message is the
-// observable output on failure.
+// The format is:
+//
+//	Error: <message>
+//
+//	Suggestion:
+//	  <actionable remediation>
+//
+// Context lines are optional and appear between the message and the
+// suggestion. The format is documented in docs/cli-ux-spec.md
+// "Error Message Format".
+//
+// # How the rendering works
+//
+// The function builds an errorContext from the error:
+//
+//   - The message is err.Error().
+//   - The suggestion is extracted from the error chain via
+//     suggestionOf (errors.go). An error that does not carry a
+//     suggestion renders without a Suggestion block.
+//
+// The context lines are derived from the error's own structure.
+// In Phase 2, no error carries context lines; the message is the
+// only content. When WBS 10.0 introduces structured errors with
+// context fields, this function is where the context is extracted
+// and rendered.
 //
 // # Why a dedicated function
 //
@@ -470,17 +507,15 @@ func executeWithOptions(opts options) int {
 // will not change: callers continue to pass an error and receive a
 // string.
 //
-// The current implementation returns err.Error() unconditionally.
-// A future implementation will type-assert err to the structured
-// error interface, fall back to err.Error() if the assertion fails,
-// and render the structured fields if it succeeds. The fallback is
-// important: the CLI must render third-party errors (from Cobra,
-// from the standard library) correctly even though they do not
-// implement Forge's structured error interface.
+// The current implementation extracts the message and the
+// suggestion. A future implementation will additionally extract
+// the code and the context. The extraction functions
+// (suggestionOf, and future siblings) live in errors.go; this
+// function composes their results.
 //
 // # Why not fmt.Sprintln here
 //
-// The caller writes the formatted string to stderr and adds a
+// The caller writes the rendered string to stderr and adds a
 // newline. Adding the newline inside this function would make the
 // function's output suitable only for writing to a stream; a future
 // caller that wants to compose the string into a larger message
@@ -489,7 +524,7 @@ func executeWithOptions(opts options) int {
 //
 // # Nil handling
 //
-// The function is defensive: a nil error formats as an empty string
+// The function is defensive: a nil error renders as an empty string
 // rather than panicking. This branch is unreachable given how
 // formatError is called (executeWithOptions returns early when err
 // is nil), but the function is a pure helper and should not panic on
@@ -500,5 +535,20 @@ func formatError(err error) string {
 	if err == nil {
 		return ""
 	}
-	return err.Error()
+
+	ctx := errorContext{
+		message:    err.Error(),
+		suggestion: suggestionOf(err),
+	}
+
+	// Enforce the message-length limit. The check produces a
+	// context line naming the violation if the message is over
+	// maxMessageLength runes. The line is appended to the
+	// context, so the developer who constructed the error sees
+	// the diagnostic in the output.
+	if line, ok := checkMessageLength(ctx.message); !ok {
+		ctx.contextLines = append(ctx.contextLines, line)
+	}
+
+	return formatErrorMessage(ctx)
 }

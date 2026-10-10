@@ -2,11 +2,11 @@
 
 - **Document type:** Specification
 - **Status:** Draft
-- **Version:** 0.5.0
+- **Version:** 0.6.0
 - **Author:** @thapelomagqazana
 - **Created:** 2026-10-09
 - **Last Updated:** 2026-10-10
-- **Supersedes:** 0.4.0
+- **Supersedes:** 0.5.0
 - **Superseded by:** —
 
 ---
@@ -43,7 +43,17 @@ coding prevents churn in Phase 2 and Phase 5.
 - Root command identity strings
 - Version output contract
 - Help behaviour contract
+- Help invocation matrix
+- Root help content contract
+- Per-command help content contract
+- Command metadata contract
+- Examples convention
+- Invalid-command contract
+- Error message format
+- Output stream boundary
+- Colour, TTY, and ASCII policy
 - Global flag semantics and precedence
+- Global flag interaction matrix
 
 **Out of scope:**
 
@@ -151,14 +161,14 @@ When `<project-name>` is omitted, or `--template` is not provided,
 Forge enters an interactive wizard:
 
 ```text
-Forge — New Project
-────────────────────
+Forge - New Project
+--------------------
 
 Project name
 > payments-api
 
 What are you building?
-❯ API
+> API
   CLI
   Web application
   Library
@@ -166,26 +176,26 @@ What are you building?
   Service
 
 Language
-❯ Python
+> Python
   Go
   TypeScript
   Rust
 
 Framework
-❯ FastAPI
+> FastAPI
   Flask
   None
 
 Testing
-❯ Pytest
+> Pytest
   None
 
 Containerisation
-❯ Docker
+> Docker
   None
 
 CI
-❯ GitHub Actions
+> GitHub Actions
   None
 
 Foundation preview
@@ -196,6 +206,10 @@ Foundation preview
 
 Create project? [Y/n]
 ```
+
+The prompts use ASCII characters only (see § 4.9l). The interactive
+selection marker is `>`; the checked bullet is `[x]`; the unchecked
+bullet is `[ ]`. Colour and Unicode glyphs are deferred to Phase 6.
 
 **Non-interactive mode:**
 
@@ -240,7 +254,7 @@ When `<project-name>` is provided and `--template` is not, Forge may:
 **Output (human):**
 
 ```text
-✓ Project created
+[OK] Project created
 
 payments-api/
 Template: python-fastapi@1.0.0
@@ -250,6 +264,9 @@ Next steps:
   cd payments-api
   forge validate
 ```
+
+The `[OK]` marker is an ASCII-safe replacement for the checkmark
+glyph. See § 4.9l for the ASCII-only policy.
 
 **Output (JSON):**
 
@@ -314,8 +331,8 @@ candidates.
 **Prompts:**
 
 ```text
-Forge — Repository Adoption
-────────────────────────────
+Forge - Repository Adoption
+----------------------------
 
 Scanning repository...
 
@@ -331,11 +348,11 @@ Recommended foundation:
   Match: HIGH
 
 Why:
-  ✓ pyproject.toml detected
-  ✓ FastAPI dependency detected
-  ✓ pytest configuration detected
-  ✓ Dockerfile detected
-  ✓ GitHub Actions workflow detected
+  [x] pyproject.toml detected
+  [x] FastAPI dependency detected
+  [x] pytest configuration detected
+  [x] Dockerfile detected
+  [x] GitHub Actions workflow detected
 
 Adopt this foundation? [Y/n]
 ```
@@ -365,7 +382,7 @@ any file other than `forge.yaml`.
 If Forge cannot detect a foundation:
 
 ```text
-✗ Could not detect a foundation
+[ERROR] Could not detect a foundation
 
 Detected technologies: none
 
@@ -378,11 +395,11 @@ Options:
 
 **Failure behaviour:**
 
-- Existing `forge.yaml` → fail with actionable message (do not
+- Existing `forge.yaml` -> fail with actionable message (do not
   overwrite)
-- Ambiguous detection (multiple equally plausible foundations) → fail
+- Ambiguous detection (multiple equally plausible foundations) -> fail
   in non-interactive mode; prompt in interactive mode
-- No `forge.yaml` can be written → filesystem error
+- No `forge.yaml` can be written -> filesystem error
 
 **Exit codes:**
 
@@ -398,7 +415,7 @@ Options:
 **Output (human):**
 
 ```text
-✓ Repository initialized
+[OK] Repository initialized
 
 forge.yaml created
 Foundation: python-fastapi@1.0.0
@@ -475,20 +492,20 @@ Validation returns a list of findings. Each finding has:
 **Output (human):**
 
 ```text
-✓ forge.yaml is valid
+[OK] forge.yaml is valid
 
 Blueprint: payments-api
 Foundation: python-fastapi@1.0.0
 Template: python-fastapi@1.0.0
 
 Checks
-  ✓ Configuration
-  ✓ Foundation reference
-  ✓ Structure
-  ✓ Testing
-  ✓ CI
-  ✓ Documentation
-  ! Security — .env is not ignored
+  [OK]  Configuration
+  [OK]  Foundation reference
+  [OK]  Structure
+  [OK]  Testing
+  [OK]  CI
+  [OK]  Documentation
+  [WARN] Security - .env is not ignored
 
 1 warning, 0 errors
 
@@ -548,7 +565,7 @@ None.
 
 ```text
 Project Foundation
-──────────────────
+------------------
 
 Project
   payments-api
@@ -716,7 +733,7 @@ tests, documentation, and help output.
 |----------|-------|
 | `RootName` | `forge` |
 | `RootUsage` | `forge [command]` |
-| `RootShortDesc` | `Forge — Engineering Foundations as Code` |
+| `RootShortDesc` | `Forge - Engineering Foundations as Code` |
 | `RootLongDesc` | see below |
 
 `RootLongDesc` is a raw string literal:
@@ -727,10 +744,10 @@ validating, and evolving software project foundations as code.
 
 The core loop:
 
-    CREATE  →  forge new
-    VERIFY  →  forge check
-    EXPLAIN →  forge explain
-    EVOLVE  →  forge update
+    CREATE  ->  forge new
+    VERIFY  ->  forge check
+    EXPLAIN ->  forge explain
+    EVOLVE  ->  forge update
 
 Run 'forge <command> --help' for details on any command.
 ```
@@ -755,8 +772,7 @@ the root command has no parent, its `Short` field is not rendered by
 1. `RootName` is lowercase. It is never "Forge" in the CLI's name
    field. The command a user types is `forge`, not `Forge`.
 2. `RootShortDesc` is a single line of 80 characters or fewer. The
-   limit is measured in runes, not bytes, so the em dash (—) counts
-   as one character.
+   limit is measured in runes, not bytes.
 3. `RootLongDesc` is a raw string literal. Its line breaks and
    indentation are preserved verbatim in the help output.
 4. `RootLongDesc` contains the CREATE / VERIFY / EXPLAIN / EVOLVE
@@ -766,8 +782,10 @@ the root command has no parent, its `Short` field is not rendered by
    pointer tells a user how to learn more about a specific
    subcommand.
 6. None of the four contains emojis, ANSI colour codes, or tabs.
-   Colour and emphasis belong to the terminal, not to the CLI's
-   identity strings.
+7. All four are ASCII-only. The em dash and right arrow used in an
+   earlier draft were replaced with the ASCII equivalents `-` and
+   `->` when the ASCII-only policy (WBS 7.4.2) was frozen. See
+   § 4.9l "Colour and Terminal Policy" for the policy.
 
 #### Changing a string
 
@@ -778,11 +796,13 @@ Changing any of the four constants requires:
    `internal/cli/root_test.go`.
 3. Updating this section of `docs/cli-ux-spec.md` to quote the new
    value.
-4. Running `task check` and confirming the full suite passes.
+4. Regenerating the golden files under
+   `internal/cli/testdata/help/` that contain the rendered value.
+5. Running `task check` and confirming the full suite passes.
 
-The three updates are in the same commit. A reviewer who sees a
-constant change without the corresponding test and documentation
-changes rejects the PR.
+The updates are in the same commit. A reviewer who sees a constant
+change without the corresponding test and documentation changes
+rejects the PR.
 
 #### Why these strings are frozen
 
@@ -791,7 +811,7 @@ in every documentation page that describes the CLI, and in every
 shell script that captures `forge --help` output. Changing the
 strings is cheap in code and expensive in every artefact that
 quotes them. Freezing the strings is the mechanism by which the
-cost is bounded: a change requires a deliberate update to three
+cost is bounded: a change requires a deliberate update to several
 files, which a reviewer sees.
 
 ### 4.8 Version Output Contract
@@ -846,8 +866,8 @@ forge <version>
 | `<os>/<arch>` | `runtime.GOOS + "/" + runtime.GOARCH` | `linux/amd64` |
 
 **The `dirty` rule:** Only the literal `"true"` renders as `true`.
-Every other value — including `"1"`, `"yes"`, `"TRUE"`, and the
-empty string — renders as `false`. The rule is documented on
+Every other value - including `"1"`, `"yes"`, `"TRUE"`, and the
+empty string - renders as `false`. The rule is documented on
 `internal/version.Dirty` (WBS 6.1.1) and enforced by the linker
 injection contract (WBS 6.1.2).
 
@@ -1017,12 +1037,20 @@ format is the mechanism by which the cost of a change is bounded:
 a change requires the updates listed in § 4.8.4, and a reviewer
 sees all of them in one diff.
 
-### 4.9 Help Behaviour
+### 4.9 Help and Error Contracts
+
+This subsection collects the frozen contracts that govern help
+output, per-command help, invalid-command behaviour, error messages,
+output streams, colour and ASCII policy, and global flag
+interaction. Each contract has a subsection below, identified by a
+letter suffix.
+
+#### 4.9a Help Behaviour
 
 Forge's help system has eight entry points. The table below is the
 contract: every release must handle every row consistently.
 
-#### The contract
+##### The contract
 
 | Invocation | Behaviour | Exit | Stream |
 |------------|-----------|------|--------|
@@ -1035,7 +1063,7 @@ contract: every release must handle every row consistently.
 | `forge --help version` | Rejected (help has no args) | 2 | stderr |
 | `forge help unknown` | Print "unknown help topic" | 2 | stderr |
 
-#### Rules
+##### Rules
 
 1. **All help goes to stdout, never stderr.** The help text is a
    successful result, not a diagnostic.
@@ -1067,7 +1095,7 @@ contract: every release must handle every row consistently.
    command that appears in the "Available Commands:" section. Hidden
    commands do not appear; they are documented separately.
 
-#### Where the behaviour is implemented
+##### Where the behaviour is implemented
 
 Six of the eight invocations are handled by Cobra's defaults. The two
 rejections are handled by `validateArgs` (validate.go), which runs in
@@ -1076,11 +1104,433 @@ cannot live in a Cobra hook: Cobra's `--help` interception
 short-circuits the hook chain, so a `PersistentPreRunE` or `RunE`
 never sees the malformed invocation.
 
-#### Why the contract is frozenEvery CLI user encounters the help system. Every script that captures
+##### Why the contract is frozen
 
+Every CLI user encounters the help system. Every script that captures
 help output for documentation or for error reporting depends on help
 going to stdout and the exit code being 0. Freezing the contract is
 the mechanism by which the cost of a change is bounded.
+
+#### 4.9b Help Invocation Matrix
+
+WBS 7.1.1 defines the complete inventory of every way to reach
+help. The matrix is the contract; each row has a test in
+`internal/cli/help_matrix_test.go`.
+
+##### The matrix
+
+| # | Invocation | Resolves to | Exit | Stream | Notes |
+|---|------------|-------------|------|--------|-------|
+| H1 | `forge` | Root help | 0 | stdout | No-args behaviour (WBS 5.2.1) |
+| H2 | `forge --help` | Root help | 0 | stdout | Long-form flag |
+| H3 | `forge -h` | Root help | 0 | stdout | Short-form flag |
+| H4 | `forge help` | Root help | 0 | stdout | Help as subcommand |
+| H5 | `forge help version` | Version help | 0 | stdout | Nested help |
+| H6 | `forge help config` | Config help | 0 | stdout | Nested help |
+| H7 | `forge version --help` | Version help | 0 | stdout | Identical to H5 |
+| H8 | `forge version -h` | Version help | 0 | stdout | Identical to H5 |
+| H9 | `forge config --help` | Config help | 0 | stdout | Identical to H6 |
+| H10 | `forge help help` | Help command's help | 0 | stdout | Self-referential |
+| H11 | `forge help unknown` | Error: unknown help topic | 2 | stderr | Negative case |
+| H12 | `forge --help version` | Error: help takes no args | 2 | stderr | Negative case |
+| H13 | `forge -h --version` | Root help (help wins) | 0 | stdout | Flag precedence |
+| H14 | `forge help --help` | Help for help | 0 | stdout | Reserved |
+
+##### Rules
+
+1. Every positive help path writes only to stdout.
+2. Every positive help path exits 0.
+3. Every error path writes only to stderr.
+4. Every error path exits 2 (`ExitUsage`).
+5. H5 == H7 == H8 (nested help equivalence) - byte-identical output.
+6. H6 == H9 (config help equivalence).
+7. `--help` beats `--version` when both are supplied (H13).
+8. Help output contains the frozen root identity strings from
+   WBS 5.1.1.
+
+##### Adding a new help path
+
+Adding a new help path requires adding a row to the matrix, adding
+a case to `internal/cli/help_matrix_test.go`, and (if the row is a
+new equivalence class) adding a dedicated test. The three updates
+are in the same commit.
+
+#### 4.9c Root Help Output Contract
+
+WBS 7.1.2 freezes the exact structure and content of the root
+command's help output. The output is compared byte-for-byte against
+`internal/cli/testdata/help/root.golden.txt`.
+
+##### The frozen structure
+
+```text
+<RootLongDesc>
+
+Usage:
+  forge [command] [flags]
+  forge [command]
+
+Available Commands:
+  completion  Generate the autocompletion script for the specified shell
+  help        Help about any command
+  version     Print Forge version information
+
+Flags:
+      --config string   path to the configuration file (overrides discovery)
+  -h, --help            help for forge
+      --quiet           suppress all output except errors (log level ERROR)
+      --verbose         enable verbose output (log level DEBUG)
+  -v, --version         version for forge
+
+Use "forge [command] --help" for more information about a command.
+```
+
+##### Contract properties
+
+1. **No blank line at the start of the output.** The first line is
+   the first line of `RootLongDesc`.
+
+2. **One blank line between `RootLongDesc` and `Usage:`.**
+
+3. **Commands are listed alphabetically by the `Use` field.**
+
+4. **Command short descriptions are aligned with padding to the
+   longest command name plus two spaces.**
+
+5. **Flags are listed with their descriptions aligned similarly.**
+
+6. **The trailing `Use ...` line is mandatory.**
+
+7. **The output contains no ANSI escape sequences.**
+
+8. **The output ends with a trailing newline.**
+
+9. **The output is identical on all supported platforms.**
+
+##### Where the behaviour is implemented
+
+The root help output is rendered by Cobra from the root command's
+`Use`, `Short`, and `Long` fields, plus the subcommand list (from
+the registry) and the global flags (from `flags.go`). The golden
+file `internal/cli/testdata/help/root.golden.txt` is the record.
+
+#### 4.9d Per-Command Help Content Contract
+
+WBS 7.1.3 freezes the structure and content of every subcommand's
+help output. The contract is enforced structurally (by tests that
+read each command's fields) and by golden files (one per command).
+
+##### The frozen structure
+
+```text
+<LongDesc>
+
+Usage:
+  forge <command> [flags]
+
+Examples:
+  <example-1>
+  <example-2>
+
+Flags:
+  <flags-specific-to-this-command>
+
+Global Flags:
+      --config string   path to the configuration file (overrides discovery)
+      --quiet           suppress all output except errors (log level ERROR)
+      --verbose         enable verbose output (log level DEBUG)
+
+Use "forge <command> --help" for more information about a command.
+```
+
+The `Aliases:`, `Examples:`, `Available Commands:`, and `Use ...`
+blocks are conditional.
+
+##### Contract rules
+
+1. **`Short` is a one-liner, 60 runes or fewer.**
+2. **`Long` is optional.** If present, it is 500 runes or fewer and
+   ends with a period.
+3. **`Use` is authored.**
+4. **`Args` is set to a validator.**
+5. **`Example` is present when required.**
+6. **Global flags appear in every command's help output.**
+7. **No colour, no ANSI escapes.**
+
+#### 4.9e Examples Convention
+
+WBS 7.2.2 defines when a command must declare an Example and what
+the Example's content must look like.
+
+##### When Examples are required
+
+A command requires an Example if any of the following holds:
+
+- It takes positional arguments.
+- It has command-specific flags.
+- It has non-obvious behaviour.
+
+##### The format
+
+1. Each line starts with two spaces.
+2. Each line contains exactly one command.
+3. No line starts with the `$` prefix.
+4. Values are realistic.
+5. The primary use case comes first.
+6. Between 2 and 5 lines.
+
+##### Example
+
+For a hypothetical `forge new`:
+
+```text
+Examples:
+  forge new payments-api --template python-fastapi
+  forge new payments-api --template python-fastapi --dry-run
+```
+
+##### Where Examples are stored
+
+Examples are stored in the `Example` field of the Cobra command,
+not in the `Long` field.
+
+#### 4.9f Invalid Command Behaviour
+
+WBS 7.3.1 freezes the behaviour of seven invalid invocations.
+
+##### The contract
+
+| Aspect | Frozen behaviour |
+|--------|------------------|
+| Exit code | `ExitUsage` (2) |
+| Output stream | stderr (only) |
+| stdout | Empty |
+| Error format | `Error: unknown command "<input>" for "forge"` |
+| Suggestion line (no match) | `Run 'forge --help' for usage.` |
+| Suggestion line (match) | `Did you mean "<name>"? Run 'forge --help' for usage.` |
+| Trailing newline | Yes (exactly one) |
+| Colour | None |
+| Timestamp | None |
+| Stack trace | Never |
+
+##### The cases
+
+| # | Input | Exit | stderr contains |
+|---|-------|------|-----------------|
+| I1 | `forge foobar` | 2 | `unknown command "foobar"` |
+| I2 | `forge verison` | 2 | `Did you mean` and `version` |
+| I3 | `forge version extra` | 2 | `unknown command "extra"` |
+| I4 | `forge --unknown-flag` | 2 | `unknown flag: --unknown-flag` |
+| I5 | `forge version --unknown-flag` | 2 | `unknown flag: --unknown-flag` |
+| I6 | `forge help unknown` | 2 | a diagnostic naming the unknown topic |
+| I7 | `forge --help unknown` | 2 | a diagnostic about the help flag |
+
+##### Suggestions
+
+Cobra's suggestion mechanism fires when an unknown command's name
+is within edit distance 2 of a known command. The value is
+configured by `SuggestionsMinimumDistance` on the root command.
+
+#### 4.9g Error Message Format
+
+WBS 7.3.2 freezes the format of every error message the CLI
+renders.
+
+##### The frozen format
+
+```text
+Error: <message>
+       <optional context line, indented 7 spaces>
+       <optional context line, indented 7 spaces>
+
+Suggestion:
+  <actionable remediation>
+```
+
+##### Rules
+
+1. The first line starts with `Error:`.
+2. The message is a single line, 80 runes or fewer.
+3. The message does not end with a period.
+4. Context lines are indented 7 spaces.
+5. A blank line separates the message block from the Suggestion
+   block.
+6. The `Suggestion:` label is on its own line; the body is
+   indented 2 spaces.
+7. The suggestion is imperative.
+8. No stack traces unless `--verbose` is set (Phase 6+).
+9. No timestamps.
+10. No colour by default.
+
+##### Examples
+
+Minimal error:
+
+```text
+Error: unknown command "foobar" for "forge"
+
+Suggestion:
+  Run 'forge --help' for usage.
+```
+
+Typo error:
+
+```text
+Error: unknown command "verison" for "forge"
+
+Suggestion:
+  Did you mean "version"? Run 'forge --help' for usage.
+```
+
+##### Phase 2 scope
+
+The format is the Phase 2 shape. Richer errors (with structured
+fields, error codes, file/line information) arrive with WBS 10.0.
+
+#### 4.9h Output Stream Boundary
+
+WBS 7.4.1 freezes the boundary between the two output streams.
+
+##### The boundary
+
+| Category | Stream | Rationale |
+|----------|--------|-----------|
+| Command success output | stdout | Shell scripts pipe successful output |
+| Command help (positive) | stdout | Help is a requested result |
+| Command version (positive) | stdout | Version is a requested result |
+| Command JSON output | stdout | Machine-readable is the primary output |
+| Progress indicators | stderr | Do not pollute piped output |
+| Warnings | stderr | Diagnostics, not results |
+| Errors | stderr | Errors are never results |
+| Usage after error | stderr | `SilenceUsage: true` prevents this |
+| Verbose / debug logs | stderr | Diagnostics |
+| Suggestions | stderr | Part of the error block |
+
+##### The decision rule
+
+Every author of a command decides which stream a line belongs on
+by asking a single question:
+
+> If the user pipes this command's output to another program,
+> should that program receive this line?
+
+Yes -> stdout. No -> stderr.
+
+The rule is binary. There is no "sometimes" and no "it depends".
+
+##### Rules
+
+1. The decision rule is the single criterion.
+2. `Dependencies.Stdout` is the only valid target for stdout writes.
+3. `Dependencies.Stderr` is the only valid target for stderr writes.
+4. No direct `os.Stdout` or `os.Stderr` usage in any command handler.
+5. `--quiet` affects stderr only.
+6. `--verbose` affects stderr only.
+7. The boundary is verified by tests that redirect each stream
+   separately.
+
+#### 4.9i Global Flags Interaction Matrix
+
+WBS 7.4.3 freezes how `--quiet`, `--verbose`, and `--config`
+interact with help output, version output, and error output.
+
+##### The matrix
+
+| Invocation | Behaviour |
+|------------|-----------|
+| `forge --quiet --help` | Help still printed to stdout |
+| `forge --verbose --help` | Help printed to stdout; verbose adds nothing |
+| `forge --quiet version` | Version printed to stdout |
+| `forge --quiet unknown-cmd` | Error still printed to stderr |
+| `forge --verbose unknown-cmd` | Error printed to stderr; stack trace in Phase 6+ |
+| `forge --quiet --verbose version` | `--quiet` wins; version still prints |
+| `forge --config nonexistent.yml version` | Version prints (config is a warning in Phase 2) |
+| `forge --config nonexistent.yml check` | Config is an error in future phases |
+
+##### The rules
+
+1. `--quiet` suppresses warnings and info logs; it never
+   suppresses errors.
+2. `--quiet` never suppresses stdout results.
+3. `--verbose` never adds to stdout.
+4. Errors are always printed to stderr.
+5. `--quiet` wins over `--verbose` when both are set.
+6. Help and version are always printed to stdout.
+7. A config load failure in Phase 2 is a warning, not a fatal
+   error.
+
+##### Phase 2 scope
+
+Phase 2 implements the log-level effects of `--quiet` and
+`--verbose`. Phase 2 does not implement a stack-trace mode for
+`--verbose`; the row is aspirational. Phase 2 does not implement
+the config subsystem; the config row documents the intended future
+behaviour.
+
+#### 4.9j Colour and Terminal Policy
+
+WBS 7.4.2 freezes the Phase 2 policy on colour, TTY detection, and
+environment variables.
+
+##### Phase 2 decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| No colour output | No UX requirement yet; colour interacts with shell scripting |
+| No TTY detection | Without colour, TTY detection is unnecessary |
+| `NO_COLOR` and `CLICOLOR` ignored | No colour is emitted; the standards are trivially satisfied |
+| No emoji or Unicode symbols | Cross-platform consistency |
+| All output uses ASCII printable characters | Maximum terminal compatibility |
+
+##### The ASCII-only rule
+
+Every byte the CLI writes to stdout or stderr is in the ASCII
+printable range (0x20 through 0x7e) or is one of two permitted
+control bytes: newline (0x0a) and tab (0x09).
+
+Bytes outside this set are forbidden.
+
+##### Where the rule is enforced
+
+`internal/cli/ascii_policy_test.go` iterates the registry's
+commands, invokes each in a set of representative configurations,
+and asserts the policy on the captured stdout and stderr.
+
+##### Future-proofing: when colour is introduced
+
+When colour is introduced (Phase 6+), the following rules apply:
+
+1. Colour is disabled when `NO_COLOR` is set (per no-color.org).
+2. Colour is disabled when stdout is not a TTY.
+3. Colour is disabled when `--no-color` is passed.
+4. Colour never conveys semantic information alone.
+
+#### 4.9k Root Help Contains No Non-ASCII
+
+The root help output contains no non-ASCII characters. The
+`RootLongDesc` and `RootShortDesc` constants are ASCII-only; the
+subcommand help output that inherits from them is ASCII-only. The
+ASCII-only policy is documented in § 4.9j.
+
+#### 4.9l Colour and Terminal Policy (see § 4.9j)
+
+See § 4.9j for the policy. This subsection is a stub for
+cross-references.
+
+#### 4.9m Summary of Contracts
+
+| Contract | Source WBS | Section | Enforcement |
+|----------|-----------|---------|-------------|
+| Help behaviour | WBS 5.2.2 | § 4.9a | `errors_test.go` |
+| Help invocation matrix | WBS 7.1.1 | § 4.9b | `help_matrix_test.go` |
+| Root help content | WBS 7.1.2 | § 4.9c | `help_golden_test.go` |
+| Per-command help content | WBS 7.1.3 | § 4.9d | `help_content_test.go`, `help_golden_test.go` |
+| Examples convention | WBS 7.2.2 | § 4.9e | `examples_test.go` |
+| Invalid command | WBS 7.3.1 | § 4.9f | `errors_test.go` |
+| Error message format | WBS 7.3.2 | § 4.9g | `format_error_test.go`, `errors_test.go` |
+| Output stream boundary | WBS 7.4.1 | § 4.9h | `stream_boundary_test.go` |
+| Global flag interaction | WBS 7.4.3 | § 4.9i | `flag_interaction_test.go` |
+| Colour / ASCII policy | WBS 7.4.2 | § 4.9j | `ascii_policy_test.go` |
 
 ### 4.10 Version Behaviour
 
@@ -1101,245 +1551,82 @@ invocations. The table below is the contract.
 #### Rules
 
 1. **`forge --version` and `forge version` produce byte-identical
-   text output.** The two invocations are interchangeable for
-   scripts and for users. The text format is frozen in § 4.8.1.
-
-2. **`-v` is short for `--version`.** The two forms produce the same
-   output, the same exit code, and the same stderr.
-
-3. **`-v` is not short for `--verbose`.** `--verbose` has no short
-   form in Phase 2. The alias is reserved for `--version`, in keeping
-   with the convention used by `git`, `go`, `cargo`, and many other
-   CLIs.
-
-4. **The `--version` flag always produces the text format.** A flag
-   cannot take a format argument. A consumer that needs the JSON
-   format calls `forge version --format json`.
-
+   text output.**
+2. **`-v` is short for `--version`.**
+3. **`-v` is not short for `--verbose`.**
+4. **The `--version` flag always produces the text format.**
 5. **Version output goes to stdout and exits 0.**
-
-6. **Extra arguments to a version flag are rejected.** `forge
-   --version extra` and `forge -v extra` are usage errors: the
-   version flag takes no argument. The CLI rejects the invocation
-   with a diagnostic on stderr and exit code 2.
-
-7. **The version formats are frozen in § 4.8.** This section does
-   not restate the formats; it references the section that defines
-   them.
-
-#### Where the behaviour is implemented
-
-The text block is produced by `internal/app/version`, in the
-`Format` function (format.go). The JSON block is produced by
-`internal/app/version`, in the `WriteJSON` function
-(format_json.go). The dispatcher is `FormatAs`, which routes to the
-correct formatter based on the format name.
-
-The `--version` flag's wiring is implemented in `newRootCmd`
-(root.go), which sets `root.Version` to the string returned by
-`version.Raw()` and overrides Cobra's default version template.
-
-The extra-argument rejection is implemented in `validateArgs`
-(validate.go). The check cannot live in a Cobra hook for the same
-reason as the help-flag rejection.
-
-#### Why the contract is frozen
-
-The version output is the most commonly parsed CLI output. Scripts
-extract the version number to decide whether to upgrade; CI systems
-compare versions to decide whether to rebuild; users pipe the output
-to `grep` to answer "am I on the right build?". Freezing the contract
-is what makes those consumers safe.
+6. **Extra arguments to a version flag are rejected.**
+7. **The version formats are frozen in § 4.8.**
 
 ### 4.11 Global Flags
 
-Forge has exactly three global flags in Phase 2. Global flags are
-**persistent**: they are inherited by every subcommand and may appear
-before or after the subcommand name.
+Forge has exactly three global flags in Phase 2.
 
 #### The inventory
 
 | Flag | Short | Type | Persistent | Consumer | Semantics |
 |------|-------|------|------------|----------|-----------|
-| `--verbose` | — | bool | yes | WBS 12.0 (logging) | Set log level to DEBUG |
-| `--quiet` | — | bool | yes | WBS 12.0 (logging) | Set log level to ERROR (errors only) |
-| `--config` | — | string | yes | WBS 8.0 (config) | Path to config file; overrides discovery |
-
-No other global flags exist. The inventory is frozen; adding a fourth
-flag requires an ADR (see "Adding a global flag" below).
-
-#### Justification
-
-Each flag has a documented consumer in a later WBS item:
-
-- **`--verbose`** is required by WBS 12.5 (verbose mode). It raises
-  the log level to DEBUG, causing the logger to emit diagnostic
-  messages that are suppressed by default.
-
-- **`--quiet`** is required by WBS 12.6 (quiet mode). It lowers the
-  log level to ERROR, suppressing INFO and WARN messages while
-  preserving ERROR messages and the command's own output.
-
-- **`--config`** is required by WBS 8.4 (configuration loader). It
-  provides a path to a configuration file, overriding the loader's
-  discovery mechanism.
-
-No flag is speculative. A flag that has no consumer in a later WBS
-item is not in the inventory.
+| `--verbose` | - | bool | yes | WBS 12.0 | Set log level to DEBUG |
+| `--quiet` | - | bool | yes | WBS 12.0 | Set log level to ERROR |
+| `--config` | - | string | yes | WBS 8.0 | Path to config file |
 
 #### Precedence
 
-When `--verbose` and `--quiet` are both set, **`--quiet` wins**.
-The effective log level is ERROR.
-
-The rationale is that `--quiet` is the stricter contract: the user
-who asked for quiet asked for a smaller output surface, and honoring
-a smaller surface when a larger one is also requested is the correct
-default.
-
-When both flags are set, the CLI does **not** emit a warning about
-the conflict. The rationale is that a warning about conflicting
-flags is itself output, and the user who asked for quiet asked for
-less output. Emitting a warning would violate the quiet contract.
+When `--verbose` and `--quiet` are both set, `--quiet` wins. The
+effective log level is ERROR. No warning is emitted.
 
 #### Persistence
 
-All three flags are **persistent**. Persistent flags are inherited
-by every subcommand. This means:
-
-- `forge --verbose config` and `forge config --verbose` are
-  equivalent.
-- `forge --config path version` and `forge version --config path`
-  are equivalent.
-
-Cobra's parser accepts global flags either before or after the
-subcommand name.
+All three flags are persistent. `forge --verbose config` and
+`forge config --verbose` are equivalent.
 
 #### The `--config` rejection
 
-`--config` takes a value. An invocation like `forge --config` with
-no following value is a usage error: the flag is present but its
-value is not. The rejection is implemented in `validateArgs`
-(validate.go), which runs before Cobra parses the arguments. The
-`--config=path` form is well-formed and is not rejected; the form
-carries its own value.
+`forge --config` with no following value is a usage error.
 
 #### The `--format` flag is not global
 
-`--format` is a per-command flag. It appears on `forge version`
-(this WBS), and it will appear on every command that produces
-structured output. It is not in the global flag inventory, because
-its value type and its allowed values differ between commands.
-
-A global `--format` flag would force every command to accept the
-same value set. The `forge check` command will accept `sarif`
-(Phase 10+); `forge version` does not. A per-command flag lets each
-command define its own value set without cross-command coupling.
+`--format` is a per-command flag. See § 4.12.
 
 #### Adding a global flag
 
-Adding a global flag requires an ADR. The ADR must:
-
-1. Name the consumer WBS item that requires the flag.
-2. Define the flag's type, default value, and semantics.
-3. Define the flag's precedence relative to the existing flags (if
-   it conflicts with any).
-4. Update this section of `docs/cli-ux-spec.md` to list the new
-   flag.
-
-The inventory is frozen for Phase 2. The rule exists to prevent flag
-creep: a CLI with fifteen global flags has no global flags, because
-users cannot remember which one does what.
-
-#### Where the flags are implemented
-
-The flag names, registration, and helpers are defined in
-`internal/cli/flags.go`. The registration is called from
-`newRootCmd` (root.go). The pre-parse rejection of `forge --config`
-with no value is implemented in `validateConfigFlagWithArgs`
-(validate.go).
+Adding a global flag requires an ADR.
 
 ### 4.12 `--format` Flag Semantics
 
 Commands that produce structured output accept a per-command
-`--format` flag. The flag's value set is defined by the command, not
-by the CLI.
+`--format` flag.
 
 #### The value sets
 
 | Command | Value set | Default | Introduced by |
 |---------|-----------|---------|---------------|
 | `forge version` | `text`, `json` | `text` | WBS 6.4.2 |
-| `forge new` | `human`, `json` | `human` | Phase 5 (future) |
-| `forge init` | `human`, `json` | `human` | Phase 5 (future) |
-| `forge validate` | `human`, `json` | `human` | Phase 5 (future) |
-| `forge explain` | `human`, `json` | `human` | Phase 5 (future) |
-| `forge template list` | `human`, `json` | `human` | Phase 5 (future) |
-| `forge check` | `human`, `json`, `sarif` | `human` | Phase 7 (future) |
-| `forge diff` | `human`, `json` | `human` | Phase 9 (future) |
-
-The value sets differ. `forge version` uses `text` because its
-output is a two-word, machine-friendly format; the other commands
-use `human` because their output is prose. `forge check` will
-accept `sarif` in Phase 10+; no other command will.
+| `forge new` | `human`, `json` | `human` | Phase 5 |
+| `forge init` | `human`, `json` | `human` | Phase 5 |
+| `forge validate` | `human`, `json` | `human` | Phase 5 |
+| `forge explain` | `human`, `json` | `human` | Phase 5 |
+| `forge template list` | `human`, `json` | `human` | Phase 5 |
+| `forge check` | `human`, `json`, `sarif` | `human` | Phase 7 |
+| `forge diff` | `human`, `json` | `human` | Phase 9 |
 
 #### Behaviour for unsupported values
 
-An unsupported value for a command's `--format` flag produces a
-diagnostic on stderr and exit code `ExitUsage` (2). The diagnostic
-names the flag and the offending value.
-
-The diagnostic format is:
-
-```text
-Error: --format: <command-specific message>
-```
-
-For `forge version`, the message is `version: unknown format:
-"<value>"` (from the service's `ErrUnknownFormat` sentinel).
-
-#### Why per-command, not global
-
-Three reasons:
-
-1. **Different value sets.** `forge version` needs `text`; `forge
-   check` needs `sarif`. A global flag cannot express both.
-
-2. **Different defaults.** `forge version` defaults to `text`;
-   `forge new` defaults to `human`. A global flag has one default.
-
-3. **Different failure modes.** `forge version --format yaml` fails
-   immediately (the format name is unknown). `forge new --format
-   json --dry-run` fails later (the combination is disallowed). The
-   two failures happen at different layers, and the per-command
-   flag lets each command decide where to enforce its own
-   constraints.
+An unsupported value produces a diagnostic on stderr and exit code
+`ExitUsage` (2).
 
 #### Cross-cutting requirement
 
-Every command that accepts `--format` must:
-
-- Define its value set in the command's section of this document.
-- Reject unsupported values with exit code 2.
-- Write output to stdout, regardless of format.
-- Ensure that JSON output is a single line terminated by `\n`.
-
-The last requirement is shared across commands. The first JSON
-formatter (`forge version`) is the reference implementation; a
-future command's formatter follows the same shape.
+Every command that accepts `--format` must define its value set,
+reject unsupported values with exit code 2, write output to stdout,
+and ensure that JSON output is a single line terminated by `\n`.
 
 ---
 
-## 5. Command Reference — Future Commands
-
-Future commands are documented here for planning purposes. They are
-**not** implemented in the MVP. Each is summarised with its intended
-purpose and phase.
+## 5. Command Reference - Future Commands
 
 ### 5.1 `forge check` (Phase 7)
-
-Continuous verification that a repository satisfies its declared
-foundation.
 
 ```text
 forge check [flags]
@@ -1350,12 +1637,7 @@ forge check [flags]
 --verbose
 ```
 
-Returns non-zero exit code on required-policy failure. Designed for CI
-execution.
-
 ### 5.2 `forge diff` (Phase 9)
-
-Shows drift between expected and actual foundation state.
 
 ```text
 forge diff [flags]
@@ -1367,11 +1649,7 @@ forge diff [flags]
 --verbose
 ```
 
-Returns non-zero exit code when actionable drift is detected.
-
 ### 5.3 `forge update` (Phase 14)
-
-Applies foundation changes to an existing repository.
 
 ```text
 forge update [flags]
@@ -1383,11 +1661,7 @@ forge update [flags]
 --yes
 ```
 
-Never overwrites developer changes without explicit confirmation.
-
 ### 5.4 `forge add` / `forge remove` (Phase 12)
-
-Adds or removes a component from a foundation.
 
 ```text
 forge add <component> [flags]
@@ -1400,8 +1674,6 @@ forge remove <component> [flags]
 
 ### 5.5 `forge template inspect|search|install|publish` (Phase 16)
 
-Registry operations.
-
 ```text
 forge template inspect <id> [flags]
 forge template search <query> [flags]
@@ -1411,20 +1683,13 @@ forge template publish [flags]
 
 ### 5.6 `forge doctor` (Phase 6)
 
-Diagnoses the Forge environment.
-
 ```text
 forge doctor [flags]
 
 --format human|json
 ```
 
-Reports on Forge installation, configuration, templates, filesystem,
-Git availability, and other dependencies.
-
 ### 5.7 `forge blueprint validate` (Experimental)
-
-Validates a blueprint file independently of a repository.
 
 ```text
 forge blueprint validate [<path>] [flags]
@@ -1432,51 +1697,11 @@ forge blueprint validate [<path>] [flags]
 --format human|json
 ```
 
-May be merged into `forge validate` or removed. Kept experimental
-until Phase 3 clarifies the requirement.
-
 ---
 
 ## 6. Dry-Run Behaviour
 
-Every mutating command must support `--dry-run`. Dry-run means:
-
-- **No filesystem writes** — not even temporary files
-- **No state changes** — `forge.yaml` is not modified
-- **No external calls** — no registry requests, no Git operations
-
-Dry-run output shows what *would* happen:
-
-```text
-$ forge new payments-api --dry-run
-
-Would create:
-  payments-api/
-  ├── README.md
-  ├── pyproject.toml
-  ├── Dockerfile
-  ├── compose.yaml
-  ├── src/
-  │   └── payments_api/
-  │       └── main.py
-  ├── tests/
-  │   └── test_health.py
-  └── .github/
-      └── workflows/
-          └── ci.yml
-
-Template: python-fastapi@1.0.0
-Files: 8
-
-No files were created.
-```
-
-Dry-run exit codes match the corresponding non-dry-run command, except
-that:
-
-- Successful dry-run returns 0
-- Dry-run that would fail validation returns 1
-- Dry-run that would fail on filesystem conflict returns 3
+Every mutating command must support `--dry-run`.
 
 Dry-run is **mandatory** for:
 
@@ -1488,479 +1713,174 @@ Dry-run is **mandatory** for:
 
 Dry-run is **optional** for:
 
-- `forge validate` (already non-mutating)
-- `forge check` (already non-mutating)
-- `forge diff` (already non-mutating)
-- `forge explain` (already non-mutating)
-- `forge template list` (already non-mutating)
-- `forge version` (already non-mutating)
+- `forge validate`
+- `forge check`
+- `forge diff`
+- `forge explain`
+- `forge template list`
+- `forge version`
 
 ---
 
 ## 7. Exit Codes
 
-Forge uses stable exit codes so that scripts and CI systems can
-interpret results without parsing output. The codes are part of
-Forge's public contract: a code, once shipped, is never renumbered.
-
 ### 7.1 The codes
 
-| Code | Constant          | Meaning                                                             |
-|------|-------------------|---------------------------------------------------------------------|
-| 0    | `ExitSuccess`     | The command completed successfully.                                 |
-| 1    | `ExitFailure`     | A general failure not covered by a more specific code.              |
-| 2    | `ExitUsage`       | The command was invoked incorrectly: unknown command, unknown flag, malformed argument. |
-| 3    | `ExitConfig`      | Configuration loading or validation failed.                         |
-| 4    | `ExitFilesystem`  | A filesystem operation failed.                                      |
-| 5    | `ExitValidation`  | A validation failure from a check or diff operation.                |
-| 6    | `ExitSecurity`    | A security boundary was violated.                                   |
-| 7    | `ExitConflict`    | An update could not be applied without overwriting developer changes. |
-
-The constants are defined in
-[`internal/cli/exitcodes.go`](../internal/cli/exitcodes.go). They are
-exported from that package.
+| Code | Constant | Meaning |
+|------|----------|---------|
+| 0 | `ExitSuccess` | The command completed successfully. |
+| 1 | `ExitFailure` | A general failure not covered by a more specific code. |
+| 2 | `ExitUsage` | The command was invoked incorrectly. |
+| 3 | `ExitConfig` | Configuration loading or validation failed. |
+| 4 | `ExitFilesystem` | A filesystem operation failed. |
+| 5 | `ExitValidation` | A validation failure from a check or diff operation. |
+| 6 | `ExitSecurity` | A security boundary was violated. |
+| 7 | `ExitConflict` | An update could not be applied without overwriting developer changes. |
 
 ### 7.2 Semantics
 
-#### 0 — Success
+#### 0 - Success
 
-The command completed successfully. No findings of severity `ERROR`.
+#### 1 - General failure
 
-#### 1 — General failure
+#### 2 - Usage error
 
-The command ran but failed for a reason that does not fall into a
-more specific category. This is the default for unclassified errors.
+Includes: unknown command, unknown flag, missing required argument,
+invalid flag value (including unsupported `--format` value),
+malformed `forge.yaml` syntax, ambiguous foundation selection, and
+malformed invocations rejected by `validateArgs`.
 
-Typical causes:
+#### 3 - Configuration failure
 
-- An internal error that has not been categorised.
-- A future error category that is not yet recognised by the exit
-  code mapping.
+#### 4 - Filesystem failure
 
-#### 2 — Usage error
+#### 5 - Validation failure
 
-Forge could not interpret the command:
+#### 6 - Security violation
 
-- Unknown command or subcommand.
-- Unknown flag.
-- Missing required argument.
-- Invalid flag value, including an unsupported `--format` value.
-- Malformed `forge.yaml` (a syntax error, not a semantic error).
-- Ambiguous foundation selection in non-interactive mode.
-- Malformed invocations rejected by `validateArgs` (for example,
-  `--help <cmd>`, `--version <arg>`, `--config` with no value, or
-  `help <unknown>`).
-
-This is the default for any error that does not carry a category.
-Cobra's own errors (unknown command, unknown flag) are always
-classified as `ExitUsage`.
-
-#### 3 — Configuration failure
-
-A configuration file failed to load, parse, or validate:
-
-- `forge.yaml` missing when required.
-- `forge.yaml` semantically invalid (a field is the wrong type, a
-  required field is missing).
-- Environment variable that overrides configuration is invalid.
-
-See WBS 8.x for the configuration subsystem specification.
-
-#### 4 — Filesystem failure
-
-Forge was unable to read or write a required file:
-
-- Permission denied.
-- Disk full.
-- Target directory already exists.
-- Read-only file system.
-
-See WBS 13.x for the filesystem subsystem specification.
-
-#### 5 — Validation failure
-
-The command ran a validation and one or more required conditions
-were not satisfied:
-
-- `forge check` found ERROR-level findings.
-- `forge diff` detected actionable drift.
-- `forge validate` found ERROR-level findings.
-
-See WBS 7.x and WBS 9.x for the validation and drift subsystem
-specifications.
-
-#### 6 — Security violation
-
-Forge refused to perform an operation because of a security rule:
-
-- A template attempted path traversal.
-- A template attempted to escape the target directory.
-- A template requested hooks without opt-in.
-- A symlink escape was attempted.
-- A secret leak was detected.
-
-See WBS 13.x for the security subsystem specification.
-
-#### 7 — Update conflict
-
-An update could not be applied without overwriting developer changes:
-
-- Both Forge and the developer modified the same region.
-- A file was deleted by the developer and modified by Forge.
-- A merge could not be performed automatically.
-
-See WBS 14.x for the update subsystem specification.
+#### 7 - Update conflict
 
 ### 7.3 Exit Code Stability
 
-These codes are part of Forge's public contract. Changing them requires
-an ADR.
+These codes are part of Forge's public contract. Changing them
+requires an ADR.
 
 ### 7.4 The mapping
 
-Errors are mapped to exit codes by the function
-`exitCodeFromError`, defined in `internal/cli/exitcodes.go`. It is
-the only function in the package that derives an exit code from an
-error.
-
-The mapping is:
-
-| Error condition                                    | Exit code         |
-|----------------------------------------------------|-------------------|
-| No error                                           | `ExitSuccess`     |
-| Error with `Category() == "config"`                | `ExitConfig`      |
-| Error with `Category() == "filesystem"`            | `ExitFilesystem`  |
-| Error with `Category() == "validation"`            | `ExitValidation`  |
-| Error with `Category() == "security"`              | `ExitSecurity`    |
-| Error with `Category() == "conflict"`              | `ExitConflict`    |
-| Error with an unrecognised category                | `ExitFailure`     |
-| Error without a category (Cobra's usage errors)    | `ExitUsage`       |
-
-An error "carries a category" if it implements the
-`CategorizedError` interface defined in
-`internal/cli/exitcodes.go`. The interface has one method,
-`Category() string`. The values shown in the table above are the
-recognised values. Any other value falls through to `ExitFailure`.
+| Error condition | Exit code |
+|-----------------|-----------|
+| No error | `ExitSuccess` |
+| Error with `Category() == "config"` | `ExitConfig` |
+| Error with `Category() == "filesystem"` | `ExitFilesystem` |
+| Error with `Category() == "validation"` | `ExitValidation` |
+| Error with `Category() == "security"` | `ExitSecurity` |
+| Error with `Category() == "conflict"` | `ExitConflict` |
+| Error with an unrecognised category | `ExitFailure` |
+| Error without a category | `ExitUsage` |
 
 ### 7.5 Scripting
 
-Scripts that invoke Forge should check the exit code to determine
-the outcome. For example:
-
-```sh
-if forge check; then
-    echo "Foundation intact"
-else
-    case "$?" in
-        5) echo "Validation failed" ;;
-        6) echo "Security boundary violated" ;;
-        7) echo "Update conflict" ;;
-        *) echo "Unexpected failure" ;;
-    esac
-fi
-```
-
 ### 7.6 Reserved integers
 
-Integers 8 and above are reserved for future categories. They are
-not assigned to any constant. A future WBS that introduces a new
-failure category allocates the next available integer.
-
-The reservation is deliberate: it prevents a future category from
-being assigned a value that collides with an existing code.
+Integers 8 and above are reserved for future categories.
 
 ---
 
 ## 8. Machine-Readable Output
 
-Every command that produces structured output supports a
-per-command `--format json` flag. JSON output is governed by schema
-versions to enable safe automation.
-
 ### 8.1 Schema Versioning
 
-JSON output from the `forge new`, `forge init`, `forge validate`,
-`forge explain`, and `forge check` commands includes a
-`schemaVersion` field:
-
-```json
-{
-  "schemaVersion": "1",
-  "forgeVersion": "0.1.0",
-  ...
-}
-```
-
-Rules:
-
-- `schemaVersion` increments on breaking changes
-- Consumers must check `schemaVersion` before parsing
-- Adding fields does not require a version bump
-- Removing or renaming fields requires a version bump
+JSON output from `forge new`, `forge init`, `forge validate`,
+`forge explain`, and `forge check` includes a `schemaVersion`
+field.
 
 **Exception: `forge version --format json`.** The `forge version`
-JSON output does not include a `schemaVersion` field. Its schema is
-trivially small (four fields, all strings or boolean) and stable by
-construction; the four field names are the schema. A future change
-to any field name requires an ADR (per § 4.8.2). The absence of a
-`schemaVersion` field is deliberate: a field that is always `"1"`
-adds no information, and a consumer that needs to detect a version
-change reads the field names.
-
-If the schema grows beyond four fields, or if a second JSON-emitting
-version of the command is added (for example, one that emits more
-fields under a different flag), a `schemaVersion` field is added at
-that point. Until then, the schema is identified by its field names.
+JSON output does not include a `schemaVersion` field.
 
 ### 8.2 Output Streams
 
-- **stdout** — successful command output (human or JSON)
-- **stderr** — errors, warnings, diagnostics
+- **stdout** - successful command output
+- **stderr** - errors, warnings, diagnostics
 
-JSON output is always written to stdout. Errors during JSON-emitting
-commands are also written to stdout, embedded in the JSON document:
-
-```json
-{
-  "status": "error",
-  "error": {
-    "code": "FORGE_TEMPLATE_NOT_FOUND",
-    "message": "Template 'python-django' not found",
-    "suggestion": "Run 'forge template list' to see available templates"
-  }
-}
-```
-
-The `forge version --format json` command is an exception to this
-rule. If the command fails (for example, because the format value
-is unknown, or because the writer failed), the diagnostic goes to
-stderr as plain text, not to stdout as JSON. The reason is that the
-failure happens before or during the JSON emission, and a partial
-JSON document on stdout is worse than no JSON document. The
-`forge version` JSON schema has no `status` or `error` field;
-consumers detect failure by the exit code.
+The `forge version --format json` command writes errors to stderr,
+not to stdout as JSON.
 
 ### 8.3 JSON Stability Contract
 
-The following fields are contractually stable and will not be renamed
-or removed within a schema version:
-
-- `schemaVersion` (where present; see § 8.1)
-- `forgeVersion` (where present)
-- `status` (where present)
-- `error.code` (where present)
-- `error.message` (where present)
-- For `forge version --format json`: `version`, `commit`,
-  `build_date`, `dirty` (all four; see § 4.8.2)
-
-All other fields are stable within a schema version but may evolve in
-a new schema version.
-
 ### 8.4 Format Values
-
-Supported `--format` values:
 
 | Value | Meaning | Commands |
 |-------|---------|----------|
 | `text` | Machine-friendly text | `forge version` |
-| `human` | Default human-readable output | `forge new`, `forge init`, `forge validate`, `forge explain`, `forge template list`, `forge check`, `forge diff` |
+| `human` | Default human-readable output | Creation and inspection commands |
 | `json` | Machine-readable JSON | All commands that support `--format` |
 | `sarif` | SARIF | `forge check` (Phase 10+) |
-
-Unsupported format values exit with code 2. The value set is
-per-command; see § 4.12 for the full table.
 
 ### 8.5 JSON Output is a Single Line
 
 Every command that emits JSON emits it as a single line terminated
-by `\n`. The output contains no pretty-printing by default. A future
-`--format json-pretty` would be an additive change and a separate
-value in the per-command value set.
-
-The single-line rule has two reasons:
-
-1. **Line-oriented consumers.** A script that reads one JSON object
-   per line (`while read -r line; do ...; done`) expects each
-   record to occupy exactly one line. Multi-line JSON breaks such
-   scripts.
-
-2. **Log interleaving.** When JSON output is written to a log that
-   interleaves output from multiple processes, a single-line record
-   is easier to filter and parse than a multi-line one.
-
-The rule is enforced by the `forge version` JSON formatter (the
-reference implementation) and must be enforced by every future JSON
-formatter.
+by `\n`.
 
 ---
 
 ## 9. CLI UX Principles
 
-The following principles govern every command, flag, and output.
-
 ### 9.1 Predictable Commands
-
-Commands follow a consistent pattern:
-
-- Verb-noun structure: `forge <verb> [<noun>]`
-- Flags use `--long-form` and inherit from parent commands
-- Output follows a standard vocabulary (see § 9.8)
-- Exit codes follow the contract in § 7
 
 ### 9.2 Safe Defaults
 
-Default behaviour is the safest reasonable behaviour:
-
-- Dry-run is never required to avoid damage (real commands are safe)
-- Overwrite is never the default
-- Confirmation is required for destructive operations
-- Non-interactive mode fails rather than guesses
-
 ### 9.3 Actionable Errors
-
-Every error explains:
-
-1. **What happened** — the observable failure
-2. **Why** — the cause, when known
-3. **What to do** — a suggested action
-
-Example:
-
-```text
-✗ Template not found
-
-Template: python-django
-
-Available templates:
-  python-fastapi
-  go-api
-  go-cli
-  typescript-node
-  react-app
-
-Try:
-  forge template list
-```
-
-Bad (never acceptable in Forge):
-
-```text
-error: template resolution failed
-```
 
 ### 9.4 No Destructive Operations Without Confirmation
 
-Any operation that modifies filesystem state beyond its own temporary
-files must either:
-
-- Support `--dry-run` (so the user can preview)
-- Prompt for confirmation (in interactive mode)
-- Require an explicit flag (in non-interactive mode)
-
-No command silently deletes or overwrites files.
-
 ### 9.5 Scriptability
-
-Commands are designed to work in shell scripts and CI:
-
-- Non-interactive execution is possible for every command
-- Exit codes are stable and documented
-- JSON output is available
-- Output is deterministic where required
-- No command requires a TTY
 
 ### 9.6 Human-Readable Output
 
-Default output is optimised for humans:
+Default output is optimised for humans. In Phase 2, the symbols are
+ASCII-safe (see § 4.9j). The vocabulary is:
 
-- Uses colour and symbols (`✓`, `⚠`, `✗`) where supported
-- Never relies on colour to convey meaning
-- Uses whitespace and structure to aid readability
-- Keeps output brief in normal mode; verbose mode adds detail
+| ASCII marker | Meaning | Usage |
+|--------------|---------|-------|
+| `[OK]` | PASS / success | Validation, checks |
+| `[WARN]` | WARNING | Non-blocking issues |
+| `[ERROR]` | ERROR | Blocking issues |
+| `[SKIP]` | SKIP / EXEMPT | Deliberately not evaluated |
+| `[!]` | ATTENTION | Notable but not a check result |
+
+Unicode symbols (`✓`, `⚠`, `✗`, `○`) are deferred to Phase 6.
 
 ### 9.7 Machine-Readable Output
 
-JSON output is a first-class interface:
-
-- Schema-versioned (where a schema version is meaningful; see § 8.1)
-- Stable across releases within a schema version
-- Free of terminal formatting codes
-- Deterministic ordering where practical
-- A single line terminated by `\n` (see § 8.5)
-
 ### 9.8 Output Vocabulary
 
-Forge uses a consistent vocabulary across commands.
-
-| Symbol | Meaning | Usage |
-|--------|---------|-------|
-| `✓` | PASS / success | Validation, checks |
-| `⚠` | WARNING | Non-blocking issues |
-| `✗` | ERROR | Blocking issues |
-| `○` | SKIP / EXEMPT | Deliberately not evaluated |
-| `!` | ATTENTION | Notable but not a check result |
-
-Text formatting:
-
-- Headings are separated by blank lines and use no trailing colons
-- Field labels are aligned within a block
-- Paths are wrapped in backticks when embedded in prose
-- Commands are wrapped in backticks
-- Symbols precede field labels where they apply
+See § 9.6 for the ASCII-safe markers.
 
 ### 9.9 Progressive Disclosure
 
-The default output is minimal. Detail is available on demand:
-
-- `--verbose` adds diagnostic context
-- `--format json` provides complete structured data
-- `forge explain` provides detailed foundation information
-- `forge doctor` provides environment diagnostics
-
 ### 9.10 No Hidden Magic
-
-Forge does not:
-
-- Modify files without showing what will change
-- Change configuration based on environment inference
-- Install or download anything without explicit user action
-- Contact external services unless required by an explicit command
-- Require network access for local commands
 
 ### 9.11 Colour Philosophy
 
-- Colour is a visual aid, never a requirement
-- Meaning is always encoded in the symbol or text
-- `--no-color` disables colour
-- When stdout is not a TTY, colour is disabled by default
-- Colour choice respects `NO_COLOR` environment variable
+- Colour is a visual aid, never a requirement.
+- Meaning is always encoded in the symbol or text.
+- Phase 2 emits no colour. See § 4.9j.
+- When colour is introduced (Phase 6+), the rules in § 4.9j apply.
 
 ### 9.12 Accessibility
 
-- Output is readable in monochrome terminals
-- Symbols are ASCII-safe alternatives when Unicode is unavailable
-- Long lines wrap at 80 columns where practical
-- No information is conveyed by position alone
+- Output is readable in monochrome terminals.
+- Phase 2 output is ASCII-only. See § 4.9j.
+- Long lines wrap at 80 columns where practical.
+- No information is conveyed by position alone.
 
 ### 9.13 Performance
 
-- `forge version` and `forge --help` return in under 100ms
-- Local commands do not perform network requests
-- Interactive prompts appear within 100ms
-- Generation completes in under 5 seconds for typical projects
-
 ### 9.14 Cancellation
-
-- Ctrl+C cancels the current operation cleanly
-- No partial files are left behind
-- Exit code is non-zero (128 + signal)
-- Interactive prompts respond to Ctrl+C by cancelling the command
 
 ---
 
 ## 10. Interactive vs Non-Interactive
-
-Forge commands support both modes. The behaviour differs as follows:
 
 | Aspect | Interactive | Non-interactive |
 |--------|-------------|-----------------|
@@ -1968,29 +1888,21 @@ Forge commands support both modes. The behaviour differs as follows:
 | Missing input | Prompted | Error (exit 2) |
 | Ambiguity | Offered choice | Error (exit 2) |
 | Confirmation | Prompted | Requires `--yes` |
-| Output | Coloured, formatted | Plain, JSON if `--format json` |
-| TTY required | Yes | No |
+| Output | Plain, formatted | Plain, JSON if `--format json` |
+| TTY required | No | No |
 
 Non-interactive mode is triggered by:
 
 - Explicit `--non-interactive` flag
-- Absence of TTY (e.g., running in CI)
 - Presence of `--format json` (implies non-interactive)
 
-`forge version` is always non-interactive. It has no prompts, no
-confirmations, and no ambiguity; the command produces output and
-exits.
+`forge version` is always non-interactive.
 
 ---
 
 ## 11. Error Catalogue
 
-Every error returned by Forge has a stable code. Codes follow the
-pattern:
-
-```text
-FORGE_<CATEGORY>_<SPECIFIC>
-```
+Every error returned by Forge has a stable code.
 
 Categories:
 
@@ -2025,39 +1937,28 @@ Example codes:
 - `FORGE_SECURITY_PATH_TRAVERSAL`
 - `FORGE_SECURITY_UNSAFE_TEMPLATE`
 
-Each code maps to an exit code (§ 7) and is included in JSON output
-(§ 8) where the JSON schema has an error field. The
-`forge version --format json` schema does not have an error field;
-see § 8.2.
-
 ---
 
 ## 12. Open Questions
 
-The following questions remain open and should be resolved before
-implementation:
+The following questions remain open:
 
 - Should `forge validate` and `forge check` be merged, or remain
   separate commands?
-- Should `forge explain` support subcommands (e.g., `forge explain
-  policy testing`) in the MVP, or defer to a later phase?
+- Should `forge explain` support subcommands in the MVP, or defer?
 - Should `forge new` write the `forge.yaml` file before or after
   generating the project files?
 - Should the default output for successful operations include a
   `Next steps` block, or should that be deferred to `--verbose`?
 - Should `forge version` include template versions in its output?
-- What is the exact behaviour when `forge new` is given a project name
-  with a `/` in it (nested path)?
-- Should `forge init` detect and refuse to run if the repository has
-  any uncommitted Git changes?
-- Should `forge template list` distinguish between local and remote
-  templates once a registry exists?
+- What is the exact behaviour when `forge new` is given a project
+  name with a `/` in it?
+- Should `forge init` detect and refuse to run if the repository
+  has any uncommitted Git changes?
+- Should `forge template list` distinguish between local and
+  remote templates once a registry exists?
 - Should the JSON format of `forge version` gain a `schemaVersion`
-  field once a second JSON-emitting mode is added (for example,
-  a `--format json-full` that includes additional fields)?
-
-These questions will be addressed in Phase 2 as implementation begins
-and the interaction details become concrete.
+  field once a second JSON-emitting mode is added?
 
 ---
 
@@ -2082,8 +1983,9 @@ becomes **Approved** when:
 
 | Version | Date | Author | Change |
 |---------|------|--------|--------|
-| 0.1.0 | 2026-10-09 | @thapelomagqazana | Initial Phase 1 draft. Command hierarchy, per-command reference, exit codes, JSON output, UX principles, error catalogue, and open questions. |
-| 0.2.0 | 2026-10-10 | @thapelomagqazana | Added § 4.7 (Root Command Identity) in response to WBS 5.1.1. Documents the four frozen identity constants, their rules, and the process for changing them. |
-| 0.3.0 | 2026-10-10 | @thapelomagqazana | Added § 4.8 (Version Output Contract) in response to WBS 5.1.2. Documents the frozen format shared by `forge --version` and `forge version`, the field sources, the single formatter, and the process for changing the format. Corrected the "Where each string appears" table in § 4.7: `RootShortDesc` is not rendered by `forge --help`; `RootLongDesc` is the body of the help text, not the text below the short description. |
-| 0.4.0 | 2026-10-10 | @thapelomagqazana | Added § 4.9 (Help Behaviour) in response to WBS 5.2.2. Documents the eight help invocations, the stdout/stderr contract, and the two rejections. Added § 4.10 (Version Behaviour) in response to WBS 5.2.3. Documents the five version invocations, the `-v` alias, and the extra-argument rejection. Added § 4.11 (Global Flags) in response to WBS 5.3.1. Documents the three-flag inventory, the precedence rule, the persistence of the flags, and the process for adding a new flag. Extended § 7.2's usage-error list to cite the pre-parse rejections and updated § 2's in-scope list. |
-| 0.5.0 | 2026-10-10 | @thapelomagqazana | Extended § 4.6, § 4.8, and § 4.10 in response to WBS 6.4.1 and WBS 6.4.2. § 4.8 now has three subsections: § 4.8.1 freezes the text format byte-for-byte; § 4.8.2 freezes the JSON schema field-for-field; § 4.8.3 names the implementation files; § 4.8.4 lists the change process; § 4.8.5 justifies the freeze. § 4.10 lists six version invocations (up from five), adds `forge version --format json` to the contract table, and adds a rule that `--version` always produces the text format. § 4.12 (new) defines the `--format` flag as a per-command flag with a per-command value set, distinct from the global flag inventory; it explains why `--format` is not global, and lists the value sets for every command that has one or will have one. § 8.1 documents the deliberate exception that `forge version --format json` does not carry a `schemaVersion` field and explains why. § 8.2 documents that `forge version --format json` writes errors to stderr rather than embedding them in JSON. § 8.4 adds `text` to the format-value table and adds a per-command column. § 8.5 documents the single-line JSON rule with its rationale. § 9.7 and § 10.10 updated to reference § 8.5 and to note that `forge version` is always non-interactive. § 11 adds `FORGE_USAGE_UNKNOWN_FLAG` and `FORGE_USAGE_UNKNOWN_FORMAT` to the example error codes. § 12 adds an open question about a `schemaVersion` field for a future full version JSON. |
+| 0.1.0 | 2026-10-09 | @thapelomagqazana | Initial Phase 1 draft. |
+| 0.2.0 | 2026-10-10 | @thapelomagqazana | Added § 4.7 (Root Command Identity) in response to WBS 5.1.1. |
+| 0.3.0 | 2026-10-10 | @thapelomagqazana | Added § 4.8 (Version Output Contract) in response to WBS 5.1.2. Corrected the "Where each string appears" table in § 4.7. |
+| 0.4.0 | 2026-10-10 | @thapelomagqazana | Added § 4.9 (Help Behaviour) in response to WBS 5.2.2. Added § 4.10 (Version Behaviour) in response to WBS 5.2.3. Added § 4.11 (Global Flags) in response to WBS 5.3.1. |
+| 0.5.0 | 2026-10-10 | @thapelomagqazana | Extended § 4.6, § 4.8, and § 4.10 in response to WBS 6.4.1 and WBS 6.4.2. Added § 4.12 (`--format` Flag Semantics). Updated § 8 (Machine-Readable Output). |
+| 0.6.0 | 2026-10-10 | @thapelomagqazana | Added § 4.9b through § 4.9m in response to WBS 7.1.1, WBS 7.1.2, WBS 7.1.3, WBS 7.2.1, WBS 7.2.2, WBS 7.3.1, WBS 7.3.2, WBS 7.4.1, WBS 7.4.2, and WBS 7.4.3. The new subsections cover: the help invocation matrix (§ 4.9b), the root help content contract (§ 4.9c), the per-command help content contract (§ 4.9d), the Examples convention (§ 4.9e), the invalid-command contract (§ 4.9f), the error message format (§ 4.9g), the output stream boundary (§ 4.9h), the global flag interaction matrix (§ 4.9i), the colour and terminal policy (§ 4.9j), and a summary of contracts (§ 4.9m). Updated § 4.7 to reflect the ASCII-only constants (`RootShortDesc` uses `-`; `RootLongDesc` uses `->`). Updated § 9.6 and § 9.8 to use ASCII-safe markers (`[OK]`, `[WARN]`, `[ERROR]`, `[SKIP]`, `[!]`). Updated § 3.1 and § 4.1's interactive wizard example to use ASCII-safe markers. |

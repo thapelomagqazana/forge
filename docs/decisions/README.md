@@ -12,7 +12,8 @@ This index is auto-generated. Do not edit it manually.
 
 | ID | Title | Date |
 |----|-------|------|
-| [ADR-005](./ADR-005-version-command-structure-output-formats-and-stability-guarantees.md) | ADR-005: 'Version Command Structure, Output Formats, and Stability Guarantees' | 2026-10-10 |
+| [ADR-006](./ADR-006-help-and-cli-ux-contracts-invocation-matrix-output-formats-stream-boundary-and-phase-2-presentation-policy.md) | ADR-006: 'Help and CLI UX Contracts — Invocation Matrix, Output Formats, Stream Boundary, and Phase 2 Presentation Policy' | 2026-10-11 |
+| [ADR-005](./ADR-005-version-command-structure-output-formats-and-stability-guarantees.md) | ADR-005: Version Command Structure, Output Formats, and Stability Guarantees | 2026-10-10 |
 | [ADR-004](./ADR-004-root-command-identity-and-behavior-contracts.md) | ADR-004: Root Command Identity and Behavior Contracts | 2026-10-10 |
 | [ADR-003](./ADR-003-cli-framework-foundation-package-execution-injection-registry-and-contract.md) | ADR-003: CLI Framework Foundation — Package, Execution, Injection, Registry, and Contract | 2026-10-10 |
 | [ADR-001](./ADR-001-forge-is-a-foundation-manager.md) | ADR-001: Forge is a Foundation Manager | 2026-10-09 |

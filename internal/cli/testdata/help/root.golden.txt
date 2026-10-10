@@ -1,0 +1,29 @@
+Forge is a cross-platform CLI for defining, generating,
+validating, and evolving software project foundations as code.
+
+The core loop:
+
+    CREATE  ->  forge new
+    VERIFY  ->  forge check
+    EXPLAIN ->  forge explain
+    EVOLVE  ->  forge update
+
+Run 'forge <command> --help' for details on any command.
+
+Usage:
+  forge [command] [flags]
+  forge [command]
+
+Available Commands:
+  completion  Generate the autocompletion script for the specified shell
+  help        Help about any command
+  version     Print Forge version information
+
+Flags:
+      --config string   path to the configuration file (overrides discovery)
+  -h, --help            help for forge
+      --quiet           suppress all output except errors (log level ERROR)
+      --verbose         enable verbose output (log level DEBUG)
+  -v, --version         version for forge
+
+Use "forge [command] --help" for more information about a command.
