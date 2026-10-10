@@ -29,6 +29,29 @@
 #     emits a warning that prompts the reviewer to verify the ADR
 #     and the registry entry.
 #
+# # Scope of V2, V3, and V4
+#
+# V2, V3, and V4 apply only to **direct** dependencies (the require
+# lines that do not carry the "// indirect" comment). Indirect
+# dependencies are selected by the Go toolchain to satisfy the direct
+# dependencies' version constraints; they are recorded by `go mod
+# tidy` and are not subject to hand-pinning. Applying the checks to
+# indirect lines would produce false positives on every transitive
+# dependency whose version happens not to be the latest patch — and
+# would contradict `verify:deps:integrity`, which requires that
+# `go mod tidy` produces no diff.
+#
+# The scoping was introduced after
+# `github.com/inconshreveable/mousetrap v1.1.0 // indirect` — a
+# transitive dependency of Cobra — was flagged by the V2 check as a
+# version-pin violation. The flag was a false positive: the line
+# carries an `// indirect` comment, and the version is not the last
+# field on the line. The check now filters indirect lines and
+# extracts the version by pattern, not by position.
+#
+# See docs/dependency-policy.md, section "V2 — Version pin", for the
+# policy's wording.
+#
 # # Why V1 is a warning, not an error
 #
 # The script can detect that a dependency was added. It cannot
@@ -144,17 +167,72 @@ ok() {
 # V2, V3, V4 — regex checks against the current go.mod
 # ─────────────────────────────────────────────────────────────────────
 #
-# Extract every `require` line. Both the block form and the
-# single-line form are handled.
+# The checks apply to **direct** dependencies only. Indirect
+# dependencies (those carrying the "// indirect" comment) are
+# selected by the Go toolchain and are out of scope for V2, V3, and
+# V4. The policy is documented in docs/dependency-policy.md, section
+# "V2 — Version pin".
 #
-# A `require` line looks like one of:
+# # How the require lines are extracted
 #
-#   require github.com/spf13/cobra v1.8.1
-#   \tgithub.com/spf13/cobra v1.8.1
+# The extraction has three steps:
 #
-# The regex extracts the version portion.
+#   1. Find every line in go.mod that resembles a require entry.
+#      Both the block form and the single-line form are handled:
+#
+#          require (
+#              github.com/spf13/cobra v1.8.1
+#              github.com/spf13/pflag v1.0.5 // indirect
+#          )
+#
+#          require github.com/spf13/cobra v1.8.1
+#
+#      The pattern matches lines that contain a module path (a
+#      dotted path with a slash) followed by a version token
+#      starting with "v" and a digit.
+#
+#   2. Exclude lines that carry the "// indirect" comment. Those
+#      lines are the toolchain's choices, not Forge's.
+#
+#   3. From each remaining line, extract the version. The version
+#      is the first whitespace-separated token that starts with
+#      "v" and a digit. This is more robust than using the last
+#      field, which for an indirect line would be the comment
+#      itself. It is also correct for direct lines that carry a
+#      trailing comment for other reasons (for example, a "//
+#      pinned by ADR-006" annotation).
+#
+# The extraction is deliberately conservative: it does not attempt
+# to parse go.mod. Parsing is unnecessary because the patterns are
+# unambiguous, and a hand-rolled parser would be larger than the
+# checks it supports.
 
-require_lines=$(grep -E '^(\s*require\s+)?[a-z0-9.-]+\.[a-z]{2,}/[^ ]+ v[0-9]' go.mod || true)
+require_lines=$(
+    grep -E '^[[:space:]]*([a-z0-9.-]+\.[a-z]{2,}/[^[:space:]]+[[:space:]]+v[0-9])' \
+        go.mod \
+    | grep -v '// indirect' \
+    || true
+)
+
+# The single-line require form does not start with whitespace, so
+# the pattern above does not match it. Add it separately.
+#
+# A single-line require looks like:
+#
+#     require github.com/spf13/cobra v1.8.1
+#
+# The pattern below matches the whole line, excluding the leading
+# "require " keyword so that the extraction below (which scans for
+# the first version-like token) sees only the module path and the
+# version.
+single_require_lines=$(
+    grep -E '^require[[:space:]]+[a-z0-9.-]+\.[a-z]{2,}/[^[:space:]]+[[:space:]]+v[0-9]' \
+        go.mod \
+    | sed -E 's/^require[[:space:]]+//' \
+    || true
+)
+
+require_lines=$(printf '%s\n%s\n' "$require_lines" "$single_require_lines")
 
 v2_count=0
 v3_count=0
@@ -162,7 +240,28 @@ v4_count=0
 
 while IFS= read -r line; do
     [ -z "$line" ] && continue
-    version=$(printf '%s\n' "$line" | awk '{print $NF}')
+
+    # Extract the version: the first whitespace-separated token
+    # that starts with "v" and a digit. This is robust against
+    # trailing comments and against the version not being the last
+    # field.
+    version=""
+    for token in $line; do
+        case "$token" in
+            v[0-9]*)
+                version="$token"
+                break
+                ;;
+        esac
+    done
+
+    if [ -z "$version" ]; then
+        # The line does not carry a version-like token. This should
+        # not happen given the extraction above, but the check is
+        # defensive: a line without a version is not a violation
+        # this script knows how to classify, so it is skipped.
+        continue
+    fi
 
     # V3 — +incompatible marker.
     case "$version" in
@@ -207,10 +306,10 @@ $require_lines
 EOF
 
 if [ "$v2_count" -eq 0 ]; then
-    ok "no version ranges in go.mod"
+    ok "no version ranges in direct dependencies"
 fi
 if [ "$v3_count" -eq 0 ]; then
-    ok "no +incompatible markers in go.mod"
+    ok "no +incompatible markers in direct dependencies"
 fi
 if [ "$v4_count" -eq 0 ]; then
     ok "no pseudo-versions in direct dependencies"
@@ -231,6 +330,12 @@ fi
 #
 # The check is skipped if no base is provided. The PR template's
 # checklist covers V1 for the case where the script cannot.
+#
+# The extraction excludes indirect dependencies (the lines
+# carrying the "// indirect" comment), for the same reason V2, V3,
+# and V4 do: indirect dependencies are the toolchain's choices,
+# not Forge's, and a new indirect dependency is not a new direct
+# dependency.
 #
 # # POSIX compatibility
 #

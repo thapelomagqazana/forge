@@ -2,11 +2,11 @@
 
 - **Document type:** Model
 - **Status:** Draft
-- **Version:** 0.4.0
+- **Version:** 0.5.0
 - **Author:** @thapelomagqazana
 - **Created:** 2026-10-09
 - **Last Updated:** 2026-10-10
-- **Supersedes:** 0.3.0
+- **Supersedes:** 0.4.0
 - **Superseded by:** —
 
 ---
@@ -27,6 +27,9 @@ This document exists to answer:
 - What is the end-to-end data flow?
 - How is the process boundary made testable?
 - How are the handler and application logic separated?
+- How is the command tree assembled?
+- How are global flags managed?
+- How are malformed invocations rejected before the command tree runs?
 - How are errors structured?
 - How is logging structured?
 - What does the architecture look like as a diagram?
@@ -46,6 +49,9 @@ other specification documents. This document defines **structure**.
 - End-to-end data flow
 - The two-boundary execution model
 - The handler / service boundary
+- Command registration
+- Global flags
+- Pre-parse argument validation
 - Error architecture
 - Logging architecture
 - Architecture diagram
@@ -140,6 +146,23 @@ results, map to exit codes.
 **Does not:** Contain business logic, read files, render templates.
 
 **Depends on:** Application, Output, Logging.
+
+The CLI module is composed of several files within
+`internal/cli/`:
+
+- `root.go` — the root command constructor.
+- `registry.go` — the central command registry (§ 11.13).
+- `flags.go` — the global flag registration and readers (§ 11.14).
+- `validate.go` — the pre-parse argument validator (§ 11.15).
+- `execute.go` — the process boundary and the transformation to
+  `Dependencies` (§ 11).
+- `deps.go` — the `Dependencies` struct (§ 11.2).
+- `version.go` — the version handler (a subcommand, not part of the
+  CLI's own architecture).
+- `config.go` — the hidden placeholder for `forge config`.
+- `exitcodes.go` — the exit code constants and the error-to-code
+  mapping.
+- `doc.go` — the package documentation.
 
 #### 4.2.2 Application
 
@@ -575,16 +598,19 @@ type Info struct {
     Version   string
     Commit    string
     BuildDate string
+    Dirty     string
 }
 
 func Get() Info
 func Format(w io.Writer, info Info) error
+func Raw() string
 ```
 
 **Responsibilities:**
 
 - Produce an `Info` value describing the running binary.
-- Render the value to an `io.Writer`.
+- Render the value to an `io.Writer` (via `Format`).
+- Produce the value as a string (via `Raw`).
 
 **Does not:**
 
@@ -608,6 +634,12 @@ Every Forge command follows the same high-level flow:
 ```text
 ┌──────────────────┐
 │  CLI input       │  User runs `forge <command>`
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│  Pre-parse       │  validateArgs rejects malformed invocations
+│  validation      │  (§ 11.15)
 └────────┬─────────┘
          │
          ▼
@@ -647,6 +679,10 @@ Every Forge command follows the same high-level flow:
 │  Filesystem      │  Write files (if mutating)
 └──────────────────┘
 ```
+
+The pre-parse validation stage is described in § 11.15. It is a
+prerequisite for every other stage: an invocation that fails the
+validation never reaches the command tree.
 
 ### 7.2 Flow Variations by Command
 
@@ -987,6 +1023,9 @@ exception (they reflect actual time).
 | `--verbose` | `DEBUG` |
 | `--debug` | `DEBUG` (with internal details) |
 
+The `--verbose` and `--quiet` flags are two of the three global flags
+(§ 11.14). When both are set, `--quiet` wins.
+
 ### 9.9 Logging in CI
 
 When running in CI (`CI=true` environment variable):
@@ -1009,6 +1048,11 @@ When running in CI (`CI=true` environment variable):
 ┌───────────────────────────────────────────────────────────────────┐
 │                          CLI LAYER                                │
 │                                                                   │
+│  ┌───────────────┐   Pre-parse validation (§ 11.15)               │
+│  │ validateArgs  │   Rejects malformed invocations                │
+│  └───────┬───────┘                                                │
+│          │                                                        │
+│          ▼                                                        │
 │  ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐       │
 │  │ new       │  │ init      │  │ validate  │  │ update    │  ...  │
 │  └─────┬─────┘  └─────┬─────┘  └─────┬─────┘  └─────┬─────┘       │
@@ -1081,6 +1125,9 @@ When running in CI (`CI=true` environment variable):
   listed alongside Renderer, Validator, and Update Engine because it
   has the same architectural role: it orchestrates a use case on
   behalf of a CLI handler.
+- **Pre-parse validation is the first stage** — the CLI's pipeline
+  begins with `validateArgs`, which rejects malformed invocations
+  before the command tree runs. The stage is documented in § 11.15.
 
 ### 10.2 Alternative View: By Concern
 
@@ -1250,6 +1297,10 @@ The transformation is performed in exactly one place:
 
 ```go
 func executeWithOptions(opts options) int {
+    if err := validateArgs(opts.args); err != nil {
+        fmt.Fprintln(opts.stderr, formatError(err))
+        return exitCodeFromError(err)
+    }
     deps := buildDependencies(opts)   // the single transformation
     root := newRootCmd(deps)          // Dependencies, not options
     root.SetArgs(opts.args)
@@ -1259,6 +1310,10 @@ func executeWithOptions(opts options) int {
     // ...
 }
 ```
+
+The `validateArgs` call is the pre-parse validation stage (§ 11.15).
+It runs before `buildDependencies` because it inspects the raw
+argument list, not the resolved collaborators.
 
 ### 11.4 Why Two Boundaries
 
@@ -1343,6 +1398,13 @@ When the command tree returns a non-nil error, `executeWithOptions`:
 When the command tree returns a nil error, the function returns
 `ExitSuccess` without writing anything.
 
+The pre-parse validation stage uses the same error path. A malformed
+invocation produces an error from `validateArgs`, which is formatted
+by the same `formatError`, written to the same stderr, and mapped to
+an exit code by the same `exitCodeFromError`. The result is
+indistinguishable from an error produced by a command: same stream,
+same message shape, same exit code.
+
 The two functions called here are documented in
 [`docs/development.md`](./development.md) (exit codes) and in
 [`docs/cli-ux-spec.md`](./cli-ux-spec.md) § 7 (exit code contract).
@@ -1366,9 +1428,16 @@ to stdout, diagnostics and errors go to stderr.
 | `internal/cli/execute_test.go` | White-box tests for the process boundary and the transformation. |
 | `internal/cli/exitcodes.go` | Exit code constants and the error-to-code mapping. |
 | `internal/cli/root.go` | The root command constructor. Accepts a `Dependencies` value and registers subcommands. |
+| `internal/cli/registry.go` | The central command registry (§ 11.13). |
+| `internal/cli/flags.go` | The global flag registration and readers (§ 11.14). |
+| `internal/cli/validate.go` | The pre-parse argument validator (§ 11.15). |
 | `internal/cli/version.go` | The `forge version` handler. Reference implementation of the handler / service pattern (§ 11.12). |
 | `internal/cli/version_test.go` | White-box tests for the version handler, including the structural tests that enforce § 11.12. |
 | `internal/cli/structure_test.go` | Black-box structural tests for the package's shape. |
+| `internal/cli/registry_test.go` | Tests for the command registry. |
+| `internal/cli/contract_test.go` | Structural tests for the command constructor contract. |
+| `internal/cli/validate_test.go` | Unit tests for the pre-parse argument validator. |
+| `internal/cli/flags_test.go` | Unit tests for the global flag readers and the log-level resolver. |
 | `internal/app/version/service.go` | The version application service. Pure. |
 | `internal/app/version/format.go` | The version formatter. Takes an `io.Writer`. |
 | `internal/app/version/buildinfo.go` | Reads build metadata from `internal/version`. |
@@ -1496,7 +1565,7 @@ structure:
 | File | Purpose |
 |------|---------|
 | `internal/cli/version.go` | The thin handler. Three lines of body. |
-| `internal/app/version/service.go` | The pure service. `Get() Info`. |
+| `internal/app/version/service.go` | The pure service. `Get() Info`, `Raw() string`. |
 | `internal/app/version/format.go` | The formatter. `Format(io.Writer, Info) error`. |
 | `internal/app/version/service_test.go` | Unit tests that do not construct a Cobra command. |
 | `internal/version/version.go` | The build metadata variables. Leaf package. |
@@ -1517,9 +1586,10 @@ the work. The service knows nothing about Cobra, flags, or
 
 #### The build-metadata leaf package
 
-The version service needs three values — `Version`, `Commit`,
-`BuildDate` — that are injected at link time. Before WBS 4.3.1, those
-values lived in `internal/cli`. That created an import cycle:
+The version service needs four values — `Version`, `Commit`,
+`BuildDate`, `Dirty` — that are injected at link time. Before WBS
+4.3.1, the first three lived in `internal/cli`. That created an
+import cycle:
 
 ```text
 internal/cli  ──────►  internal/app/version
@@ -1589,6 +1659,281 @@ This boundary is the concrete shape of two module-level rules:
 - **§ 4.2.2 (Application).** "Implements use cases (create project,
   validate, check, diff, update, explain)." The service package is
   the concrete shape of an application use case.
+
+### 11.13 Command Registration
+
+WBS 4.4.1 establishes a central command registry: the single,
+deterministic list of subcommand constructors that `newRootCmd`
+iterates to build the command tree.
+
+#### The registry
+
+`internal/cli/registry.go` defines two things:
+
+```go
+type commandConstructor func(Dependencies) *cobra.Command
+
+var registry = []commandConstructor{
+    newConfigCmd,
+    newVersionCmd,
+    // WBS 5.x adds more
+}
+```
+
+`newRootCmd` consumes the registry:
+
+```go
+for _, ctor := range registry {
+    root.AddCommand(ctor(deps))
+}
+```
+
+#### The rules
+
+1. **One file owns the registry.** `registry.go` is the only file
+   that lists subcommands. Adding a command means appending to the
+   slice in that file.
+
+2. **Order is explicit.** The registry is a slice, not a map. The
+   order of the slice determines the order in which Cobra receives
+   the commands, which determines the order in help output for
+   visible commands.
+
+3. **Every constructor takes `Dependencies`.** No exceptions. A
+   constructor that accepted `options` would be free to read
+   process globals, violating the two-boundary model (§ 11.2).
+
+4. **Every constructor returns `*cobra.Command`.** No exceptions.
+   The registry does not abstract over CLI frameworks.
+
+5. **Command files are named `<command>.go`.** The file contains the
+   constructor and its helpers. It does not contain business logic
+   (that lives in the application service; see § 11.12).
+
+6. **No `init()`-based registration.** A command's file must not
+   append to the registry from an `init()` function. Registration is
+   a static, reviewable property of `registry.go`.
+
+#### Adding a command
+
+The four-step procedure is documented in the package docstring of
+`registry.go`. In summary:
+
+1. Create `internal/cli/<name>.go`.
+2. Append `new<Name>Cmd` to the registry slice in the correct
+   position.
+3. Add the file to `expectedSourceFiles` in
+   `internal/cli/structure_test.go`.
+4. Add tests.
+
+#### Enforcement
+
+The registry is enforced by:
+
+- **Structural tests** in `internal/cli/registry_test.go` that
+  assert the registry's contents are non-empty, have no duplicates,
+  and produce commands with the expected shape.
+- **Structural tests** in `internal/cli/contract_test.go` that
+  assert every registry entry satisfies the command constructor
+  contract (WBS 4.4.2).
+- **Structural tests** in `internal/cli/root_test.go` that assert
+  the registry order matches the help output order.
+- **Code review.**
+
+### 11.14 Global Flags
+
+WBS 5.3.1 establishes the CLI's global flag inventory. The inventory
+is deliberately small: three flags in Phase 2, each with a documented
+consumer in a later WBS item.
+
+#### The inventory
+
+| Flag | Short | Type | Persistent | Consumer | Semantics |
+|------|-------|------|------------|----------|-----------|
+| `--verbose` | — | bool | yes | WBS 12.0 (logging) | Set log level to DEBUG |
+| `--quiet` | — | bool | yes | WBS 12.0 (logging) | Set log level to ERROR |
+| `--config` | — | string | yes | WBS 8.0 (config) | Path to config file |
+
+No other global flags exist. Adding a fourth flag requires an ADR.
+
+#### Where the flags live
+
+The flag names, the registration function, and the helpers that read
+the parsed values live in `internal/cli/flags.go`:
+
+- `FlagVerbose`, `FlagQuiet`, `FlagConfig` — the flag-name
+  constants.
+- `registerGlobalFlags(cmd *cobra.Command)` — the registration
+  function, called from `newRootCmd`.
+- `verboseRequested(cmd)`, `quietRequested(cmd)`,
+  `configPath(cmd)` — the readers.
+- `resolveLogLevel(cmd) string` — the resolver that applies the
+  precedence rule.
+
+#### Persistence
+
+All three flags are **persistent** flags. Cobra's persistent flags
+are inherited by every subcommand, so both `forge --verbose config`
+and `forge config --verbose` are equivalent. The persistence is the
+reason the flags appear in the root command's help output under
+"Global Flags" rather than "Flags".
+
+The persistence is the reason the flags can appear **either before or
+after** the subcommand name. Cobra's parser handles both positions;
+the CLI's behaviour is identical for both.
+
+#### Precedence
+
+When `--verbose` and `--quiet` are both set, `--quiet` wins. The
+effective log level is ERROR.
+
+The rule is implemented in `resolveLogLevel`, which reads the two
+flags from the command and returns the effective log level as a
+string. The rule is documented in
+[`docs/cli-ux-spec.md`](./cli-ux-spec.md) § 4.11 and is pinned by
+`TestResolveLogLevel` in `flags_test.go`.
+
+The precedence is not accompanied by a runtime warning. The rationale
+is that a warning about conflicting flags is itself output, and the
+user who asked for quiet asked for less output. The decision is
+documented in the specification; the code does not emit a warning.
+
+#### Why the flags are not in `Dependencies`
+
+The global flags are read from the command (`cmd.Flags()`), not from
+`Dependencies`. This is deliberate: the flags are a property of the
+invocation, and Cobra's parser is the source of truth for their
+values. The `Dependencies` struct holds resolved collaborators, not
+parsed flags. A future `config` subsystem that consumes `--config`
+will read the value from the command and use it to construct the
+resolved configuration, which is what `Dependencies.Config` will
+hold.
+
+#### Adding a global flag
+
+Adding a global flag requires an ADR. The ADR must name the consumer
+WBS item, define the flag's semantics, and define its precedence
+relative to the existing flags. The rule is documented in
+[`docs/cli-ux-spec.md`](./cli-ux-spec.md) § 4.11.
+
+The rule exists to prevent flag creep. A CLI with fifteen global
+flags has no global flags, because users cannot remember which one
+does what.
+
+#### Enforcement
+
+The inventory is enforced by:
+
+- **Structural tests** in `internal/cli/root_test.go` that assert the
+  root command has exactly three persistent flags.
+- **Unit tests** in `internal/cli/flags_test.go` that exercise the
+  readers and the resolver.
+- **Taskfile target** `verify:global-flags`, which counts the flag
+  registrations in `flags.go`.
+- **Code review.**
+
+### 11.15 Pre-Parse Argument Validation
+
+WBS 5.2.2 and WBS 5.2.3 establish a pre-parse argument validator: a
+stage in the CLI's pipeline that runs **before** Cobra parses the
+arguments, and rejects a small set of malformed invocations that
+Cobra would otherwise accept silently.
+
+#### The four rejected shapes
+
+The validator rejects four malformed invocations:
+
+1. `forge --help <cmd>` — the `--help` flag takes no argument.
+2. `forge --version <arg>` — the `--version` flag takes no argument.
+3. `forge --config` with no value — `--config` requires a value.
+4. `forge help <unknown>` — an unknown help topic.
+
+Each rejection is documented in
+[`docs/cli-ux-spec.md`](./cli-ux-spec.md) § 4.9 (help), § 4.10
+(version), or § 4.11 (config).
+
+#### Where the validator lives
+
+The validator lives in `internal/cli/validate.go`. The file
+defines:
+
+- `validateArgs(args []string) error` — the entry point. Dispatches
+  to the three sub-validators.
+- `validateHelpFlagWithArgs(args)` — rejects shapes 1.
+- `validateVersionFlagWithArgs(args)` — rejects shape 2.
+- `validateConfigFlagWithArgs(args)` — rejects shape 3.
+- `validateHelpTopic(args)` — rejects shape 4.
+- `isKnownCommandName(name)` — the predicate used by shape 4. Reads
+  the registry directly.
+- `commandName(use string) string` — extracts a command's name from
+  its `Use` field.
+- `validationDependencies()` — the `Dependencies` value used to
+  construct commands during validation.
+
+#### Why the validator is at the pre-parse stage
+
+Cobra's `--help` and `--version` flags are **interception flags**:
+when either is set, Cobra short-circuits the hook chain
+(`PersistentPreRunE`, `PreRunE`, `RunE`) and runs its help or version
+path directly. A malformed `--help <cmd>` or `--version <arg>`
+invocation is therefore invisible from inside the command tree.
+
+The pre-parse stage is the only point at which the malformed
+invocations are observable. `validateArgs` runs in
+`executeWithOptions` before `root.Execute()` is called, which is
+before Cobra parses the arguments.
+
+#### How the rejection flows
+
+The validator returns a plain `error`. `executeWithOptions` formats
+it with `formatError`, writes it to `opts.stderr`, and maps it to an
+exit code with `exitCodeFromError`. The result is indistinguishable
+from an error produced by a command: same stream, same message shape,
+same exit code. The `exitCodeFromError` mapping classifies the plain
+error as `ExitUsage` because it has no category.
+
+#### The validator's data sources
+
+The validator reads two inputs:
+
+1. **The raw argument list.** The `args` parameter is the raw
+   `[]string` from `options.args`. The validator scans it with simple
+   left-to-right loops. It does not parse flags, does not resolve
+   commands, and does not construct the command tree.
+
+2. **The registry.** The `registry` package-level slice is the
+   source of truth for the set of Forge-authored commands. The
+   validator reads the slice directly rather than the constructed
+   command tree, because the tree is not available at this stage
+   (`newRootCmd` runs after `validateArgs`).
+
+The validator also accepts Cobra's auto-generated `help` and
+`completion` command names as valid help topics. They are not in the
+registry; the validator handles them by name.
+
+#### Enforcement
+
+The validator is enforced by:
+
+- **Unit tests** in `internal/cli/validate_test.go` that exercise
+  the top-level dispatcher and each sub-validator in isolation.
+- **Contract tests** in `internal/cli/root_test.go` that assert the
+  observable behaviour of the four rejected invocations: non-zero
+  exit, empty stdout, non-empty stderr.
+- **Taskfile targets** `verify:help-contract` and
+  `verify:version-contract`, which run the contract tests and grep
+  for accidental regressions.
+- **Code review.**
+
+#### Why the validator is not a Cobra hook
+
+A Cobra hook (`PersistentPreRunE` or `RunE`) cannot observe the
+malformed invocations, because Cobra's interception flags short-
+circuit the hook chain before it runs. The pre-parse stage is the
+only layer that sees the raw arguments before Cobra's parser
+processes them. This is the same reasoning that § 11.5 applies to
+the `options` struct: the earlier a stage sits in the pipeline, the
+more it can see.
 
 ---
 
@@ -1718,6 +2063,21 @@ forge/
 | `internal/infra/output` | Human and JSON output formatters |
 | `templates/` | Bundled templates |
 
+Within `internal/cli`, the files are:
+
+| File | Purpose |
+|------|---------|
+| `doc.go` | Package documentation and public contract |
+| `execute.go` | `Execute`, `executeWithOptions`, `options`, `defaultOptions`, `formatError` |
+| `deps.go` | `Dependencies`, `Logger`, `slogLogger`, `noopLogger`, `newLogger`, `buildDependencies` |
+| `exitcodes.go` | Exit code constants and the error-to-code mapping |
+| `root.go` | The root command constructor |
+| `registry.go` | The central command registry |
+| `flags.go` | The global flag registration and readers |
+| `validate.go` | The pre-parse argument validator |
+| `version.go` | The `forge version` handler |
+| `config.go` | The hidden `forge config` placeholder |
+
 ### 13.2 Import Rules
 
 - `internal/domain/*` may not import any other `internal/*` package
@@ -1796,7 +2156,8 @@ behaviour.
    (under 20 lines of body) and follow the pattern in § 11.12.
 2. Define the use case in `internal/app/<name>/`. The service must
    be pure (no `os.*`, no Cobra import).
-3. Register the handler in `newRootCmd`'s command list.
+3. Append the handler's constructor to the registry slice in
+   `internal/cli/registry.go`. See § 11.13.
 4. Add the handler file to `expectedSourceFiles` in
    `internal/cli/structure_test.go`.
 5. Add the handler file to `HANDLER_FILES` in `Taskfile.yml`.
@@ -1816,7 +2177,26 @@ behaviour.
 2. Implement the provider in `internal/infra/<provider>`
 3. Wire it into the CLI
 
-### 15.4 Plugin System
+### 15.4 Adding a Global Flag
+
+1. Write an ADR that names the consumer WBS item and the flag's
+   semantics.
+2. Add the flag-name constant to `internal/cli/flags.go`.
+3. Register the flag in `registerGlobalFlags`.
+4. Add the reader and (if needed) the resolver.
+5. Update § 4.11 of `docs/cli-ux-spec.md`.
+6. Add tests.
+
+### 15.5 Adding a Pre-Parse Rejection
+
+1. Write the rejection's contract in `docs/cli-ux-spec.md`. Name the
+   malformed shape and the correct alternative.
+2. Add a sub-validator to `internal/cli/validate.go`.
+3. Add the sub-validator to the `validateArgs` dispatcher.
+4. Add unit tests in `internal/cli/validate_test.go`.
+5. Add a contract test in `internal/cli/root_test.go`.
+
+### 15.6 Plugin System
 
 A plugin system is not supported in Phase 1. The architecture reserves
 space for future plugins:
@@ -1894,9 +2274,28 @@ between the handler and the service.
 
 ### 16.12 Build Metadata Outside the Leaf Package
 
-The build metadata variables (`Version`, `Commit`, `BuildDate`) live
-in `internal/version` and only there. Defining them elsewhere would
-recreate the import cycle that WBS 4.3.1 broke. See § 11.12.
+The build metadata variables (`Version`, `Commit`, `BuildDate`,
+`Dirty`) live in `internal/version` and only there. Defining them
+elsewhere would recreate the import cycle that WBS 4.3.1 broke. See
+§ 11.12.
+
+### 16.13 `init()`-Based Command Registration
+
+Commands are registered in the `registry` slice in `registry.go`. A
+command file must not append to the registry from an `init()`
+function. See § 11.13.
+
+### 16.14 Speculative Global Flags
+
+A global flag must have a documented consumer in a later WBS item. A
+flag without a consumer is not added. See § 11.14.
+
+### 16.15 Pre-Parse Rejection in a Cobra Hook
+
+Malformed invocations that involve interception flags (`--help`,
+`--version`) cannot be rejected in a Cobra hook, because Cobra
+short-circuits the hook chain. The rejection belongs at the
+pre-parse stage. See § 11.15.
 
 ---
 
@@ -1953,3 +2352,4 @@ begins.
 | 0.2.0 | 2026-10-09 | @thapelomagqazana | Added module list, dependency direction, interface contracts, and data flow. |
 | 0.3.0 | 2026-10-09 | @thapelomagqazana | Refined § 11 to describe the two-boundary execution model introduced by WBS 4.2.2. Added the `Dependencies` struct, the `options`/`Dependencies` split, the transformation, the two testability seams, the two auditable invariants, and the seven rules for extending the model. Renamed § 11 from "The Two-Layer Execution Model" to "The Two-Boundary Execution Model". |
 | 0.4.0 | 2026-10-10 | @thapelomagqazana | Added § 11.12 (Handler / Service Boundary) in response to WBS 4.3.1. Added the reference implementation (`forge version`), the allowed / forbidden table, the enforcement rules, and the rationale for the `internal/version` leaf package. Added § 4.2.2a (Version Service) as a concrete example of the Application module. Updated § 5.3, § 7.2, § 7.4, § 10, § 11.9, § 13, § 16, and the module list to reflect the new service. Added rules for adding a command in § 15.1. |
+| 0.5.0 | 2026-10-10 | @thapelomagqazana | Added § 11.13 (Command Registration) in response to WBS 4.4.1. Documents the central registry, its rules, the four-step procedure for adding a command, and the enforcement. Added § 11.14 (Global Flags) in response to WBS 5.3.1. Documents the three-flag inventory, the persistence, the precedence rule, the rationale for reading flags from the command rather than `Dependencies`, and the ADR requirement for a fourth flag. Added § 11.15 (Pre-Parse Argument Validation) in response to WBS 5.2.2 and WBS 5.2.3. Documents the four rejected shapes, the file's structure, the pipeline placement, the data sources, and the reasoning for the pre-parse stage. Extended § 4.2.1 to list the CLI's files; extended § 7.1 and § 10 to show the pre-parse validation stage; extended § 11.9's related-files table; added § 15.4 and § 15.5 (adding a global flag, adding a pre-parse rejection); extended § 16 with three new anti-patterns (init-based registration, speculative flags, rejection in a Cobra hook). |

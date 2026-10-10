@@ -185,6 +185,66 @@ Run 'forge <command> --help' for details on any command.`
 // where the root is a dispatcher rather than a runnable command
 // itself.
 //
+// # Command lifecycle hook
+//
+// The root command installs a PersistentPreRunE hook
+// (initializeCommandEnvironment, defined in hooks.go). The hook runs
+// after Cobra parses the arguments and before the dispatched
+// subcommand's RunE. It is reserved for the cross-cutting concerns
+// that must initialize uniformly across every command:
+//
+//   - Configuration loading (WBS 8.0).
+//   - Logger initialization (WBS 12.0).
+//
+// In Phase 2 the hook is a no-op stub. The hook point is claimed
+// before any subcommand might be tempted to use it for a local
+// purpose.
+//
+// No subcommand may define its own PersistentPreRunE. A
+// subcommand-level hook would override the root's hook for that
+// subcommand's subtree, and the cross-cutting initialization would
+// be silently skipped. The rule is enforced by
+// TestHooks_NoSubcommandOverrides in hooks_test.go and by the
+// Taskfile target verify:hooks. See docs/architecture.md § 11.16 for
+// the full rationale and docs/cli-ux-spec.md § 4.13 for the
+// user-facing description.
+//
+// # Global flags
+//
+// The three persistent global flags (--verbose, --quiet, --config)
+// are registered by registerGlobalFlags, called below. The
+// registration, the flag-name constants, and the helpers that read
+// the parsed values live in flags.go. The inventory is frozen for
+// Phase 2; adding a fourth flag requires an ADR. See
+// docs/cli-ux-spec.md § 4.12 for the semantics and precedence.
+//
+// # Where malformed invocations are rejected
+//
+// Forge's help contract (docs/cli-ux-spec.md § 4.9) rejects two
+// invocations that Cobra would otherwise accept silently:
+//
+//   - `forge --help <cmd>` — the --help flag takes no argument.
+//   - `forge help <unknown>` — an unknown help topic.
+//
+// Forge's version contract (docs/cli-ux-spec.md § 4.10) rejects
+// one more:
+//
+//   - `forge --version <arg>` — the --version flag takes no
+//     argument.
+//
+// Forge's global-flag contract (docs/cli-ux-spec.md § 4.11) rejects
+// a fourth:
+//
+//   - `forge --config` with no value — the flag requires a value.
+//
+// All four rejections are implemented in validateArgs
+// (validate.go), which runs in executeWithOptions before Cobra
+// parses the arguments. The checks cannot live in this file:
+// Cobra's --help and --version interception run before any hook, so
+// a PersistentPreRunE or RunE here would never see the malformed
+// invocations. Placing the checks before Cobra's parser is the only
+// point at which all four cases are observable.
+//
 // # Cobra configuration
 //
 // SilenceUsage and SilenceErrors are set to true, so that Forge
@@ -279,8 +339,30 @@ func newRootCmd(deps Dependencies) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 
+		// PersistentPreRunE is reserved for cross-cutting concerns
+		// that must initialize uniformly across every subcommand:
+		// configuration loading (WBS 8.0) and logger initialization
+		// (WBS 12.0). In Phase 2 the hook is a no-op stub. The hook
+		// point is claimed before any subcommand might be tempted
+		// to use it for a local purpose.
+		//
+		// No subcommand may define its own PersistentPreRunE; a
+		// subcommand-level hook would override the root's hook for
+		// that subcommand's subtree, and the cross-cutting
+		// initialization would be silently skipped. The rule is
+		// enforced by TestHooks_NoSubcommandOverrides in
+		// hooks_test.go and by the Taskfile target verify:hooks.
+		// See hooks.go for the hook's full documentation and
+		// docs/architecture.md § 11.16 for the pattern.
+		PersistentPreRunE: initializeCommandEnvironment,
+
 		// The handler runs only when Cobra has not dispatched to a
 		// subcommand. See the docstring above for the two cases.
+		//
+		// The handler does not reject the malformed invocations;
+		// those are rejected by validateArgs before Cobra's parser
+		// runs. See the "Where malformed invocations are rejected"
+		// section of the docstring above.
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()
@@ -294,6 +376,15 @@ func newRootCmd(deps Dependencies) *cobra.Command {
 		// before RunE runs. RunE is responsible for validating them.
 		Args: cobra.ArbitraryArgs,
 	}
+
+	// Register the three persistent global flags. The registration
+	// lives in flags.go; the inventory and semantics are documented
+	// in docs/cli-ux-spec.md § 4.11.
+	//
+	// The flags are persistent, so every subcommand inherits them.
+	// `forge --verbose version` and `forge version --verbose` are
+	// equivalent.
+	registerGlobalFlags(root)
 
 	// Override Cobra's default --version template.
 	//

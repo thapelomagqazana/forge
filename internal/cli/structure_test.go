@@ -23,8 +23,9 @@
 //   - Error formatting.
 //
 // Those are tested by the white-box tests in root_test.go,
-// execute_test.go, version_test.go, and deps_test.go, which live in
-// package cli (not cli_test).
+// execute_test.go, version_test.go, deps_test.go, registry_test.go,
+// contract_test.go, validate_test.go, and flags_test.go, which live
+// in package cli (not cli_test).
 //
 // # Why structural tests
 //
@@ -182,9 +183,21 @@ var expectedSourceFiles = map[string]string{
 	// implementation of the handler / service boundary; the
 	// application logic it delegates to lives in
 	// internal/app/version.
-	"version.go":  "WBS 4.3.1 — thin handler for the version command",
+	"version.go": "WBS 4.3.1 — thin handler for the version command",
+
 	"registry.go": "WBS 4.4.1 — central command registry",
 	"config.go":   "WBS 4.4.1 — hidden placeholder for `forge config`",
+
+	// WBS 5.2.2 adds the pre-parse argument validator. It rejects
+	// malformed invocations that Cobra would otherwise accept
+	// silently. See docs/cli-ux-spec.md § 4.10 and § 4.11.
+	"validate.go": "WBS 5.2.2 — pre-parse argument validator",
+
+	// WBS 5.3.1 adds the global flag registration and the helpers
+	// that read the parsed values. The three Phase 2 global flags
+	// are documented in docs/cli-ux-spec.md § 4.12.
+	"flags.go": "WBS 5.3.1 — global flag registration and readers",
+	"hooks.go": "WBS 5.3.2 — PersistentPreRunE hook",
 }
 
 // TestExpectedFilesExist verifies that every file this WBS expects is
@@ -552,9 +565,9 @@ func collectExportedFunctions(t *testing.T, files []string) []string {
 // expectedConstants enumerates every exported constant the package is
 // permitted to expose, along with the WBS item that introduced it.
 //
-// # Two kinds of exported constant
+// # Three kinds of exported constant
 //
-// The map contains two categories of exported constant:
+// The map contains three categories of exported constant:
 //
 //  1. The exit-code constants (ExitSuccess through ExitConflict).
 //     These form a stable numeric vocabulary. They are exported
@@ -566,6 +579,12 @@ func collectExportedFunctions(t *testing.T, files []string) []string {
 //     They are exported because the tests in root_test.go assert on
 //     them and the specification in docs/cli-ux-spec.md § 4.7
 //     quotes them.
+//
+//  3. The global flag-name constants (FlagVerbose, FlagQuiet,
+//     FlagConfig), added by WBS 5.3.1. These form a stable string
+//     vocabulary that the flag readers and the tests reference by
+//     name. The names themselves are part of the CLI's surface:
+//     scripts and documentation use them.
 //
 // # Why the map is explicit
 //
@@ -597,6 +616,16 @@ var expectedConstants = map[string]string{
 	"RootUsage":     "WBS 5.1.1 — frozen usage line",
 	"RootShortDesc": "WBS 5.1.1 — frozen short description (<= 80 chars)",
 	"RootLongDesc":  "WBS 5.1.1 — frozen long description (raw string)",
+
+	// WBS 5.3.1 freezes the three Phase 2 global flag names as
+	// exported constants. They are exported because the flag
+	// readers (verboseRequested, quietRequested, configPath) and
+	// the tests reference them by name. The names themselves are
+	// part of the CLI's surface: scripts and documentation use
+	// them.
+	"FlagVerbose": "WBS 5.3.1 — name of the --verbose global flag",
+	"FlagQuiet":   "WBS 5.3.1 — name of the --quiet global flag",
+	"FlagConfig":  "WBS 5.3.1 — name of the --config global flag",
 }
 
 // TestOnlyExpectedConstantsAreExported verifies that the package
@@ -604,9 +633,10 @@ var expectedConstants = map[string]string{
 // nothing more.
 //
 // The exported constants form a stable vocabulary that downstream
-// code and tests may reference by name. The vocabulary has two
-// parts: the exit-code integers and the root identity strings. Both
-// are enumerated in the expectedConstants map above.
+// code and tests may reference by name. The vocabulary has three
+// parts: the exit-code integers, the root identity strings, and the
+// global flag names. All three are enumerated in the
+// expectedConstants map above.
 //
 // Adding a new exported constant requires updating the map. The
 // update is a review checkpoint: it forces the contributor to
@@ -829,6 +859,8 @@ func TestTestFilePackageDeclarations(t *testing.T) {
 		"deps_test.go":     "package cli",
 		"registry_test.go": "package cli",
 		"contract_test.go": "package cli",
+		"validate_test.go": "package cli",
+		"flags_test.go":    "package cli",
 
 		// Black-box: read source files as data.
 		"structure_test.go": "package cli_test",
