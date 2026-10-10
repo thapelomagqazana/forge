@@ -439,19 +439,29 @@ func TestFormatError_GivenNilError_ReturnsEmptyString(t *testing.T) {
 	}
 }
 
-// TestFormatError_GivenError_ReturnsMessage verifies that a
-// non-nil error formats as its message.
+// TestFormatError_GivenError_ReturnsFormattedMessage verifies that
+// formatError renders a plain error into the frozen error message
+// format (WBS 7.3.2).
 //
-// In WBS 4.2.1, the format is simply the error's own message. When
-// WBS 10.0 introduces the structured error model, this test will be
-// extended to assert on the structured format.
-func TestFormatError_GivenError_ReturnsMessage(t *testing.T) {
+// A plain error with no suggestion renders as a single line
+// prefixed with "Error: ". There is no Suggestion block.
+//
+// # Why the test name changed
+//
+// The test was previously named
+// TestFormatError_GivenError_ReturnsMessage and asserted that
+// formatError returned the error's message unchanged. WBS 7.3.2
+// changed the contract; formatError now renders the frozen format.
+// The test name was updated to describe the new behaviour, and the
+// assertion was updated to match.
+func TestFormatError_GivenError_ReturnsFormattedMessage(t *testing.T) {
 	t.Parallel()
 
 	err := errors.New("test error")
-	want := "test error"
+	got := formatError(err)
+	want := "Error: test error"
 
-	if got := formatError(err); got != want {
+	if got != want {
 		t.Errorf("formatError: got %q, want %q", got, want)
 	}
 }

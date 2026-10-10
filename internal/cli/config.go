@@ -50,12 +50,46 @@ import (
 // handler: it returns an error and does nothing else. When WBS 8.x
 // replaces the placeholder, the new handler will follow the same
 // pattern as version.go.
+//
+// # Following the per-command help contract
+//
+// The per-command help contract (WBS 7.1.3) requires every command
+// to declare:
+//
+//   - A Short description, 60 runes or fewer.
+//   - An Args validator (set; nil is not permitted).
+//   - An Example, if the command takes arguments, has
+//     command-specific flags, or has subcommands.
+//
+// The placeholder takes no arguments (Args: cobra.NoArgs) and has
+// no command-specific flags of its own. It therefore does not
+// strictly require an Example. It declares one anyway, because:
+//
+//   - The rendered help output is more useful with an Example than
+//     without one. A user who runs `forge config --help` sees what
+//     a correct invocation looks like.
+//   - The Example field is cheap; its absence is not.
+//   - When WBS 8.x replaces the placeholder with a command that
+//     does take arguments, the Example field is already in the
+//     right shape.
+//
+// The Short and the Example are rendered by `forge config --help`
+// even though the command is Hidden. The Hidden flag affects
+// `forge --help`'s command list; it does not affect the command's
+// own help output.
 func newConfigCmd(deps Dependencies) *cobra.Command {
 	return &cobra.Command{
-		Use:    "config",
-		Short:  "Manage Forge configuration (not yet implemented)",
-		Hidden: true,
+		Use:   "config",
+		Short: "Manage Forge configuration",
+		Long: `Manage the Forge configuration file (forge.yaml).
+
+The command is not yet implemented. It is registered in the command
+tree so that the help system is complete; the implementation lands
+in WBS 8.x.`,
+		Example: `  forge config
+  forge config --help`,
 		Args:   cobra.NoArgs,
+		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return errors.New("forge config: not yet implemented")
 		},

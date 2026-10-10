@@ -196,8 +196,15 @@ var expectedSourceFiles = map[string]string{
 	// WBS 5.3.1 adds the global flag registration and the helpers
 	// that read the parsed values. The three Phase 2 global flags
 	// are documented in docs/cli-ux-spec.md § 4.12.
-	"flags.go": "WBS 5.3.1 — global flag registration and readers",
-	"hooks.go": "WBS 5.3.2 — PersistentPreRunE hook",
+	"flags.go":            "WBS 5.3.1 — global flag registration and readers",
+	"hooks.go":            "WBS 5.3.2 — PersistentPreRunE hook",
+	"help_content.go":     "WBS 7.1.3 — per-command help content contract constants and helpers",
+	"metadata.go":         "WBS 7.2.1 — command metadata contract rules and helpers",
+	"errors.go":           "WBS 7.3.1 — invalid-command contract constants",
+	"examples.go":         "WBS 7.2.2 — Examples convention rules and helpers",
+	"stream_boundary.go":  "WBS 7.4.1 — output stream boundary rules and fixtures",
+	"ascii_policy.go":     "WBS 7.4.2 — ASCII-only output policy predicate and constants",
+	"flag_interaction.go": "WBS 7.4.3 - global flag interaction contract rules and fixtures",
 }
 
 // TestExpectedFilesExist verifies that every file this WBS expects is

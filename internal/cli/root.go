@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"fmt"
-
 	"github.com/spf13/cobra"
 
 	"github.com/thapelomagqazana/forge/internal/app/version"
@@ -58,13 +56,29 @@ import (
 //     a pointer to `<command> --help`.
 //
 //   - None of the four contains emojis, colour codes, or tabs.
-//     Colour and emphasis belong to the terminal, not to the CLI's
-//     identity strings.
+//
+//   - All four are ASCII-only. Every byte is in the ASCII
+//     printable range (0x20 through 0x7e). Non-ASCII characters,
+//     including typographic punctuation (em dash, en dash, curly
+//     quotes) and symbol glyphs (right arrow, check mark), are
+//     forbidden.
+//
+//     The ASCII-only rule is the policy of WBS 7.4.2, enforced by
+//     internal/cli/ascii_policy_test.go. An earlier draft of these
+//     strings used an em dash in RootShortDesc and right arrows in
+//     RootLongDesc; both were replaced with ASCII equivalents
+//     ("-" and "->" respectively) when the policy was frozen.
+//
+//     A future change to a constant that introduces a non-ASCII
+//     byte fails TestASCIIPolicy_RootIdentityStrings. The fix is
+//     to replace the byte with an ASCII equivalent; the policy
+//     admits no exceptions without an ADR.
 //
 // # Where each string is used
 //
 //	RootName        the first word of cobra.Command.Use
-//	RootUsage       the "Usage:" line in help output
+//	RootUsage       the "Usage:" line in help output, and the
+//	                cobra.Command.Use field
 //	RootShortDesc   parent help and documentation summaries
 //	RootLongDesc    the body of `forge --help`
 //
@@ -82,24 +96,27 @@ const (
 	// the string a user types to invoke the CLI.
 	RootName = "forge"
 
-	// RootUsage is the usage line that appears in help output. It
-	// describes the root command as a dispatcher with subcommands.
-	// The "[command]" suffix is the conventional syntax for an
-	// optional positional argument.
+	// RootUsage is the usage line that appears in help output and
+	// is assigned to cobra.Command.Use. It describes the root
+	// command as a dispatcher with subcommands. The "[command]"
+	// suffix is the conventional syntax for an optional positional
+	// argument.
 	//
-	// The full Use field on the cobra.Command is composed from
-	// RootName and RootUsage; see newRootCmd for the composition.
-	RootUsage = "forge [command]"
+	// This constant is the single source of truth for the Use
+	// field. newRootCmd assigns it directly; the earlier form
+	// (RootName + " [command]") is equivalent in output but
+	// duplicates the string, which the constant exists to prevent.
+	RootUsage = RootName + " [command]"
 
 	// RootShortDesc is the one-line description of the CLI. It
 	// appears in a parent's help output (if Forge were ever a
 	// subcommand of another tool) and in documentation summaries.
 	// It is 80 characters or fewer.
 	//
-	// The em dash (—) is the only non-ASCII character permitted in
-	// the identity strings. It is used as a separator between the
-	// product name and the tagline, and it is intentional.
-	RootShortDesc = "Forge — Engineering Foundations as Code"
+	// The hyphen (-) separates the product name from the tagline.
+	// An earlier draft used an em dash (U+2014); the ASCII-only
+	// policy (WBS 7.4.2) requires the hyphen.
+	RootShortDesc = "Forge - Engineering Foundations as Code"
 
 	// RootLongDesc is the extended description of the CLI. It
 	// appears as the body of `forge --help`, above the "Usage:"
@@ -107,7 +124,7 @@ const (
 	//
 	// The string is a raw literal (backticks), so its line breaks
 	// and indentation are preserved exactly. The indentation of
-	// the "CREATE → ..." block is deliberate: it is a code block
+	// the "CREATE -> ..." block is deliberate: it is a code block
 	// in the output.
 	//
 	// The string ends with a pointer to `<command> --help`. The
@@ -115,15 +132,20 @@ const (
 	// subcommand. Every version of this string must end with some
 	// equivalent pointer; the test in root_test.go asserts the
 	// presence of the substring "<command> --help".
+	//
+	// The right arrow is rendered as ASCII "->" (hyphen followed
+	// by greater-than). An earlier draft used the Unicode arrow
+	// (U+2192); the ASCII-only policy (WBS 7.4.2) requires the
+	// ASCII form.
 	RootLongDesc = `Forge is a cross-platform CLI for defining, generating,
 validating, and evolving software project foundations as code.
 
 The core loop:
 
-    CREATE  →  forge new
-    VERIFY  →  forge check
-    EXPLAIN →  forge explain
-    EVOLVE  →  forge update
+    CREATE  ->  forge new
+    VERIFY  ->  forge check
+    EXPLAIN ->  forge explain
+    EVOLVE  ->  forge update
 
 Run 'forge <command> --help' for details on any command.`
 )
@@ -303,10 +325,11 @@ Run 'forge <command> --help' for details on any command.`
 // internal/cli/version.go for the reference implementation.
 func newRootCmd(deps Dependencies) *cobra.Command {
 	root := &cobra.Command{
-		// Use is composed from RootName and RootUsage. The two
-		// constants are the source of truth; the composition is
-		// the only place they are joined.
-		Use: RootName + " [command]",
+		// Use is the RootUsage constant, which is defined as
+		// RootName + " [command]". The constant is the source of
+		// truth; the earlier form duplicated the composition here,
+		// which the constant exists to prevent.
+		Use: RootUsage,
 
 		Short: RootShortDesc,
 		Long:  RootLongDesc,
@@ -339,6 +362,18 @@ func newRootCmd(deps Dependencies) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 
+		// SuggestionsMinimumDistance controls Cobra's "Did you mean
+		// this?" suggestion mechanism. When a user types an unknown
+		// command whose name is within this edit distance of a
+		// known command, Cobra adds a suggestion to the error.
+		//
+		// The value is defined in errors.go and documented in
+		// docs/cli-ux-spec.md "Invalid Command Behaviour" (WBS
+		// 7.3.1). The explicit assignment here makes the contract
+		// visible in the root command's configuration and pins the
+		// value against a future Cobra default change.
+		SuggestionsMinimumDistance: suggestionsMinimumDistance,
+
 		// PersistentPreRunE is reserved for cross-cutting concerns
 		// that must initialize uniformly across every subcommand:
 		// configuration loading (WBS 8.0) and logger initialization
@@ -367,8 +402,7 @@ func newRootCmd(deps Dependencies) *cobra.Command {
 			if len(args) == 0 {
 				return cmd.Help()
 			}
-			return fmt.Errorf("unknown command %q for %q",
-				args[0], cmd.Name())
+			return unknownCommandError(cmd, args[0])
 		},
 
 		// Args is set to ArbitraryArgs so that Cobra passes the
