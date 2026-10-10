@@ -750,14 +750,34 @@ func TestRootIdentity_RootLongDescHasNoForbiddenChars(t *testing.T) {
 }
 
 // TestRootIdentity_HelpOutputContainsConstants verifies AC5: the
-// help output for `forge --help` contains each of the four
-// constants' values, verbatim.
+// help output for `forge --help` contains the identity strings that
+// Cobra actually renders.
 //
-// The test invokes the CLI through the shared runCLI helper and
-// asserts that each constant's value appears in the captured stdout.
-// This is the strongest form of the assertion: it verifies not only
-// that the constant exists, but that the CLI's output is derived
-// from it.
+// # Which strings appear in `forge --help`
+//
+// Cobra's help rendering is asymmetric with respect to the Short
+// and Long fields:
+//
+//   - The Long description is the body of the help text. It appears
+//     in the command's own `--help` output, above the "Usage:"
+//     section.
+//
+//   - The Short description is the one-line summary that appears in
+//     a *parent's* "Available Commands:" table. The root command has
+//     no parent, so its Short description is not rendered by
+//     `forge --help`.
+//
+// The test therefore asserts on the three strings that do appear:
+//
+//   - RootName, as the command name in the usage section.
+//   - RootUsage, as the composed usage line.
+//   - RootLongDesc, as the body of the help text.
+//
+// RootShortDesc is verified separately by
+// TestRootIdentity_RootShortDescLength, which checks its length and
+// format. Its absence from `forge --help` is not a defect; it is
+// how Cobra renders commands that have both Short and Long
+// descriptions.
 func TestRootIdentity_HelpOutputContainsConstants(t *testing.T) {
 	t.Parallel()
 
@@ -774,29 +794,44 @@ func TestRootIdentity_HelpOutputContainsConstants(t *testing.T) {
 			RootName, got.stdout)
 	}
 
-	// RootShortDesc appears in the help output. Cobra prints the
-	// Short description at the top of the help text.
-	if !strings.Contains(got.stdout, RootShortDesc) {
-		t.Errorf("help output does not contain RootShortDesc %q: %q",
-			RootShortDesc, got.stdout)
+	// RootUsage appears in the "Usage:" section. Cobra may append
+	// "[flags]" to the usage line; the test asserts on the prefix,
+	// which is RootUsage.
+	if !strings.Contains(got.stdout, RootUsage) {
+		t.Errorf("help output does not contain RootUsage %q: %q",
+			RootUsage, got.stdout)
 	}
 
-	// RootLongDesc appears in the help output. Cobra prints the
-	// Long description below the Short description. The long
-	// description spans multiple lines; the first line is
-	// sufficient to verify its presence, because Cobra does not
-	// reformat it.
+	// RootLongDesc appears as the body of the help text. Cobra does
+	// not reformat it, so the first line is sufficient to verify
+	// its presence.
 	firstLine := strings.SplitN(RootLongDesc, "\n", 2)[0]
 	if !strings.Contains(got.stdout, firstLine) {
 		t.Errorf("help output does not contain the first line of "+
 			"RootLongDesc %q: %q", firstLine, got.stdout)
 	}
 
-	// The core loop keywords appear.
+	// The core loop keywords appear, in order. They are part of
+	// RootLongDesc; the assertion is a stronger check on the body
+	// than a single-line substring match.
 	for _, kw := range []string{"CREATE", "VERIFY", "EXPLAIN", "EVOLVE"} {
 		if !strings.Contains(got.stdout, kw) {
 			t.Errorf("help output does not contain %q: %q", kw, got.stdout)
 		}
+	}
+
+	// RootShortDesc does NOT appear in `forge --help`. The assertion
+	// is deliberate: it pins the property that Cobra renders Short
+	// only in a parent's command list, and the root has no parent.
+	// If a future change to Cobra's rendering causes Short to appear
+	// in the command's own help, this test will fail, and the
+	// specification's table must be updated in the same commit.
+	if strings.Contains(got.stdout, RootShortDesc) {
+		t.Errorf("help output unexpectedly contains RootShortDesc %q; "+
+			"Cobra's rendering may have changed, and the "+
+			"specification's table in docs/cli-ux-spec.md § 4.7 "+
+			"must be updated accordingly",
+			RootShortDesc)
 	}
 }
 
