@@ -64,3 +64,4 @@ vendor/
 forge-repro-*/
 forge-resolution-*/
 forge
+.task/
