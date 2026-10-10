@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/thapelomagqazana/forge/schemas/version.schema.json",
+  "title": "Forge version output",
+  "description": "The JSON object emitted by `forge version --format json`. Frozen by WBS 6.4.2. Any breaking change to field names requires an ADR.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "commit",
+    "build_date",
+    "dirty"
+  ],
+  "properties": {
+    "version": {
+      "type": "string",
+      "description": "Semantic version of the build, or the empty string for an uninstrumented build. Not validated as semver; the build system is responsible for the format.",
+      "examples": ["v0.1.0", "v1.2.3-rc.1", ""]
+    },
+    "commit": {
+      "type": "string",
+      "description": "Short git SHA of the built commit, or the empty string when built outside a git working tree.",
+      "examples": ["a1b2c3d", ""]
+    },
+    "build_date": {
+      "type": "string",
+      "description": "RFC 3339 UTC timestamp of the build, or the empty string for an uninstrumented build. Not validated as a timestamp by the schema; the build system is responsible for the format.",
+      "examples": ["2026-10-03T14:32:52Z", ""]
+    },
+    "dirty": {
+      "type": "boolean",
+      "description": "True if the build was produced from a working tree with uncommitted changes; false otherwise."
+    }
+  }
+}

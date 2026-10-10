@@ -1,8 +1,9 @@
 // Package cli contains white-box tests for the CLI package.
 //
 // This file tests the version command: its metadata, its delegation
-// to the version application service, its error path, and the
-// structural invariants that keep the handler thin.
+// to the version application service, its error path, the
+// --format flag, and the structural invariants that keep the
+// handler thin.
 //
 // The test file is declared in package cli, not package cli_test,
 // because it needs to reach unexported symbols: newVersionCmd,
@@ -13,7 +14,8 @@
 //
 // This file tests the handler. The application service that the
 // handler calls is tested in internal/app/version/service_test.go,
-// internal/app/version/format_test.go, and
+// internal/app/version/format_test.go,
+// internal/app/version/format_json_test.go, and
 // internal/app/version/buildinfo_test.go. The two layers are tested
 // separately on purpose: the handler's job is to delegate, and the
 // service's job is to produce and format data. A failure in one
@@ -25,7 +27,7 @@
 // subject) and application services (internal/app/version). The
 // handler:
 //
-//   - Parses flags (none yet).
+//   - Parses flags.
 //   - Collects arguments (none allowed).
 //   - Calls the application service.
 //   - Writes the result to deps.Stdout.
@@ -33,14 +35,13 @@
 //
 // # Test organisation
 //
-// As of WBS 4.3.2, the behavioural tests in this file go through the
-// shared runCLI helper in testhelper_test.go rather than constructing
-// a Cobra command directly. The helper exercises the command through
-// the same boundary production code uses (executeWithOptions), which
-// is the property WBS 4.3.2 exists to establish. The structural
-// tests at the bottom of the file are unchanged: they read
-// version.go as data and are indifferent to how the command is
-// invoked.
+// The behavioural tests go through the shared runCLI helper in
+// testhelper_test.go rather than constructing a Cobra command
+// directly. The helper exercises the command through the same
+// boundary production code uses (executeWithOptions), which is the
+// property WBS 4.3.2 exists to establish. The structural tests at
+// the bottom of the file read version.go as data and are
+// indifferent to how the command is invoked.
 //
 // # Why the structural tests strip comments
 //
@@ -62,12 +63,13 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
 
-	"github.com/thapelomagqazana/forge/internal/app/version"
+	appversion "github.com/thapelomagqazana/forge/internal/app/version"
 )
 
 // =============================================================================
@@ -272,26 +274,11 @@ func TestVersionCommand_WritesNothingToStderrOnSuccess(t *testing.T) {
 // compares the two. They must be byte-identical because the handler's
 // only job is to delegate.
 //
-// # Why this test is behavioural, not structural
+// # Why this test goes through FormatAs
 //
-// A structural test would assert on the source of version.go: "the
-// handler calls version.Format exactly once." That test exists
-// (TestVersionHandler_IsThin below). This test asserts the runtime
-// consequence of the delegation: the output is what the service
-// produces. Together, the two catch different failures: the
-// structural test catches "the handler grew a second call"; this test
-// catches "the handler produces different output than the service."
-//
-// # Why the test imports internal/app/version
-//
-// The test calls the service's formatter directly to produce the
-// reference output. Importing the package is the simplest way to do
-// that. An earlier draft attempted to hide the import behind a local
-// wrapper, but the wrapper added indirection without benefit: the
-// import is unambiguous in this file (the package is named `version`,
-// and the file has no other `version` identifier), and calling the
-// exported function directly is clearer than calling a wrapper that
-// calls it.
+// The handler calls appversion.FormatAs, not appversion.Format, so
+// the reference output is produced by FormatAs as well. Calling
+// Format directly would test a different code path.
 func TestVersionCommand_DelegatesToService(t *testing.T) {
 	t.Parallel()
 
@@ -303,11 +290,13 @@ func TestVersionCommand_DelegatesToService(t *testing.T) {
 	}
 
 	// Produce the same output by calling the service directly. The
-	// version command's handler calls version.Format(deps.Stdout,
-	// version.Get()); this test does the same on a fresh buffer.
+	// version command's handler calls
+	// appversion.FormatAs(deps.Stdout, appversion.Get(), format);
+	// this test does the same on a fresh buffer with the default
+	// format.
 	var svcOut bytes.Buffer
-	if err := version.Format(&svcOut, version.Get()); err != nil {
-		t.Fatalf("version.Format: %v", err)
+	if err := appversion.FormatAs(&svcOut, appversion.Get(), appversion.FormatText); err != nil {
+		t.Fatalf("appversion.FormatAs: %v", err)
 	}
 
 	if got.stdout != svcOut.String() {
@@ -315,6 +304,103 @@ func TestVersionCommand_DelegatesToService(t *testing.T) {
 			"handler: %q\n"+
 			"service: %q",
 			got.stdout, svcOut.String())
+	}
+}
+
+// =============================================================================
+// --format flag
+// =============================================================================
+
+// TestVersionCommand_FormatJSON verifies that
+// `forge version --format json` produces valid JSON with the four
+// schema fields.
+func TestVersionCommand_FormatJSON(t *testing.T) {
+	t.Parallel()
+
+	got := runCLI(t, []string{"version", "--format", "json"}, nil)
+
+	if got.exitCode != ExitSuccess {
+		t.Fatalf("exit code: got %d, want %d\nstderr: %s",
+			got.exitCode, ExitSuccess, got.stderr)
+	}
+	if got.stderr != "" {
+		t.Errorf("stderr should be empty on success: %q", got.stderr)
+	}
+
+	// The output must be valid JSON.
+	var m map[string]any
+	if err := json.Unmarshal([]byte(got.stdout), &m); err != nil {
+		t.Fatalf("output is not valid JSON: %v\noutput: %s", err, got.stdout)
+	}
+
+	for _, key := range []string{"version", "commit", "build_date", "dirty"} {
+		if _, ok := m[key]; !ok {
+			t.Errorf("field %q missing from output: %s", key, got.stdout)
+		}
+	}
+}
+
+// TestVersionCommand_FormatJSONEqualsSign verifies that
+// `--format=json` and `--format json` are equivalent.
+func TestVersionCommand_FormatJSONEqualsSign(t *testing.T) {
+	t.Parallel()
+
+	spaced := runCLI(t, []string{"version", "--format", "json"}, nil)
+	equals := runCLI(t, []string{"version", "--format=json"}, nil)
+
+	if spaced.stdout != equals.stdout {
+		t.Errorf("--format json and --format=json differ:\n"+
+			"spaced: %q\nequals: %q", spaced.stdout, equals.stdout)
+	}
+	if spaced.exitCode != equals.exitCode {
+		t.Errorf("exit codes differ: spaced=%d equals=%d",
+			spaced.exitCode, equals.exitCode)
+	}
+}
+
+// TestVersionCommand_UnknownFormat verifies that an unknown
+// --format value exits with ExitUsage and writes a diagnostic to
+// stderr that names the offending value.
+func TestVersionCommand_UnknownFormat(t *testing.T) {
+	t.Parallel()
+
+	got := runCLI(t, []string{"version", "--format", "yaml"}, nil)
+
+	if got.exitCode != ExitUsage {
+		t.Errorf("exit code: got %d, want %d (ExitUsage)",
+			got.exitCode, ExitUsage)
+	}
+	if got.stdout != "" {
+		t.Errorf("stdout should be empty on failure: %q", got.stdout)
+	}
+	if got.stderr == "" {
+		t.Error("stderr should contain a diagnostic")
+	}
+	if !strings.Contains(got.stderr, "yaml") {
+		t.Errorf("stderr does not mention the offending value: %q", got.stderr)
+	}
+}
+
+// TestVersionCommand_DefaultFormatIsText verifies that
+// `forge version` without --format produces the text format from
+// WBS 6.4.1, not the JSON format.
+func TestVersionCommand_DefaultFormatIsText(t *testing.T) {
+	t.Parallel()
+
+	got := runCLI(t, []string{"version"}, nil)
+
+	if got.exitCode != ExitSuccess {
+		t.Fatalf("exit code: got %d, want %d",
+			got.exitCode, ExitSuccess)
+	}
+
+	// The text format begins with "forge" and contains colons;
+	// the JSON format begins with "{" and contains quoted keys.
+	if !strings.HasPrefix(got.stdout, "forge") {
+		t.Errorf("default output does not start with 'forge': %q", got.stdout)
+	}
+	if strings.HasPrefix(got.stdout, "{") {
+		t.Errorf("default output is JSON, want text: %q", got.stdout)
 	}
 }
 
@@ -337,7 +423,9 @@ func TestVersionCommand_DelegatesToService(t *testing.T) {
 //
 // The test reads version.go from disk, strips comments, and asserts:
 //
-//   - The handler body calls version.Format exactly once.
+//   - The handler body calls appversion.FormatAs exactly once.
+//   - The handler does not call appversion.Format directly.
+//   - The handler does not call appversion.WriteJSON directly.
 //   - The code contains no direct writes to process-global streams.
 //   - The code contains no fmt.Fprintln, fmt.Fprintf, fmt.Println,
 //     or fmt.Printf calls.
@@ -345,18 +433,40 @@ func TestVersionCommand_DelegatesToService(t *testing.T) {
 //
 // If any assertion fails, the failure message cites the specific
 // token and the WBS acceptance criterion it violates.
+//
+// # Why FormatAs and not Format
+//
+// WBS 6.3.1 wrote the handler against appversion.Format, the
+// text-only formatter. WBS 6.4.2 introduced appversion.FormatAs as
+// the dispatcher and moved the text formatter behind it. The
+// handler now calls FormatAs; the Format function still exists in
+// the service but is not called from the handler.
+//
+// The two zero-count assertions below close a hole: a future
+// contributor could add a direct call to Format or WriteJSON
+// alongside the FormatAs call, and the first assertion would still
+// pass.
 func TestVersionHandler_IsThin(t *testing.T) {
 	t.Parallel()
 
 	content := readFile(t, "version.go")
 	code := stripComments(content)
 
-	// Exactly one call to the service's formatter. A second call
-	// would mean the handler is doing two things; the correct place
-	// for a second call is inside the service.
-	if got := strings.Count(code, "version.Format("); got != 1 {
-		t.Errorf("handler contains %d calls to version.Format; want 1",
-			got)
+	// Exactly one call to the service's dispatcher.
+	if got := strings.Count(code, "appversion.FormatAs("); got != 1 {
+		t.Errorf("handler contains %d calls to appversion.FormatAs; want 1", got)
+	}
+
+	// The handler must not call the lower-level formatters directly.
+	// A direct call would bypass the dispatcher and duplicate its
+	// job.
+	if got := strings.Count(code, "appversion.Format("); got != 0 {
+		t.Errorf("handler contains %d calls to appversion.Format; want 0 "+
+			"(the handler must go through appversion.FormatAs)", got)
+	}
+	if got := strings.Count(code, "appversion.WriteJSON("); got != 0 {
+		t.Errorf("handler contains %d calls to appversion.WriteJSON; want 0 "+
+			"(the handler must go through appversion.FormatAs)", got)
 	}
 
 	// Forbidden tokens. Each is a violation of a specific rule.
@@ -424,9 +534,36 @@ func TestVersionHandler_ReturnsErrorNotExit(t *testing.T) {
 }
 
 // TestVersionHandler_OnlyCallsDocumentedService verifies that the
-// handler calls only the service's exported API. It must not call
-// unexported helpers, and it must not reach into the service's
-// internals.
+// handler references only the service's documented API. It must
+// not call unexported helpers, and it must not reach into the
+// service's internals.
+//
+// # The allowlist
+//
+// The four allowed tokens are the handler's legitimate touch
+// points on the service:
+//
+//   - appversion.Get             — the read accessor (WBS 6.3.1).
+//   - appversion.FormatAs        — the format dispatcher (WBS 6.4.2).
+//   - appversion.ErrUnknownFormat — the sentinel error the handler
+//     inspects (WBS 6.4.2).
+//   - appversion.FormatText      — the default format value for the
+//     --format flag (WBS 6.4.2).
+//
+// Any other reference to the service is a boundary violation. The
+// handler must not, for example, call appversion.WriteJSON directly
+// (that is the dispatcher's job), nor reach into an unexported
+// helper.
+//
+// # How the scan works
+//
+// The test finds every occurrence of the string "appversion." in
+// the comment-stripped source, extracts the identifier that follows
+// it (up to the next non-identifier character), and checks it
+// against the allowlist. A call like appversion.FormatAs is
+// captured as "appversion.FormatAs(" (with the paren) so that the
+// test can distinguish a call from a non-call reference such as
+// appversion.FormatText used as a value.
 func TestVersionHandler_OnlyCallsDocumentedService(t *testing.T) {
 	t.Parallel()
 
@@ -434,11 +571,13 @@ func TestVersionHandler_OnlyCallsDocumentedService(t *testing.T) {
 	code := stripComments(content)
 
 	allowed := map[string]bool{
-		"version.Get(":    true,
-		"version.Format(": true,
+		"appversion.Get(":             true,
+		"appversion.FormatAs(":        true,
+		"appversion.ErrUnknownFormat": true,
+		"appversion.FormatText":       true,
 	}
 
-	const prefix = "version."
+	const prefix = "appversion."
 	rest := code
 	for {
 		idx := strings.Index(rest, prefix)
@@ -456,8 +595,9 @@ func TestVersionHandler_OnlyCallsDocumentedService(t *testing.T) {
 		token := rest[:end]
 		if !allowed[token] {
 			t.Errorf("version.go references %q; "+
-				"handler must call only version.Get and "+
-				"version.Format (the service's documented API)",
+				"handler must call only the service's documented API "+
+				"(appversion.Get, appversion.FormatAs, "+
+				"appversion.ErrUnknownFormat, appversion.FormatText)",
 				token)
 		}
 		rest = rest[end:]
