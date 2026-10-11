@@ -1,41 +1,120 @@
-// Package config defines the Forge configuration model.
-//
-// In Phase 2, this package contains only the Config struct that the
-// Dependencies injection struct references. The struct is empty.
-// WBS 8.0 introduces the configuration loading and validation logic;
-// WBS 8.2.1 freezes the schema.
-//
-// # Why the struct is empty in Phase 2
-//
-// Dependencies needs a field to hold the resolved configuration, but
-// the configuration subsystem does not exist yet. Rather than define
-// the field as `any` (which would lose type safety) or leave it out
-// (which would require changing the struct later), the Config struct
-// is defined now and populated later.
-//
-// An empty struct is a deliberate placeholder. It has zero size, it
-// carries no data, and it can be replaced with a populated struct
-// without changing any caller.
-//
-// # Import direction
-//
-// This package must not import any other internal package except
-// other packages under internal/config. It is a leaf of the domain
-// layer, and it must remain importable by every other domain package
-// without creating cycles.
 package config
 
-// Config is the resolved Forge configuration for a single invocation.
+// Config is the CLI configuration for Forge.
 //
-// The struct is empty in Phase 2. WBS 8.2.1 introduces the first
-// fields (LogLevel, OutputFormat, ConfigPath). The fields are added
-// without changing the type's name or its import path, so existing
-// callers (notably the Dependencies struct) continue to compile.
+// # Scope
 //
-// # Zero value
+// The type is deliberately minimal. CLI configuration describes how
+// the CLI behaves; it does not describe the project the CLI operates
+// on. Project configuration belongs to the project configuration
+// subsystem (Blueprint, Phase 3). See the package docstring for the
+// full scope contract.
 //
-// The zero value of Config is valid. It represents "no configuration
-// was loaded, defaults apply". Code that reads Config must therefore
-// handle the zero value gracefully.
+// # The frozen schema (WBS 8.2.1)
+//
+// The type has three fields: two configuration values and one piece
+// of metadata.
+//
+//	Field           Type    Allowed values            Default  YAML key        Env var
+//	LogLevel        string  debug, info, warn, error  "info"   log_level       FORGE_LOG_LEVEL
+//	OutputFormat    string  text, json                "text"   output_format   FORGE_OUTPUT_FORMAT
+//	SourcePath      string  (metadata)                ""       (not in file)   (not in env)
+//
+// The schema is frozen. Adding a field requires an ADR. See the
+// schema test (schema_test.go) for the mechanical assertions.
+//
+// # Allowed values
+//
+// Both configuration fields hold strings from enumerated sets. The
+// allowed values are declared as constants in this package. A future
+// loader validates the file's values against the constants; an
+// unknown value produces a validation error.
+//
+// The enumerations are case-insensitive on input, normalised to
+// lowercase on output. The loader is responsible for the
+// normalisation; the type holds whatever the loader gives it.
+//
+// # The metadata field
+//
+// SourcePath is not a configuration value. It is a resolution
+// result: the loader writes it after resolving the file's path.
+// The field's YAML tag is `yaml:"-"` to declare that it is not read
+// from the file.
+//
+// An empty SourcePath means the config was not loaded from a file;
+// the other fields hold their default values.
+//
+// # Why a value type
+//
+// The type has three string fields and no identity. Two Config
+// values with the same field values are interchangeable. The type
+// is used as a value in `Dependencies.Config` (see
+// internal/cli/deps.go); a value type makes the type comparable
+// with ==, which tests use, and avoids the nil-pointer question
+// that a pointer type would introduce.
+//
+// # Why struct tags
+//
+// The two configuration fields carry `yaml:` struct tags. The tags
+// are the schema's machine-readable form: a future loader uses
+// them to map YAML keys to fields. The mapping is part of the
+// schema; a change to a tag is a schema change and requires an
+// ADR.
+//
+// The tags use snake_case, matching the schema's YAML key
+// convention. SourcePath's tag is `yaml:"-"`, which declares that
+// the field is not read from or written to the YAML document.
+//
+// # Why no json tags
+//
+// The type is not directly serialized to JSON. A future
+// `forge config --format json` command serializes a
+// command-specific view of the config, not the Config type itself.
+// The view is a separate type in the command's package; it carries
+// its own tags. Keeping the Config type free of JSON tags means the
+// type's shape is not coupled to any command's output format.
 type Config struct {
+	// LogLevel controls the verbosity of diagnostic output.
+	//
+	// Allowed values are the LogLevel* constants:
+	//
+	//	"debug"  keep everything
+	//	"info"   keep INFO, WARN, ERROR (the default)
+	//	"warn"   keep WARN, ERROR
+	//	"error"  keep ERROR only
+	//
+	// The zero value (empty string) means "use the default level",
+	// which is LogLevelInfo.
+	//
+	// The value is not validated by this package. A future loader
+	// validates it against the constants; a consumer that reads
+	// the field treats an unrecognised value as the default.
+	LogLevel string `yaml:"log_level"`
+
+	// OutputFormat is the default format for command output.
+	//
+	// Allowed values are the OutputFormat* constants:
+	//
+	//	"text"  the machine-friendly line-oriented format
+	//	"json"  the machine-readable JSON format
+	//
+	// The zero value (empty string) means "use the command's
+	// default format".
+	//
+	// The value is not validated by this package. A future loader
+	// validates it against the constants; a consumer that reads
+	// the field treats an unrecognised value as the command's
+	// default.
+	OutputFormat string `yaml:"output_format"`
+
+	// SourcePath is the path the configuration was loaded from.
+	//
+	// The field is metadata, not a configuration value. It is not
+	// read from the config file; the loader writes it after
+	// resolving the file's path. The YAML tag `-` declares that
+	// the field is not part of the YAML document.
+	//
+	// An empty SourcePath means the config was not loaded from a
+	// file; the other fields hold their default values.
+	SourcePath string `yaml:"-"`
 }

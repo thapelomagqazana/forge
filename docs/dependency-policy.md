@@ -2,11 +2,11 @@
 
 - **Document type:** Policy
 - **Status:** Draft
-- **Version:** 0.2.0
+- **Version:** 0.3.0
 - **Author:** @thapelomagqazana
 - **Created:** 2026-10-09
-- **Last Updated:** 2026-10-10
-- **Supersedes:** 0.1.0
+- **Last Updated:** 2026-10-11
+- **Supersedes:** 0.2.0
 - **Superseded by:** —
 
 ---
@@ -381,6 +381,105 @@ not Phase 2.
 **Upgrade cadence:** Reviewed quarterly, aligned with the general
 dependency review cycle described in § 4.5.
 
+### github.com/spf13/pflag
+
+| Attribute           | Value                                                |
+|---------------------|------------------------------------------------------|
+| Module path         | `github.com/spf13/pflag`                             |
+| Pinned version      | `v1.0.5`                                             |
+| License             | BSD-3-Clause                                         |
+| Maintainer          | Steve Francia and contributors                       |
+| First introduced    | WBS 2.4.1                                            |
+| ADR                 | [ADR-006](decisions/ADR-006-cobra-cli-framework.md)  |
+| Purpose             | POSIX/GNU-style flag parsing                         |
+| Last reviewed       | 2026-10-10                                           |
+
+**Why pflag:** pflag is a first-class part of Cobra's public API.
+Cobra exposes `cobra.Command.Flags()` as a `*pflag.FlagSet`, and any
+code that inspects or iterates a command's flags names pflag types
+(for example, `*pflag.Flag`). The Go toolchain classifies pflag as
+a direct dependency because of those references, even though Forge
+did not choose it independently. See ADR-006.
+
+**Transitive dependencies:** None. pflag depends only on the Go
+standard library.
+
+**Upgrade criteria:**
+
+- **Patch upgrades**: permitted if the release notes contain only bug
+  fixes and no API changes. No ADR required.
+- **Minor upgrades**: permitted if the release notes do not indicate
+  breaking changes. A brief ADR is required.
+- **Major upgrades**: require a full ADR with a migration plan.
+
+pflag has not released a major version beyond v1.x. When v2.0 is
+released, its upgrade will be treated as a Phase 4-or-later concern.
+
+**Upgrade cadence:** Reviewed quarterly.
+
+### gopkg.in/yaml.v3
+
+| Attribute           | Value                                                |
+|---------------------|------------------------------------------------------|
+| Module path         | `gopkg.in/yaml.v3`                                   |
+| Pinned version      | `v3.0.1`                                             |
+| License             | MIT and Apache-2.0 (dual-licensed)                   |
+| Maintainer          | Canonical Ltd. and the go-yaml contributors          |
+| First introduced    | WBS 8.4.2                                            |
+| ADR                 | [ADR-007](decisions/ADR-007-yaml-parsing-library.md) |
+| Purpose             | YAML parsing for the config file loader              |
+| Last reviewed       | 2026-10-11                                           |
+
+**Why yaml.v3:** Forge's config file (`forge.yaml`) is YAML. The
+standard library has no YAML parser; the alternatives are to write
+one (out of scope: the YAML specification is large and its edge
+cases are subtle), to use a different format (out of scope: the
+format is fixed by `docs/forge-yaml-spec.md`), or to depend on a
+library. `gopkg.in/yaml.v3` is the de facto YAML library for Go,
+maintained by Canonical, used by Kubernetes, Docker Compose, GitHub
+Actions, and the Go toolchain's own `go test` reporting. It is a
+direct dependency of the config package (WBS 8.4.2).
+
+The library provides three features the loader depends on:
+
+1. **Strict field matching** via `Decoder.KnownFields(true)`, which
+   rejects unknown YAML keys. This is what makes a typo in
+   `forge.yaml` a load-time error instead of a silently-ignored
+   setting.
+2. **Typed unmarshalling** into a struct, with type-mismatch errors
+   that name the offending field.
+3. **Line and column information** in syntax errors, which the
+   loader surfaces in the E3 error message.
+
+See ADR-007 for the alternatives considered (a hand-written parser,
+`ghodss/yaml`, `sigs.k8s.io/yaml`, and a JSON config format).
+
+**Transitive dependencies:** None. `gopkg.in/yaml.v3` depends only on
+the Go standard library. The `v2` and `v3` modules share a source
+tree; the `v3` module path is `gopkg.in/yaml.v3`, and the version is
+`v3.0.1` (the module's tag, not a semantic version of the form
+`v3.x.y`). The `v3.0.1` value is an exact tag, not a pseudo-version,
+and it satisfies the V2 pin rule.
+
+**Upgrade criteria:**
+
+- **Patch upgrades** (e.g., `v3.0.1` → `v3.0.2`): permitted if the
+  release notes contain only bug fixes and no API changes. No ADR
+  required.
+- **Minor upgrades** (within `v3.x`): permitted if the release notes
+  do not indicate breaking changes. A brief ADR is required.
+- **Major upgrades** (`v3.x` → `v4.x`): require a full ADR with a
+  migration plan. yaml.v3 is the current major version; a future
+  v4 would be treated as a Phase 4-or-later concern.
+
+**Upgrade cadence:** Reviewed quarterly, aligned with the general
+dependency review cycle described in § 4.5.
+
+**CVE history:** `gopkg.in/yaml.v3` v3.0.0 fixed CVE-2022-28948, a
+denial-of-service vulnerability in the decoder. The pinned version
+`v3.0.1` includes the fix. The registry's "Last reviewed" field is
+updated when the library's security advisories are re-checked.
+
 ---
 
 ## 8. Module resolution policy
@@ -444,6 +543,7 @@ in sync with `go.mod`.
 |---------|------------|--------------------|--------|
 | 0.1.0   | 2026-10-09 | @thapelomagqazana  | Initial policy. Standard library first, minimal footprint, exact pinning, auditable provenance, automatic transitive pinning, reversibility. V1–V5 checks. Cobra registry entry. Module resolution policy. |
 | 0.2.0   | 2026-10-10 | @thapelomagqazana  | Corrected V2's scope from "every `require` directive" to "every direct `require` directive". Indirect dependencies are selected by the Go toolchain and are out of scope for version pinning. The correction was motivated by `github.com/inconshreveable/mousetrap v1.1.0 // indirect`, a transitive dependency of Cobra, which the V2 check flagged as a false positive. The `scripts/deps/check-pr-deps.sh` script was updated to exclude `// indirect` lines, and a regression test was added to `internal/cli/structure_test.go`. V3 and V4 already scoped to direct dependencies; V2 now matches. |
+| 0.3.0   | 2026-10-11 | @thapelomagqazana  | Added the `gopkg.in/yaml.v3` registry entry (§ 7). The dependency was introduced by WBS 8.4.2 (the config file loader); ADR-007 documents its rationale. The entry records the module path, pinned version (`v3.0.1`), dual MIT/Apache-2.0 license, Canonical's maintenance, no transitive dependencies, and the upgrade criteria. The registry's addition closes the `verify:deps:documented` failure that reported the dependency as undocumented. |
 
 ---
 
@@ -508,4 +608,3 @@ A reviewer who evaluates the pull request:
 - The policy has been reviewed for consistency with
   [`docs/architecture.md`](./architecture.md) § 5 (dependency
   direction) and § 13.2 (import rules).
-  

@@ -18,9 +18,25 @@
 // result (help, version) is asserted on stdout; a diagnostic
 // (error) is asserted on stderr. The flags do not change the
 // boundary; the tests verify that.
+//
+// # The --config tests and WBS 8.4.5
+//
+// Before WBS 8.4.5 the PersistentPreRunE hook was a no-op, and
+// --config had no effect on any command. After WBS 8.4.5 the
+// hook loads the config, and --config with a non-existent path
+// produces a config error (E1). The two tests that exercise
+// --config with a non-existent path assert the new behaviour:
+// the invocation fails with ExitConfig (3), stdout is empty,
+// and stderr contains the diagnostic.
+//
+// The behaviour change is documented in the CLI UX spec
+// "Configuration Loading Lifecycle" and in the discovery
+// algorithm's docstring (WBS 8.4.1).
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -316,28 +332,154 @@ func TestFlagInteraction_ErrorsAlwaysGoToStderr(t *testing.T) {
 }
 
 // =============================================================================
-// --config and version
+// --config and the missing path
 // =============================================================================
-
-// TestFlagInteraction_ConfigMissingVersionPrintsVersion verifies
-// that `forge --config nonexistent.yml version` prints the version
-// to stdout.
 //
-// In Phase 2, the config file has no behavioural impact on the
-// version command. A missing config file is a warning, not a
-// fatal error. The version command still produces its output.
+// The two tests below replace earlier tests that asserted "--config
+// has no effect". After WBS 8.4.5 the hook loads the config, and
+// an explicit path that names a missing file is a hard error (E1).
+// The tests assert the new behaviour.
+
+// TestFlagInteraction_ConfigMissingIsConfigError verifies that
+// `forge --config nonexistent.yml version` fails with the
+// configuration exit code.
+//
+// # Why the behaviour is "fail with ExitConfig"
+//
+// The discovery algorithm (WBS 8.4.1) treats an explicit path
+// that names a non-existent file as an error. The path is the
+// user's intent: they asked for the file at that path to be
+// loaded. If the file does not exist, the invocation fails with
+// a config error (E1), and the CLI maps the error to
+// ExitConfig (3).
+//
+// # Why the earlier test expected success
+//
+// An earlier draft of the CLI had a no-op PersistentPreRunE
+// hook; the config was not loaded. In that draft, --config had
+// no effect, and the version command succeeded regardless of the
+// path. The current tree wires the loader into the hook (WBS
+// 8.4.5), and the missing path is now a hard error. This test
+// replaces the earlier one, which asserted the draft's
+// behaviour.
+//
+// # What the test asserts
+//
+//   - The exit code is ExitConfig (3), not ExitUsage (2) and not
+//     ExitSuccess (0).
+//   - stdout is empty: the version command's RunE is not
+//     reached.
+//   - stderr contains the diagnostic, and the diagnostic names
+//     the missing path.
+func TestFlagInteraction_ConfigMissingIsConfigError(t *testing.T) {
+	t.Parallel()
+
+	got := runCLI(t, []string{
+		configFlagName,
+		nonexistentConfigPath,
+		"version",
+	}, nil)
+
+	if got.exitCode != ExitConfig {
+		t.Fatalf("exit code: got %d, want %d (ExitConfig)\nstderr: %s",
+			got.exitCode, ExitConfig, got.stderr)
+	}
+	if got.stdout != "" {
+		t.Errorf("stdout should be empty on error: %q", got.stdout)
+	}
+	if got.stderr == "" {
+		t.Fatalf("stderr should contain a diagnostic")
+	}
+	if !strings.Contains(got.stderr, nonexistentConfigPath) {
+		t.Errorf("stderr does not name the missing path:\n%s", got.stderr)
+	}
+}
+
+// TestFlagInteraction_ConfigMissingHelpPrintsHelp verifies that
+// `forge --config nonexistent.yml --help` prints the help to
+// stdout and exits with success.
+//
+// # Why the missing --config path does not fail the invocation
+//
+// Cobra's --help flag is a pre-run interception flag: when Cobra
+// sees it, it short-circuits the hook chain and prints the help
+// text directly. The PersistentPreRunE hook (WBS 8.4.5) is not
+// invoked, and the --config flag's value is never read. The
+// missing path is therefore not an error for this invocation.
+//
+// This is the correct behaviour: the user asked for help, and
+// help is what they receive. The --config flag is present but is
+// not consumed; the missing path is irrelevant to the request.
+//
+// The CLI's help contract (docs/cli-ux-spec.md § 4.9) says all
+// help goes to stdout and exits 0. The contract does not carve
+// out an exception for other flags being present. The rule is
+// uniform: any invocation that produces help succeeds.
+//
+// # What the test asserts
+//
+//   - The exit code is ExitSuccess.
+//   - stdout is non-empty: the help text was printed.
+//   - stderr is empty: no diagnostic.
 //
 // # What the test does not assert
 //
-// The test does not assert that a warning is emitted on stderr.
-// The warning mechanism is part of the config subsystem (WBS
-// 8.0), which is not yet implemented. The test asserts that the
-// version command succeeds and produces its output regardless of
-// the config flag.
-func TestFlagInteraction_ConfigMissingVersionPrintsVersion(t *testing.T) {
+// The test does not assert the help text's content. Content is
+// the job of the help tests. This test asserts only the stream
+// boundary and the exit code for this flag combination.
+func TestFlagInteraction_ConfigMissingHelpPrintsHelp(t *testing.T) {
 	t.Parallel()
 
-	got := runCLI(t, []string{configFlagName, nonexistentConfigPath, "version"}, nil)
+	got := runCLI(t, []string{
+		configFlagName,
+		nonexistentConfigPath,
+		"--help",
+	}, nil)
+
+	if got.exitCode != ExitSuccess {
+		t.Fatalf("exit code: got %d, want %d\nstderr: %s",
+			got.exitCode, ExitSuccess, got.stderr)
+	}
+	if got.stdout == "" {
+		t.Errorf("stdout is empty; want help output\nstderr: %q",
+			got.stderr)
+	}
+	if got.stderr != "" {
+		t.Errorf("stderr is non-empty; want nothing\nstderr: %q",
+			got.stderr)
+	}
+}
+
+// TestFlagInteraction_ConfigExistingVersionPrintsVersion verifies
+// that `forge --config <existing> version` succeeds and prints the
+// version.
+//
+// The test complements the two missing-path tests: with a valid
+// config file, the invocation succeeds. The version command's
+// output is unaffected by the config, but the hook must load the
+// file without error.
+//
+// # What the test asserts
+//
+//   - The exit code is ExitSuccess.
+//   - stdout is non-empty: the version command produced its
+//     output.
+//   - stderr is empty: the hook succeeded silently.
+func TestFlagInteraction_ConfigExistingVersionPrintsVersion(t *testing.T) {
+	t.Parallel()
+
+	// Write a minimal valid config file into a temp directory.
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	if err := os.WriteFile(cfgPath, []byte("log_level: warn\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	got := runCLI(t, []string{
+		configFlagName,
+		cfgPath,
+		"version",
+	}, nil)
 
 	if got.exitCode != ExitSuccess {
 		t.Fatalf("exit code: got %d, want %d\nstderr: %s",
@@ -347,25 +489,7 @@ func TestFlagInteraction_ConfigMissingVersionPrintsVersion(t *testing.T) {
 		t.Errorf("stdout is empty; want version output\nstderr: %q",
 			got.stderr)
 	}
-}
-
-// TestFlagInteraction_ConfigMissingHelpPrintsHelp verifies that
-// `forge --config nonexistent.yml --help` prints the help to
-// stdout.
-//
-// The same rationale as the version case: config has no
-// behavioural impact in Phase 2.
-func TestFlagInteraction_ConfigMissingHelpPrintsHelp(t *testing.T) {
-	t.Parallel()
-
-	got := runCLI(t, []string{configFlagName, nonexistentConfigPath, "--help"}, nil)
-
-	if got.exitCode != ExitSuccess {
-		t.Fatalf("exit code: got %d, want %d\nstderr: %s",
-			got.exitCode, ExitSuccess, got.stderr)
-	}
-	if got.stdout == "" {
-		t.Errorf("stdout is empty; want help output\nstderr: %q",
-			got.stderr)
+	if got.stderr != "" {
+		t.Errorf("stderr should be empty on success: %q", got.stderr)
 	}
 }

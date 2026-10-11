@@ -1,67 +1,336 @@
 // Package cli contains white-box tests for the CLI package.
 //
 // This file tests the PersistentPreRunE hook defined in hooks.go.
-// The hook is a no-op in Phase 2; the tests verify the properties
-// that matter now and that will continue to matter when the hook
-// gains behaviour.
+// The hook loads the CLI's configuration (WBS 8.4.5): it applies
+// the four precedence layers (defaults, file, environment, CLI
+// flags) and stores the resolved Config in the command's context
+// and in the Dependencies value captured by the closure.
 //
 // # What the tests verify
 //
-//   - The hook returns nil for every invocation.
-//   - The hook does not write to any stream.
-//   - The hook does not touch the filesystem.
-//   - The hook is installed on the root command.
-//   - The hook runs before every subcommand's RunE.
+// Unit tests, exercising the hook in isolation:
 //
-// The first three are unit tests of the hook function in isolation.
-// The last two are integration tests that construct the root command
-// and execute a subcommand, observing the order in which the hook
-// and the subcommand's RunE run.
+//   - The defaults are applied when no file, no env, and no
+//     flags are present.
+//   - A config file's values are applied.
+//   - The environment overrides the file.
+//   - A CLI flag overrides the environment.
+//   - A malformed config file produces an error.
+//   - An invalid enum value produces an error.
+//   - The resolved config is stored in the command's context.
+//   - The resolved config is stored through deps.Config.
+//
+// Integration tests, exercising the hook installed on the root
+// command:
+//
+//   - The root command has a non-nil PersistentPreRunE.
+//   - No subcommand defines its own PersistentPreRunE.
+//   - The hook runs before a subcommand's RunE.
+//
+// # How the unit tests invoke the hook
+//
+// The hook is a constructor: initializeCommandEnvironment(deps)
+// returns the closure Cobra calls. A unit test constructs a
+// Dependencies value with synthetic inputs, calls the
+// constructor, and invokes the returned closure with a minimal
+// command.
+//
+// The synthetic Dependencies carries:
+//
+//   - Env: a function backed by a map, so the test does not
+//     depend on the test runner's environment.
+//   - RootPath: a t.TempDir() value, so config discovery is
+//     deterministic and does not read the developer's home
+//     directory.
+//
+// # Why the tests use a local helper
+//
+// The local helper (testHookDeps) constructs the Dependencies
+// value the hook reads. Keeping it local to this file makes the
+// tests self-contained: a change to the production
+// testDependencies helper does not affect this file.
 package cli
 
 import (
 	"bytes"
-	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
+
+	"github.com/thapelomagqazana/forge/internal/config"
 )
 
 // =============================================================================
-// Unit tests — the hook in isolation
+// Test helper
 // =============================================================================
 
-// TestInitializeCommandEnvironment_ReturnsNil verifies that the
-// hook returns nil for every invocation.
+// testHookDeps constructs a Dependencies value for the hook tests.
 //
-// In Phase 2 the hook is a no-op. The test pins the property so that
-// a future change that introduces behaviour (WBS 8.0, WBS 12.0) is
-// accompanied by a change to the test.
-func TestInitializeCommandEnvironment_ReturnsNil(t *testing.T) {
-	t.Parallel()
-
-	cmd := &cobra.Command{Use: "test"}
-	if err := initializeCommandEnvironment(cmd, nil); err != nil {
-		t.Errorf("hook returned error %v; want nil", err)
+// # What the helper sets
+//
+// The helper sets the fields the hook reads:
+//
+//   - Env: the environment lookup, backed by the provided map.
+//   - RootPath: the working directory for config discovery.
+//
+// The other fields are left at their zero values; the hook does
+// not read them.
+//
+// # Why a real env map
+//
+// The tests set the env map explicitly so that they do not
+// depend on the test runner's environment. A test that set
+// FORGE_LOG_LEVEL in the shell would affect every test in the
+// process; the map confines the setting to one test.
+func testHookDeps(env map[string]string, rootPath string) Dependencies {
+	envLookup := func(key string) string {
+		return env[key]
+	}
+	return Dependencies{
+		Env:      envLookup,
+		RootPath: rootPath,
 	}
 }
 
-// TestInitializeCommandEnvironment_DoesNotWriteToStreams verifies
-// that the hook does not write to any stream.
+// newHookTestCommand constructs a minimal *cobra.Command with the
+// three flags the hook reads: --log-level, --output-format, and
+// --config.
 //
-// The hook has no output in Phase 2. The test constructs a command
-// with custom writers and asserts that the writers are untouched
-// after the hook runs.
+// # Why the helper is minimal
+//
+// The hook reads three flags. The helper registers only those
+// three. A test that wants to simulate "the user typed the flag"
+// calls cmd.Flags().Set(name, value); a test that wants to
+// simulate "the user did not type the flag" does nothing.
+//
+// # Why a fresh command per test
+//
+// A command's flags accumulate state (the value and the changed
+// marker). A test that reused a command would see the previous
+// test's state. A fresh command per test isolates the state.
+func newHookTestCommand() *cobra.Command {
+	cmd := &cobra.Command{Use: "test"}
+	cmd.Flags().String(config.FlagLogLevel, config.LogLevelInfo, "")
+	cmd.Flags().String(config.FlagOutputFormat, config.OutputFormatText, "")
+	cmd.Flags().String(FlagConfig, "", "")
+	return cmd
+}
+
+// =============================================================================
+// Unit tests — the four layers
+// =============================================================================
+
+// TestInitializeCommandEnvironment_DefaultsOnly verifies that the
+// hook produces the defaults when no file, no env, and no flags
+// are present.
+func TestInitializeCommandEnvironment_DefaultsOnly(t *testing.T) {
+	t.Parallel()
+
+	cmd := newHookTestCommand()
+	deps := testHookDeps(map[string]string{}, t.TempDir())
+
+	hook := initializeCommandEnvironment(deps)
+	if err := hook(cmd, nil); err != nil {
+		t.Fatalf("hook: %v", err)
+	}
+
+	got, ok := ConfigFromContext(cmd.Context())
+	if !ok {
+		t.Fatalf("config not found in context")
+	}
+
+	want := config.Defaults()
+	if got.LogLevel != want.LogLevel {
+		t.Errorf("LogLevel = %q; want %q", got.LogLevel, want.LogLevel)
+	}
+	if got.OutputFormat != want.OutputFormat {
+		t.Errorf("OutputFormat = %q; want %q",
+			got.OutputFormat, want.OutputFormat)
+	}
+}
+
+// TestInitializeCommandEnvironment_FileApplied verifies that a
+// config file's values are applied.
+func TestInitializeCommandEnvironment_FileApplied(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	if err := os.WriteFile(cfgPath, []byte("log_level: warn\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cmd := newHookTestCommand()
+	deps := testHookDeps(map[string]string{}, dir)
+
+	hook := initializeCommandEnvironment(deps)
+	if err := hook(cmd, nil); err != nil {
+		t.Fatalf("hook: %v", err)
+	}
+
+	got, _ := ConfigFromContext(cmd.Context())
+	if got.LogLevel != config.LogLevelWarn {
+		t.Errorf("LogLevel = %q; want %q", got.LogLevel, config.LogLevelWarn)
+	}
+	if got.SourcePath != cfgPath {
+		t.Errorf("SourcePath = %q; want %q", got.SourcePath, cfgPath)
+	}
+}
+
+// TestInitializeCommandEnvironment_EnvOverridesFile verifies that
+// the environment layer overrides the file layer.
+func TestInitializeCommandEnvironment_EnvOverridesFile(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	if err := os.WriteFile(cfgPath, []byte("log_level: warn\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cmd := newHookTestCommand()
+	deps := testHookDeps(map[string]string{
+		"FORGE_LOG_LEVEL": "debug",
+	}, dir)
+
+	hook := initializeCommandEnvironment(deps)
+	if err := hook(cmd, nil); err != nil {
+		t.Fatalf("hook: %v", err)
+	}
+
+	got, _ := ConfigFromContext(cmd.Context())
+	if got.LogLevel != config.LogLevelDebug {
+		t.Errorf("LogLevel = %q; want %q (env should override file)",
+			got.LogLevel, config.LogLevelDebug)
+	}
+}
+
+// TestInitializeCommandEnvironment_FlagOverridesEnv verifies that
+// the CLI flag layer overrides the environment layer.
+func TestInitializeCommandEnvironment_FlagOverridesEnv(t *testing.T) {
+	t.Parallel()
+
+	cmd := newHookTestCommand()
+	if err := cmd.Flags().Set(config.FlagLogLevel, "error"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	deps := testHookDeps(map[string]string{
+		"FORGE_LOG_LEVEL": "debug",
+	}, t.TempDir())
+
+	hook := initializeCommandEnvironment(deps)
+	if err := hook(cmd, nil); err != nil {
+		t.Fatalf("hook: %v", err)
+	}
+
+	got, _ := ConfigFromContext(cmd.Context())
+	if got.LogLevel != config.LogLevelError {
+		t.Errorf("LogLevel = %q; want %q (flag should override env)",
+			got.LogLevel, config.LogLevelError)
+	}
+}
+
+// TestInitializeCommandEnvironment_ExplicitConfigFlag verifies
+// that the --config flag is honoured by config.Discover.
+func TestInitializeCommandEnvironment_ExplicitConfigFlag(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "custom.yaml")
+	if err := os.WriteFile(cfgPath, []byte("log_level: error\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cmd := newHookTestCommand()
+	if err := cmd.Flags().Set(FlagConfig, cfgPath); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	deps := testHookDeps(map[string]string{}, dir)
+
+	hook := initializeCommandEnvironment(deps)
+	if err := hook(cmd, nil); err != nil {
+		t.Fatalf("hook: %v", err)
+	}
+
+	got, _ := ConfigFromContext(cmd.Context())
+	if got.LogLevel != config.LogLevelError {
+		t.Errorf("LogLevel = %q; want %q", got.LogLevel, config.LogLevelError)
+	}
+	if got.SourcePath != cfgPath {
+		t.Errorf("SourcePath = %q; want %q", got.SourcePath, cfgPath)
+	}
+}
+
+// =============================================================================
+// Unit tests — errors
+// =============================================================================
+
+// TestInitializeCommandEnvironment_MalformedFile verifies that a
+// malformed config file produces an error.
+func TestInitializeCommandEnvironment_MalformedFile(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "forge.yaml")
+	if err := os.WriteFile(cfgPath, []byte("log_level: [unclosed\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cmd := newHookTestCommand()
+	deps := testHookDeps(map[string]string{}, dir)
+
+	hook := initializeCommandEnvironment(deps)
+	err := hook(cmd, nil)
+	if err == nil {
+		t.Fatalf("hook: want error, got nil")
+	}
+}
+
+// TestInitializeCommandEnvironment_InvalidEnum verifies that an
+// invalid enum value in a CLI flag produces an error.
+func TestInitializeCommandEnvironment_InvalidEnum(t *testing.T) {
+	t.Parallel()
+
+	cmd := newHookTestCommand()
+	if err := cmd.Flags().Set(config.FlagLogLevel, "verbose"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	deps := testHookDeps(map[string]string{}, t.TempDir())
+
+	hook := initializeCommandEnvironment(deps)
+	err := hook(cmd, nil)
+	if err == nil {
+		t.Fatalf("hook: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "verbose") {
+		t.Errorf("error does not name the invalid value: %v", err)
+	}
+}
+
+// =============================================================================
+// Unit tests — no stream writes
+// =============================================================================
+
+// TestInitializeCommandEnvironment_DoesNotWriteToStreams verifies
+// that the hook does not write to the command's streams.
+//
+// The hook reads files and env; it does not produce output. Its
+// diagnostic path is the returned error, not a direct write.
 func TestInitializeCommandEnvironment_DoesNotWriteToStreams(t *testing.T) {
 	t.Parallel()
 
 	var stdout, stderr bytes.Buffer
-	cmd := &cobra.Command{Use: "test"}
+	cmd := newHookTestCommand()
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&stderr)
 
-	if err := initializeCommandEnvironment(cmd, nil); err != nil {
-		t.Fatalf("hook returned error %v", err)
+	deps := testHookDeps(map[string]string{}, t.TempDir())
+	hook := initializeCommandEnvironment(deps)
+	if err := hook(cmd, nil); err != nil {
+		t.Fatalf("hook: %v", err)
 	}
 
 	if stdout.Len() != 0 {
@@ -72,63 +341,27 @@ func TestInitializeCommandEnvironment_DoesNotWriteToStreams(t *testing.T) {
 	}
 }
 
-// TestInitializeCommandEnvironment_AcceptsArbitraryArgs verifies
-// that the hook does not inspect or reject the positional arguments.
-//
-// In Phase 2 the hook is a no-op and must accept any args value.
-// A future hook that inspects args would change the behaviour; the
-// test documents the current property.
-func TestInitializeCommandEnvironment_AcceptsArbitraryArgs(t *testing.T) {
-	t.Parallel()
-
-	cases := []struct {
-		name string
-		args []string
-	}{
-		{"nil", nil},
-		{"empty", []string{}},
-		{"one", []string{"version"}},
-		{"many", []string{"a", "b", "c"}},
-		{"dash-prefixed", []string{"--verbose", "--quiet"}},
-	}
-
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			cmd := &cobra.Command{Use: "test"}
-			if err := initializeCommandEnvironment(cmd, tc.args); err != nil {
-				t.Errorf("hook returned error %v for args %v",
-					err, tc.args)
-			}
-		})
-	}
-}
-
 // =============================================================================
 // Integration tests — the hook installed on the root command
 // =============================================================================
 
-// TestHooks_NoSubcommandOverrides verifies AC5: no subcommand in the
-// registry defines its own PersistentPreRunE.
+// TestHooks_NoSubcommandOverrides verifies AC5: no subcommand in
+// the registry defines its own PersistentPreRunE.
 //
 // # Why the rule matters
 //
-// Cobra's PersistentPreRunE semantics are: the closest hook in the
-// command chain runs, and the parent's hook is skipped if a
+// Cobra's PersistentPreRunE semantics are: the closest hook in
+// the command chain runs, and the parent's hook is skipped if a
 // descendant has one. If a subcommand defines its own
 // PersistentPreRunE, the root's hook does not run for that
-// subcommand's subtree, and the cross-cutting initialization
-// (config, logger) is skipped silently.
+// subcommand's subtree, and the configuration is not loaded.
 //
 // The test iterates the registry and asserts that no command
 // produced by a registry entry has a non-nil PersistentPreRunE.
-// A future contributor who adds a subcommand with its own hook will
-// fail the test and be told why.
 func TestHooks_NoSubcommandOverrides(t *testing.T) {
 	t.Parallel()
 
-	deps := testDependencies()
+	deps := testHookDeps(map[string]string{}, t.TempDir())
 	for _, ctor := range registry {
 		cmd := ctor(deps)
 		if cmd.PersistentPreRunE != nil {
@@ -139,43 +372,34 @@ func TestHooks_NoSubcommandOverrides(t *testing.T) {
 	}
 }
 
-// TestHooks_RunsBeforeSubcommandRunE verifies AC4: the root's hook
-// runs before a subcommand's RunE.
+// TestHooks_RunsBeforeSubcommandRunE verifies AC4: the root's
+// hook runs before a subcommand's RunE.
 //
 // # How the test observes the order
 //
-// The test constructs a temporary subcommand with a RunE closure
-// that records that it ran. It attaches the subcommand to a root
-// command that has the hook installed, and it replaces the hook
-// temporarily with a version that records that it ran. After
-// executing the subcommand, the test asserts that both recorded
-// their runs and that the hook ran first.
+// The test constructs a local root command with a recording
+// hook and a subcommand with a recording RunE. After executing
+// the subcommand, the test asserts that both recorded their
+// runs and that the hook ran first.
 //
-// The test does not modify the production hook. It constructs a
-// local root command with a recording hook, so that the test is
-// self-contained and does not depend on the hook's internal state.
+// # Why a local root command
 //
-// # Why the test uses a local root command
-//
-// The production root command's hook is a no-op. To observe that
-// it runs, the test would need to instrument it, which would require
-// modifying the production code. A local root command with the same
-// shape is a cleaner way to verify the property: Cobra's hook
-// ordering is a property of Cobra, not of Forge's specific hook. The
-// test verifies that Forge's root command installs the hook in the
-// position where Cobra will run it first.
+// The production root command's hook performs the loader chain.
+// To observe that it runs before a subcommand's RunE, the test
+// would need to instrument it, which is heavier than necessary.
+// Cobra's hook ordering is a property of Cobra, not of Forge's
+// specific hook; the local command verifies the ordering the
+// production root command relies on.
 func TestHooks_RunsBeforeSubcommandRunE(t *testing.T) {
 	t.Parallel()
 
 	var order []string
 
-	// The recording hook.
 	recordingHook := func(cmd *cobra.Command, args []string) error {
 		order = append(order, "hook")
 		return nil
 	}
 
-	// The subcommand with a recording RunE.
 	sub := &cobra.Command{
 		Use: "sub",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -184,20 +408,17 @@ func TestHooks_RunsBeforeSubcommandRunE(t *testing.T) {
 		},
 	}
 
-	// The root command with the recording hook and the subcommand.
 	root := &cobra.Command{
 		Use:               "root",
 		PersistentPreRunE: recordingHook,
 	}
 	root.AddCommand(sub)
 
-	// Execute the subcommand.
 	root.SetArgs([]string{"sub"})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 
-	// Verify the order.
 	if len(order) != 2 {
 		t.Fatalf("order has %d entries; want 2: %v", len(order), order)
 	}
@@ -209,8 +430,8 @@ func TestHooks_RunsBeforeSubcommandRunE(t *testing.T) {
 	}
 }
 
-// TestHooks_RootCmdHasHookInstalled verifies AC1: the root command
-// produced by newRootCmd has a non-nil PersistentPreRunE.
+// TestHooks_RootCmdHasHookInstalled verifies AC1: the root
+// command produced by newRootCmd has a non-nil PersistentPreRunE.
 //
 // The test constructs the root command directly and inspects the
 // field. It is the structural counterpart to
@@ -219,76 +440,11 @@ func TestHooks_RunsBeforeSubcommandRunE(t *testing.T) {
 func TestHooks_RootCmdHasHookInstalled(t *testing.T) {
 	t.Parallel()
 
-	deps := testDependencies()
+	deps := testHookDeps(map[string]string{}, t.TempDir())
 	root := newRootCmd(deps)
 
 	if root.PersistentPreRunE == nil {
 		t.Fatal("root command has no PersistentPreRunE; " +
 			"the hook point is not reserved")
 	}
-}
-
-// TestHooks_UnknownCommandDoesNotRunHook verifies that the hook does
-// not run when the invocation is rejected by the pre-parse validator
-// or by Cobra's command resolution.
-//
-// # Why the property matters
-//
-// The hook is for commands, not for malformed invocations. If the
-// invocation is rejected before dispatch — because a pre-parse check
-// failed, or because the command name does not match any registered
-// subcommand — the hook must not run. Running the hook in those
-// cases would be a small but real waste, and would couple the hook
-// to the rejection logic.
-//
-// The test invokes the CLI with an unknown command and asserts that
-// the hook did not record a run. The hook's recording is local to
-// the test; the production hook is a no-op and does not record.
-//
-// # Why the test constructs a local root command
-//
-// The production root command's hook is a no-op. To observe that it
-// does not run, the test would need a recording hook. A local root
-// command with the recording hook and no subcommands named
-// "no-such-command" exercises the property.
-func TestHooks_UnknownCommandDoesNotRunHook(t *testing.T) {
-	t.Parallel()
-
-	var hookRan bool
-
-	root := &cobra.Command{
-		Use: "root",
-		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			hookRan = true
-			return nil
-		},
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) > 0 {
-				return fmt.Errorf("unknown command %q", args[0])
-			}
-			return nil
-		},
-	}
-
-	// Execute with an unknown subcommand. The root's RunE is
-	// reached, but the hook is not, because the RunE returns an
-	// error before the hook would run.
-	//
-	// Note: Cobra's semantics here are subtle. The hook runs before
-	// the RunE of the dispatched command. If the dispatched command
-	// is the root and the root's RunE returns an error, the hook
-	// has already run. The test's purpose is to document the
-	// behaviour, not to assert a stronger property.
-	root.SetArgs([]string{"no-such-command"})
-	_ = root.Execute()
-
-	// The hook ran (because the root command was the dispatched
-	// command). This is the correct behaviour for Phase 2: the
-	// hook is a no-op, and its running is harmless.
-	//
-	// A future WBS item that wants the hook to skip on
-	// unknown-command invocations would need to change the
-	// dispatch logic or move the hook to a different position.
-	// For Phase 2, the property is documented, not asserted.
-	_ = hookRan
 }

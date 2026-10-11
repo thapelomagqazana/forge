@@ -1,156 +1,300 @@
 // Package cli implements the Forge command-line interface.
 //
-// This file defines the PersistentPreRunE hook that runs before every
-// subcommand's RunE. The hook is reserved for cross-cutting concerns
-// that must initialize uniformly across every command:
+// This file defines the PersistentPreRunE hook that runs before
+// every subcommand's RunE. The hook is where the CLI's
+// configuration is loaded: the four precedence layers
+// (defaults, file, environment, flags) are applied in order,
+// and the resolved Config is stored for the dispatched
+// command to read.
 //
-//   - Configuration loading (WBS 8.0).
-//   - Logger initialization (WBS 12.0).
+// # The configuration lifecycle
 //
-// In Phase 2 the hook is a no-op stub. Its existence is the point:
-// the hook point is claimed before any subcommand might be tempted to
-// use it for its own purposes. A subcommand that installs its own
-// PersistentPreRunE would override the root's hook for that
-// subcommand's subtree, and the cross-cutting initialization would
-// not run. The rule that no subcommand defines its own
-// PersistentPreRunE is enforced by a structural test in
-// root_test.go and by the Taskfile target verify:hooks.
+// The hook is the only place where the configuration is loaded
+// (WBS 8.4.5). It runs exactly once per invocation, after Cobra
+// parses the arguments and before the dispatched subcommand's
+// RunE.
+//
+// The four layers, applied in ascending order of precedence:
+//
+//  4. Default              (config.Defaults)
+//  3. Config file          (config.Discover + config.Load)
+//  2. Environment variable (config.OverrideFromEnv)
+//  1. CLI flag             (config.OverrideFromFlags)
+//
+// A layer's non-empty values override the layer below. The
+// resolution is documented in docs/cli-ux-spec.md
+// "Configuration Loading Lifecycle" and in the config
+// package's docstrings.
 //
 // # Why PersistentPreRunE and not PreRunE
 //
 // Cobra has two pre-run hooks:
 //
 //   - PreRunE runs only for the command it is attached to. A
-//     subcommand that wants the hook must define it, or inherit it
-//     from an ancestor.
+//     subcommand that wants the hook must define it, or inherit
+//     it from an ancestor.
 //
-//   - PersistentPreRunE runs for the command it is attached to and
-//     for every descendant. It is the correct hook for concerns
-//     that must run for every command, regardless of which command
-//     the user invoked.
+//   - PersistentPreRunE runs for the command it is attached to
+//     and for every descendant. It is the correct hook for
+//     concerns that must run for every command, regardless of
+//     which command the user invoked.
 //
-// Configuration loading and logger initialization are concerns of
-// the whole CLI, not of individual commands. The persistent hook is
-// the only mechanism that runs for every command without requiring
-// each command to opt in.
+// Configuration loading is a concern of the whole CLI, not of
+// individual commands. The persistent hook is the only
+// mechanism that runs for every command without requiring each
+// command to opt in.
 //
-// # What the hook will do
+// # Why the hook is a closure over deps
 //
-// When WBS 8.0 lands, the hook will:
+// The hook needs three values from the resolved environment:
 //
-//  1. Read the --config flag (or its default) to determine the
-//     configuration file path.
-//  2. Load the configuration file, if it exists.
-//  3. Replace deps.Config with the loaded configuration.
+//   - The --config flag's value (read from the command).
+//   - The environment lookup (deps.Env).
+//   - The working directory for discovery (deps.RootPath).
 //
-// When WBS 12.0 lands, the hook will:
+// Cobra's PersistentPreRunE receives only the command and the
+// args; it has no direct access to the Dependencies value the
+// CLI constructed. The hook is therefore a constructor: it
+// takes deps and returns the closure Cobra calls. The closure
+// captures deps and reads its fields.
 //
-//  1. Read the --verbose and --quiet flags.
-//  2. Resolve the effective log level.
-//  3. Construct a Logger at the resolved level.
-//  4. Replace deps.Logger with the constructed logger.
+// newRootCmd calls initializeCommandEnvironment(deps) and
+// assigns the returned closure to PersistentPreRunE. See
+// root.go.
 //
-// The two updates are independent: one can land before the other.
-// The hook's structure accommodates both.
+// # Where the resolved configuration is stored
 //
-// # What the hook does not do
+// The hook stores the resolved Config in two places:
 //
-// The hook does not:
+//   - The command's context, via context.WithValue. This is
+//     the primary transport; a command's RunE reads it with
+//     ConfigFromContext(cmd.Context()).
 //
-//   - Parse flags. Cobra parses them before the hook runs.
-//   - Resolve commands. Cobra resolves the command before the hook
-//     runs.
-//   - Perform I/O. In Phase 2 the hook is a no-op. When WBS 8.0 and
-//     WBS 12.0 land, the I/O they perform flows through deps.FS and
-//     the loader's interfaces, not through the hook directly.
-//   - Write to any stream. The hook has no output.
+//   - The Dependencies value captured by the closure, via
+//     deps.Config. This is a secondary access point for code
+//     that already holds a Dependencies value.
 //
-// # Signature
+// # The two transports' visibility
 //
-// The hook's signature is the one Cobra requires for
+// The context transport is visible to the dispatched
+// command's RunE: Cobra threads the command's context from
+// PersistentPreRunE to RunE.
+//
+// The deps transport is visible only inside the closure:
+// Dependencies is passed by value, so the hook's assignment to
+// deps.Config mutates the closure's copy, not the caller's
+// value. The caller does not see the update. The hook keeps
+// both in sync for consistency; only the context is a
+// programmatic transport.
+//
+// A future command that wants the resolved Config reads it
+// from the context. The deps field is retained for the
+// case where a future change passes a pointer to Dependencies
+// through the hook (for example, if a future logger needs to
+// be stored on deps.Logger and read by a caller).
+//
+// # Errors
+//
+// An error from any layer is returned from the hook. Cobra
+// propagates it to executeWithOptions, which renders it with
+// the frozen error format (WBS 7.3.2) and maps it to an exit
+// code with exitCodeFromError. The config package's errors
+// wrap ErrConfigInvalid; exitCodeFromError classifies them
+// as ExitConfig (3).
+//
+// # No I/O of its own
+//
+// The hook reads no process globals directly. Every input —
+// the --config flag's value, the environment lookup, the
+// working directory — is read from the Dependencies value or
+// from the command. The hook calls the config package's
+// functions; those functions perform the file I/O.
+//
+// # Enforcement
+//
+// The rule that no subcommand defines its own
+// PersistentPreRunE is enforced by
+// TestHooks_NoSubcommandOverrides in hooks_test.go and by the
+// Taskfile target verify:hooks. The two checks are
+// complementary: the test runs in Go, the Taskfile target
+// greps the source tree.
+package cli
+
+import (
+	"context"
+
+	"github.com/spf13/cobra"
+
+	"github.com/thapelomagqazana/forge/internal/config"
+)
+
+// configContextKey is the context key under which the resolved
+// configuration is stored.
+//
+// # Why a private key type
+//
+// The context key is a package-private type, not a string. A
+// string key can collide with a key from another package; a
+// private type cannot. Go's vet checks for this pattern and
+// warns against string keys for exactly this reason.
+type configContextKey struct{}
+
+// ConfigFromContext returns the resolved Config stored in ctx,
+// or the zero Config value and false if no Config is present.
+//
+// # How a command reads the configuration
+//
+// A command's RunE handler reads the configuration with:
+//
+//	cfg, ok := ConfigFromContext(cmd.Context())
+//	if !ok {
+//	    // The hook did not run; this is a programming error.
+//	    // The hook is installed on the root command and runs
+//	    // before every subcommand's RunE.
+//	    return fmt.Errorf("config not initialized")
+//	}
+//
+// # Why the boolean
+//
+// The two-result form distinguishes "the config is the zero
+// value" from "the config is absent". A caller that does not
+// distinguish the two would silently use the zero value when
+// the hook failed; the boolean forces the caller to handle the
+// absent case.
+//
+// # Purity
+//
+// The function reads only its argument. It does not mutate
+// ctx. Two calls with the same ctx return the same values.
+func ConfigFromContext(ctx context.Context) (config.Config, bool) {
+	v := ctx.Value(configContextKey{})
+	if v == nil {
+		return config.Config{}, false
+	}
+	cfg, ok := v.(config.Config)
+	return cfg, ok
+}
+
+// contextWithConfig returns a new context with cfg stored under
+// the config key.
+//
+// # Why the helper is unexported
+//
+// The helper is used by the hook to store the config; no other
+// caller needs it. Keeping it unexported makes the write path
+// (the hook) and the read path (ConfigFromContext) asymmetric:
+// any code can read the config, but only the hook can write
+// it. The asymmetry is deliberate: a command that could write
+// the config could confuse the resolution.
+func contextWithConfig(ctx context.Context, cfg config.Config) context.Context {
+	return context.WithValue(ctx, configContextKey{}, cfg)
+}
+
+// initializeCommandEnvironment returns the root command's
+// PersistentPreRunE hook, with deps captured in the closure.
+//
+// It is called exactly once, from newRootCmd. The returned
+// closure has the signature Cobra requires for
 // PersistentPreRunE:
 //
 //	func(cmd *cobra.Command, args []string) error
 //
-// The signature is fixed by Cobra. The hook returns an error when
-// initialization fails; the error propagates through Cobra's normal
-// error path, is formatted by formatError, and is mapped to an exit
-// code by exitCodeFromError. In Phase 2 the hook never returns a
-// non-nil error.
-package cli
+// # What the hook does
+//
+// The hook applies the four configuration layers in order:
+//
+//  1. Defaults. config.Defaults produces a Config with the
+//     schema's default values.
+//
+//  2. Config file. config.Discover finds the file (using the
+//     --config flag's value, deps.Env, and deps.RootPath);
+//     config.Load reads it. If no file is found, the defaults
+//     are used.
+//
+//  3. Environment variables. config.OverrideFromEnv applies
+//     the variables the schema declares.
+//
+//  4. CLI flags. config.OverrideFromFlags applies the flags
+//     the schema declares.
+//
+// The resolved Config is stored in the command's context and
+// in the closure's captured deps value.
+//
+// # Signature
+//
+// The hook's signature is fixed by Cobra. The args parameter is
+// unused; the hook's behaviour does not depend on the
+// positional arguments.
+//
+// # Error behaviour
+//
+// The hook returns the first error from any layer. Errors from
+// config.Discover, config.Load, config.OverrideFromEnv, and
+// config.OverrideFromFlags are returned unchanged. The CLI's
+// error path renders them and maps them to exit codes; the
+// config package's errors map to ExitConfig (3).
+//
+// # The captured Dependencies value
+//
+// The deps argument is captured by the returned closure. The
+// capture is what lets the hook read deps.Env and deps.RootPath
+// and write deps.Config for code inside the closure.
+//
+// The Dependencies struct is passed by value; the closure's
+// copy is independent of the caller's. A caller that wants to
+// see the resolved Config reads it from the command's context,
+// not from its own deps value.
+func initializeCommandEnvironment(deps Dependencies) func(cmd *cobra.Command, args []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		ctx := cmd.Context()
+		if ctx == nil {
+			ctx = context.Background()
+		}
 
-import (
-	"github.com/spf13/cobra"
-)
+		// Layer 4: defaults.
+		cfg := config.Defaults()
 
-// initializeCommandEnvironment is the root command's
-// PersistentPreRunE hook.
-//
-// It runs before every subcommand's RunE. The hook is reserved for
-// the cross-cutting concerns that must initialize uniformly across
-// every command: configuration loading and logger initialization.
-//
-// # Phase 2 behaviour
-//
-// The hook is a no-op. It returns nil for every invocation.
-//
-// # Future behaviour
-//
-// WBS 8.0 will load the configuration file here, using the path
-// from the --config flag or the discovery mechanism. The loaded
-// configuration will replace deps.Config.
-//
-// WBS 12.0 will initialize the logger here, using the level resolved
-// from the --verbose and --quiet flags. The constructed logger will
-// replace deps.Logger.
-//
-// The two updates are independent and can land in either order. Both
-// modify the deps value the hook receives; the hook's structure
-// accommodates both without changing its signature.
-//
-// # How the hook accesses deps
-//
-// In Phase 2 the hook does not access deps. When WBS 8.0 and WBS
-// 12.0 land, the hook will need to read from and write to deps. The
-// current design intends for the hook to close over the deps value
-// that newRootCmd received. This is an implementation detail that
-// the WBS 8.0 and WBS 12.0 changes will settle; the hook's signature
-// does not change either way.
-//
-// # Why the hook is a stub in Phase 2
-//
-// The hook exists in Phase 2 even though it does nothing, because
-// the reservation is the task. Without the hook, a subcommand added
-// in WBS 5.x could define its own PersistentPreRunE for a local
-// purpose, and the root's hook point would be unavailable when WBS
-// 8.0 needed it. Installing the hook now, while the code is small
-// and the cost is trivial, prevents that.
-//
-// The pattern is the same one WBS 5.1.1 applied to the root command's
-// identity strings: claim the structure before the code that depends
-// on it exists.
-//
-// # Enforcement
-//
-// The rule that no subcommand defines its own PersistentPreRunE is
-// enforced by TestHooks_NoSubcommandOverrides in root_test.go and by
-// the Taskfile target verify:hooks. The two checks are complementary:
-// the test runs in Go, the Taskfile target greps the source tree.
-func initializeCommandEnvironment(cmd *cobra.Command, args []string) error {
-	// Phase 2: no-op stub.
-	//
-	// WBS 8.0 will load the configuration file here, using the path
-	// from the --config flag or the discovery mechanism. The loaded
-	// configuration will replace deps.Config.
-	//
-	// WBS 12.0 will initialize the logger here, using the level
-	// resolved from the --verbose and --quiet flags. The constructed
-	// logger will replace deps.Logger.
-	//
-	// The two updates are independent. Neither changes this
-	// function's signature.
+		// Layer 3: the config file.
+		explicitPath := configPath(cmd)
+		cfgPath, err := config.Discover(explicitPath, deps.Env, deps.RootPath)
+		if err != nil {
+			return err
+		}
+		if cfgPath != "" {
+			cfg, err = config.Load(cfgPath)
+			if err != nil {
+				return err
+			}
+			cfg.SourcePath = cfgPath
+		}
 
-	_ = cmd
-	_ = args
-	return nil
+		// Layer 2: environment variables.
+		cfg, err = config.OverrideFromEnv(cfg, deps.Env)
+		if err != nil {
+			return err
+		}
+
+		// Layer 1: CLI flags. The reader adapts the command to
+		// the config package's FlagReader interface; see
+		// flags_adapter.go.
+		cfg, err = config.OverrideFromFlags(cfg, newFlagReader(cmd))
+		if err != nil {
+			return err
+		}
+
+		// Store the resolved config in the command's context
+		// and in the closure's captured deps value. The two are
+		// kept in sync; a command reads whichever is convenient
+		// for its call site.
+		//
+		// The context store is the programmatic transport; the
+		// deps store is visible only inside the closure (see the
+		// function's docstring).
+		cmd.SetContext(contextWithConfig(ctx, cfg))
+		if deps.Config != nil {
+			*deps.Config = cfg
+		}
+
+		return nil
+	}
 }

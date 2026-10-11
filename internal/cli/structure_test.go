@@ -205,6 +205,7 @@ var expectedSourceFiles = map[string]string{
 	"stream_boundary.go":  "WBS 7.4.1 — output stream boundary rules and fixtures",
 	"ascii_policy.go":     "WBS 7.4.2 — ASCII-only output policy predicate and constants",
 	"flag_interaction.go": "WBS 7.4.3 - global flag interaction contract rules and fixtures",
+	"flags_adapter.go":    "WBS 4.3.1 (follow-up) — adapter implementing config.FlagReader over a *cobra.Command",
 }
 
 // TestExpectedFilesExist verifies that every file this WBS expects is
@@ -486,37 +487,124 @@ func TestStdlibOnlyForVersionImports(t *testing.T) {
 // Exported surface — functions
 // =============================================================================
 
-// TestOnlyExecuteFunctionIsExported verifies that the package exports
-// exactly one *function*: Execute.
+// expectedExportedFunctions enumerates every function the cli
+// package is permitted to export, along with the WBS item that
+// introduced it.
 //
-// The package's public function surface is deliberately one function.
-// Every other function — command constructors, helpers — is
-// unexported. This prevents downstream packages from depending on
-// internals, which would freeze the design in place and make
-// refactoring harder.
+// # Why the map is explicit
+//
+// The CLI package's exported function surface is deliberately
+// small. The map is the allowlist; adding a function requires
+// updating the map, which forces the contributor to justify the
+// addition in a citation. Removing a function is a breaking
+// change for any importer and requires the same review.
+//
+// # The two entries
+//
+//   - Execute is the CLI's process entry point. It is called by
+//     cmd/forge/main.go. WBS 4.1.1 froze its signature.
+//
+//   - ConfigFromContext is the accessor a command handler uses to
+//     read the resolved Config from the command's context. WBS
+//     8.4.5 introduced it. The export is required because command
+//     handlers (in internal/cli) and future service packages (in
+//     internal/app/<name>) both need to read the resolved
+//     configuration from the command's context.
+//
+// # Extending the map
+//
+// A future WBS item that adds a third exported function adds a
+// row with its citation. The row's presence is the record of the
+// addition; the test's iteration is what enforces the policy.
+//
+// # Why the map's values are citations
+//
+// The values are not consulted by the test; they are for a human
+// reader who wants to know why a function is on the list. The
+// citation names the WBS item; the WBS item's text names the
+// rationale.
+var expectedExportedFunctions = map[string]string{
+	"Execute":           "WBS 4.1.1 — the CLI's process entry point",
+	"ConfigFromContext": "WBS 8.4.5 — accessor for the resolved configuration",
+}
+
+// TestOnlyExpectedFunctionsAreExported verifies that the package
+// exports exactly the functions the CLI contract requires, and
+// nothing more.
+//
+// # What the test asserts
+//
+// The test iterates two sets:
+//
+//  1. The package's actual exported functions (collected from the
+//     source by collectExportedFunctions). Every actual function
+//     must be in expectedExportedFunctions.
+//
+//  2. The expected functions. Every entry in
+//     expectedExportedFunctions must be present in the package.
+//
+// The two iterations together enforce a bijection: the actual set
+// equals the expected set. A function in one but not the other
+// fails the test.
+//
+// # Why the test is a bijection
+//
+// The bijection catches both directions of drift:
+//
+//   - A contributor adds a function without updating the map: the
+//     "every actual must be expected" iteration fails.
+//
+//   - A contributor removes a function without removing its map
+//     entry: the "every expected must be present" iteration
+//     fails.
+//
+// The two failures have different messages, and both cite the
+// map's role as the review checkpoint.
+//
+// # Relationship to the constants test
 //
 // Constants are tested separately by
-// TestOnlyExpectedConstantsAreExported. They are a different category
-// of public surface: an enumerated vocabulary that downstream code
-// may reference by name.
+// TestOnlyExpectedConstantsAreExported. They are a different
+// category of public surface: an enumerated vocabulary that
+// downstream code may reference by name. Functions are the
+// package's behaviour; constants are its data.
+//
+// # The scan
 //
 // The test scans every non-test source file in the package and
-// collects top-level function declarations whose identifier begins
-// with an uppercase letter. Only Execute is permitted.
-func TestOnlyExecuteFunctionIsExported(t *testing.T) {
+// collects top-level function declarations whose identifier
+// begins with an uppercase letter. Methods (functions with a
+// receiver) are excluded: they are attached to their receiver's
+// type, not to the package.
+func TestOnlyExpectedFunctionsAreExported(t *testing.T) {
 	t.Parallel()
 
 	files := listGoFiles(t)
-	exported := collectExportedFunctions(t, files)
+	actual := collectExportedFunctions(t, files)
 
-	if len(exported) != 1 {
-		t.Fatalf("expected exactly 1 exported function in the package; "+
-			"found %d: %v", len(exported), exported)
+	// Every actual function must be in the expected set.
+	for _, name := range actual {
+		if _, ok := expectedExportedFunctions[name]; !ok {
+			t.Errorf("unexpected exported function: %s\n"+
+				"If this function was intentionally added, update the "+
+				"expectedExportedFunctions map in structure_test.go "+
+				"and cite the WBS item or ADR that introduced it.", name)
+		}
 	}
 
-	if exported[0] != "Execute" {
-		t.Fatalf("expected the sole exported function to be Execute; "+
-			"found %s", exported[0])
+	// Every expected function must be present.
+	for name, reason := range expectedExportedFunctions {
+		found := false
+		for _, actualName := range actual {
+			if actualName == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected exported function missing: %s (%s)",
+				name, reason)
+		}
 	}
 }
 
