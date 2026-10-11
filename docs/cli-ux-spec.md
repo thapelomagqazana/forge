@@ -2,11 +2,11 @@
 
 - **Document type:** Specification
 - **Status:** Draft
-- **Version:** 0.6.0
+- **Version:** 0.7.0
 - **Author:** @thapelomagqazana
 - **Created:** 2026-10-09
-- **Last Updated:** 2026-10-10
-- **Supersedes:** 0.5.0
+- **Last Updated:** 2026-10-11
+- **Supersedes:** 0.6.0
 - **Superseded by:** —
 
 ---
@@ -54,6 +54,14 @@ coding prevents churn in Phase 2 and Phase 5.
 - Colour, TTY, and ASCII policy
 - Global flag semantics and precedence
 - Global flag interaction matrix
+- CLI configuration scope
+- CLI configuration schema
+- Configuration field naming
+- Configuration defaults
+- Configuration precedence
+- Configuration file discovery
+- Configuration file loading
+- Environment variable resolution
 
 **Out of scope:**
 
@@ -96,6 +104,7 @@ forge
 ├── remove         (Future — Phase 12)
 ├── blueprint      (Experimental)
 │   └── validate   (Experimental)
+├── config         (MVP, Phase 8)
 ├── doctor         (Future — Phase 6)
 └── version        (MVP)
 ```
@@ -109,6 +118,7 @@ forge
 | `forge validate` | MVP | Phase 5 | Foundation conformance |
 | `forge explain` | MVP | Phase 5 | Explain foundation |
 | `forge template list` | MVP | Phase 5 | List available templates |
+| `forge config` | MVP | Phase 8 | Inspect and manage CLI configuration |
 | `forge version` | MVP | Phase 5 | Version information |
 | `forge check` | Future | Phase 7 | Continuous verification |
 | `forge diff` | Future | Phase 9 | Drift detection |
@@ -207,7 +217,7 @@ Foundation preview
 Create project? [Y/n]
 ```
 
-The prompts use ASCII characters only (see § 4.9l). The interactive
+The prompts use ASCII characters only (see § 4.9j). The interactive
 selection marker is `>`; the checked bullet is `[x]`; the unchecked
 bullet is `[ ]`. Colour and Unicode glyphs are deferred to Phase 6.
 
@@ -266,7 +276,7 @@ Next steps:
 ```
 
 The `[OK]` marker is an ASCII-safe replacement for the checkmark
-glyph. See § 4.9l for the ASCII-only policy.
+glyph. See § 4.9j for the ASCII-only policy.
 
 **Output (JSON):**
 
@@ -672,7 +682,81 @@ Available templates
     React application foundation
 ```
 
-### 4.6 `forge version`
+### 4.6 `forge config`
+
+Displays and manages Forge's CLI configuration. The command's
+scope is documented in § 4.13.1; its schema is documented in
+§ 4.13.2.
+
+**Syntax:**
+
+```text
+forge config [flags]
+```
+
+**Arguments:**
+
+None. Subcommands are reserved for a future phase.
+
+**Flags:**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--format <format>` | enum | `human` | `human` or `json` |
+| `--quiet` | bool | `false` | Suppress non-error output |
+| `--verbose` | bool | `false` | Show diagnostic output |
+
+**Behaviour:**
+
+With no subcommand, `forge config` displays the effective
+configuration for the current invocation. The display includes:
+
+- The value of each configuration field, after the precedence
+  chain has been applied (see § 4.13.5).
+- The source of each value: `flag`, `environment`, `file`, or
+  `default` (see § 4.13.5).
+- The path of the loaded config file, or `(none)` if the
+  configuration came entirely from the defaults.
+
+**Output (human):**
+
+```text
+CLI configuration
+
+  log_level:     info     (source: default)
+  output_format: text     (source: default)
+
+Config file: (none)
+```
+
+**Output (JSON):**
+
+```json
+{
+  "log_level": {
+    "value": "info",
+    "source": "default"
+  },
+  "output_format": {
+    "value": "text",
+    "source": "default"
+  },
+  "config_file": ""
+}
+```
+
+**Exit codes:**
+
+| Condition | Code |
+|-----------|------|
+| Configuration displayed | 0 |
+| Invalid usage/input | 2 |
+| Configuration file unreadable or invalid | 3 |
+
+The command does not modify the configuration; write operations
+are reserved for a future phase.
+
+### 4.7 `forge version`
 
 Displays version information. The command supports two output
 formats: `text` (the default) and `json`. The text format is frozen
@@ -720,7 +804,7 @@ forge 0.1.0
 The JSON output is a single line terminated by `\n`. It contains no
 pretty-printing.
 
-### 4.7 Root Command Identity
+### 4.8 Root Command Identity
 
 The root command's identity strings are frozen. They are defined as
 package-level constants in
@@ -785,7 +869,7 @@ the root command has no parent, its `Short` field is not rendered by
 7. All four are ASCII-only. The em dash and right arrow used in an
    earlier draft were replaced with the ASCII equivalents `-` and
    `->` when the ASCII-only policy (WBS 7.4.2) was frozen. See
-   § 4.9l "Colour and Terminal Policy" for the policy.
+   § 4.9j "Colour and Terminal Policy" for the policy.
 
 #### Changing a string
 
@@ -814,7 +898,7 @@ quotes them. Freezing the strings is the mechanism by which the
 cost is bounded: a change requires a deliberate update to several
 files, which a reviewer sees.
 
-### 4.8 Version Output Contract
+### 4.9 Version Output Contract
 
 The `--version` flag and the `version` subcommand produce output
 derived from a single formatter in `internal/app/version`. The
@@ -822,7 +906,7 @@ derived from a single formatter in `internal/app/version`. The
 default) and `json`. The `--version` flag always produces the text
 format, because a flag cannot take a format argument.
 
-#### 4.8.1 Text Format (frozen by WBS 6.4.1)
+#### 4.9.1 Text Format (frozen by WBS 6.4.1)
 
 The text format is the default. It is produced by
 `Format(w io.Writer, info Info) error` in
@@ -896,7 +980,7 @@ branch on them. Freezing the format bounds the cost of a change:
 a change requires updating the formatter, the tests, and this
 document in one commit, which a reviewer sees.
 
-#### 4.8.2 JSON Format (frozen by WBS 6.4.2)
+#### 4.9.2 JSON Format (frozen by WBS 6.4.2)
 
 The JSON format is selected by `--format json`. It is produced by
 `WriteJSON(w io.Writer, info Info) error` in
@@ -959,7 +1043,7 @@ schema bounds the cost of a change: a change requires updating the
 encoder, the tests, the JSON Schema document, and this section in
 one commit, which a reviewer sees.
 
-#### 4.8.3 Where the format is implemented
+#### 4.9.3 Where the format is implemented
 
 The text format is implemented in
 [`internal/app/version/format.go`](../internal/app/version/format.go),
@@ -1006,7 +1090,7 @@ derive from the same text formatter, they cannot diverge without a
 change to the formatter. The JSON formatter is used only by
 `forge version --format json`.
 
-#### 4.8.4 Changing a format
+#### 4.9.4 Changing a format
 
 Changing either format requires:
 
@@ -1018,7 +1102,7 @@ Changing either format requires:
 3. Updating the byte-for-byte test for the format
    (`TestFormat_FullOutput` for text, `TestWriteJSON_FullOutput`
    for JSON).
-4. Updating the corresponding subsection of § 4.8 above.
+4. Updating the corresponding subsection of § 4.9 above.
 5. For a JSON change that renames or removes a field, opening an
    ADR. Adding a field is additive and does not require an ADR.
 6. Running `task check` and confirming the full suite passes.
@@ -1027,17 +1111,17 @@ The updates are in the same commit. A reviewer who sees a change
 to a formatter without the corresponding documentation update
 rejects the PR.
 
-#### 4.8.5 Why the format is frozen
+#### 4.9.5 Why the format is frozen
 
 Scripts that parse `forge --version`, `forge version`, or
 `forge version --format json` depend on the format. The format is
 a contract with those scripts, in the same way that the exit codes
 are a contract with the shells that branch on them. Freezing the
 format is the mechanism by which the cost of a change is bounded:
-a change requires the updates listed in § 4.8.4, and a reviewer
+a change requires the updates listed in § 4.9.4, and a reviewer
 sees all of them in one diff.
 
-### 4.9 Help and Error Contracts
+### 4.10 Help and Error Contracts
 
 This subsection collects the frozen contracts that govern help
 output, per-command help, invalid-command behaviour, error messages,
@@ -1045,7 +1129,7 @@ output streams, colour and ASCII policy, and global flag
 interaction. Each contract has a subsection below, identified by a
 letter suffix.
 
-#### 4.9a Help Behaviour
+#### 4.10a Help Behaviour
 
 Forge's help system has eight entry points. The table below is the
 contract: every release must handle every row consistently.
@@ -1088,7 +1172,7 @@ contract: every release must handle every row consistently.
    output includes `RootName`, the composed usage line built from
    `RootName` and `RootUsage`, and the body of the help text
    (`RootLongDesc`). `RootShortDesc` is not rendered by
-   `forge --help` for the root command; see § 4.7.
+   `forge --help` for the root command; see § 4.8.
 
 8. **The help output lists every visible registered command.** Every
    visible constructor in `internal/cli/registry.go` produces a
@@ -1111,7 +1195,7 @@ help output for documentation or for error reporting depends on help
 going to stdout and the exit code being 0. Freezing the contract is
 the mechanism by which the cost of a change is bounded.
 
-#### 4.9b Help Invocation Matrix
+#### 4.10b Help Invocation Matrix
 
 WBS 7.1.1 defines the complete inventory of every way to reach
 help. The matrix is the contract; each row has a test in
@@ -1155,7 +1239,7 @@ a case to `internal/cli/help_matrix_test.go`, and (if the row is a
 new equivalence class) adding a dedicated test. The three updates
 are in the same commit.
 
-#### 4.9c Root Help Output Contract
+#### 4.10c Root Help Output Contract
 
 WBS 7.1.2 freezes the exact structure and content of the root
 command's help output. The output is compared byte-for-byte against
@@ -1214,7 +1298,7 @@ The root help output is rendered by Cobra from the root command's
 the registry) and the global flags (from `flags.go`). The golden
 file `internal/cli/testdata/help/root.golden.txt` is the record.
 
-#### 4.9d Per-Command Help Content Contract
+#### 4.10d Per-Command Help Content Contract
 
 WBS 7.1.3 freezes the structure and content of every subcommand's
 help output. The contract is enforced structurally (by tests that
@@ -1257,7 +1341,7 @@ blocks are conditional.
 6. **Global flags appear in every command's help output.**
 7. **No colour, no ANSI escapes.**
 
-#### 4.9e Examples Convention
+#### 4.10e Examples Convention
 
 WBS 7.2.2 defines when a command must declare an Example and what
 the Example's content must look like.
@@ -1294,7 +1378,7 @@ Examples:
 Examples are stored in the `Example` field of the Cobra command,
 not in the `Long` field.
 
-#### 4.9f Invalid Command Behaviour
+#### 4.10f Invalid Command Behaviour
 
 WBS 7.3.1 freezes the behaviour of seven invalid invocations.
 
@@ -1331,7 +1415,7 @@ Cobra's suggestion mechanism fires when an unknown command's name
 is within edit distance 2 of a known command. The value is
 configured by `SuggestionsMinimumDistance` on the root command.
 
-#### 4.9g Error Message Format
+#### 4.10g Error Message Format
 
 WBS 7.3.2 freezes the format of every error message the CLI
 renders.
@@ -1387,7 +1471,7 @@ Suggestion:
 The format is the Phase 2 shape. Richer errors (with structured
 fields, error codes, file/line information) arrive with WBS 10.0.
 
-#### 4.9h Output Stream Boundary
+#### 4.10h Output Stream Boundary
 
 WBS 7.4.1 freezes the boundary between the two output streams.
 
@@ -1429,7 +1513,7 @@ The rule is binary. There is no "sometimes" and no "it depends".
 7. The boundary is verified by tests that redirect each stream
    separately.
 
-#### 4.9i Global Flags Interaction Matrix
+#### 4.10i Global Flags Interaction Matrix
 
 WBS 7.4.3 freezes how `--quiet`, `--verbose`, and `--config`
 interact with help output, version output, and error output.
@@ -1463,11 +1547,11 @@ interact with help output, version output, and error output.
 
 Phase 2 implements the log-level effects of `--quiet` and
 `--verbose`. Phase 2 does not implement a stack-trace mode for
-`--verbose`; the row is aspirational. Phase 2 does not implement
-the config subsystem; the config row documents the intended future
-behaviour.
+`--verbose`; the row is aspirational. Phase 2 implements the
+config subsystem (WBS 8.x); the config row's behaviour is now
+testable.
 
-#### 4.9j Colour and Terminal Policy
+#### 4.10j Colour and Terminal Policy
 
 WBS 7.4.2 freezes the Phase 2 policy on colour, TTY detection, and
 environment variables.
@@ -1505,34 +1589,34 @@ When colour is introduced (Phase 6+), the following rules apply:
 3. Colour is disabled when `--no-color` is passed.
 4. Colour never conveys semantic information alone.
 
-#### 4.9k Root Help Contains No Non-ASCII
+#### 4.10k Root Help Contains No Non-ASCII
 
 The root help output contains no non-ASCII characters. The
 `RootLongDesc` and `RootShortDesc` constants are ASCII-only; the
 subcommand help output that inherits from them is ASCII-only. The
-ASCII-only policy is documented in § 4.9j.
+ASCII-only policy is documented in § 4.10j.
 
-#### 4.9l Colour and Terminal Policy (see § 4.9j)
+#### 4.10l Colour and Terminal Policy (see § 4.10j)
 
-See § 4.9j for the policy. This subsection is a stub for
+See § 4.10j for the policy. This subsection is a stub for
 cross-references.
 
-#### 4.9m Summary of Contracts
+#### 4.10m Summary of Contracts
 
 | Contract | Source WBS | Section | Enforcement |
 |----------|-----------|---------|-------------|
-| Help behaviour | WBS 5.2.2 | § 4.9a | `errors_test.go` |
-| Help invocation matrix | WBS 7.1.1 | § 4.9b | `help_matrix_test.go` |
-| Root help content | WBS 7.1.2 | § 4.9c | `help_golden_test.go` |
-| Per-command help content | WBS 7.1.3 | § 4.9d | `help_content_test.go`, `help_golden_test.go` |
-| Examples convention | WBS 7.2.2 | § 4.9e | `examples_test.go` |
-| Invalid command | WBS 7.3.1 | § 4.9f | `errors_test.go` |
-| Error message format | WBS 7.3.2 | § 4.9g | `format_error_test.go`, `errors_test.go` |
-| Output stream boundary | WBS 7.4.1 | § 4.9h | `stream_boundary_test.go` |
-| Global flag interaction | WBS 7.4.3 | § 4.9i | `flag_interaction_test.go` |
-| Colour / ASCII policy | WBS 7.4.2 | § 4.9j | `ascii_policy_test.go` |
+| Help behaviour | WBS 5.2.2 | § 4.10a | `errors_test.go` |
+| Help invocation matrix | WBS 7.1.1 | § 4.10b | `help_matrix_test.go` |
+| Root help content | WBS 7.1.2 | § 4.10c | `help_golden_test.go` |
+| Per-command help content | WBS 7.1.3 | § 4.10d | `help_content_test.go`, `help_golden_test.go` |
+| Examples convention | WBS 7.2.2 | § 4.10e | `examples_test.go` |
+| Invalid command | WBS 7.3.1 | § 4.10f | `errors_test.go` |
+| Error message format | WBS 7.3.2 | § 4.10g | `format_error_test.go`, `errors_test.go` |
+| Output stream boundary | WBS 7.4.1 | § 4.10h | `stream_boundary_test.go` |
+| Global flag interaction | WBS 7.4.3 | § 4.10i | `flag_interaction_test.go` |
+| Colour / ASCII policy | WBS 7.4.2 | § 4.10j | `ascii_policy_test.go` |
 
-### 4.10 Version Behaviour
+### 4.11 Version Behaviour
 
 The `--version` flag and the `version` subcommand have six
 invocations. The table below is the contract.
@@ -1557,9 +1641,9 @@ invocations. The table below is the contract.
 4. **The `--version` flag always produces the text format.**
 5. **Version output goes to stdout and exits 0.**
 6. **Extra arguments to a version flag are rejected.**
-7. **The version formats are frozen in § 4.8.**
+7. **The version formats are frozen in § 4.9.**
 
-### 4.11 Global Flags
+### 4.12 Global Flags
 
 Forge has exactly three global flags in Phase 2.
 
@@ -1587,13 +1671,386 @@ All three flags are persistent. `forge --verbose config` and
 
 #### The `--format` flag is not global
 
-`--format` is a per-command flag. See § 4.12.
+`--format` is a per-command flag. See § 4.14.
 
 #### Adding a global flag
 
 Adding a global flag requires an ADR.
 
-### 4.12 `--format` Flag Semantics
+### 4.13 Configuration
+
+This subsection collects the frozen contracts that govern Forge's
+CLI configuration. Each contract has a subsection below, identified
+by a numeric suffix.
+
+#### 4.13.1 CLI Configuration Scope
+
+WBS 8.1.1 freezes the boundary between the CLI's configuration
+and the project's configuration.
+
+##### In scope (Phase 2)
+
+The CLI configuration has exactly three conceptual fields:
+
+| Field | Purpose | Consumer |
+|-------|---------|----------|
+| `log_level` | Diagnostic verbosity | WBS 12.0 |
+| `output_format` | Default output format (`text` or `json`) | Commands that accept `--format` |
+| `source_path` | Metadata: where the config file was loaded from | Diagnostics, `forge config` |
+
+The first two fields are read from the config file. The third is
+not: it is a resolution result, written by the config loader
+after it resolves the file's path.
+
+##### Out of scope (Phase 3 or later)
+
+| Field | Belongs to |
+|-------|------------|
+| Project name, type, language | Phase 3 (Blueprint) |
+| Testing, CI, database, container | Phase 3 (Blueprint) |
+| Policies | Phase 8 |
+| Components | Phase 12 |
+| Templates | Phase 4 |
+
+The boundary between the two is the boundary between
+`internal/config` and `internal/blueprint`. The two packages are
+separate; the first does not import the second.
+
+##### Explicitly rejected (ever)
+
+| Field | Rationale |
+|-------|-----------|
+| Command-specific flags | Flags are invocation-scoped, not persistent |
+| Secrets, tokens, credentials | Config files are often committed; a secret in a config file is a leak |
+| Repository paths | Repository-scoped, not CLI-scoped |
+
+##### Rules
+
+1. The `Config` type has exactly three fields. Adding a fourth
+   requires an ADR.
+2. `source_path` is not a config value. It is a resolution
+   result.
+3. No `forge.yaml` schema is defined in Phase 2. The
+   `internal/config` package handles CLI configuration only.
+4. No secrets, tokens, or credentials may ever appear in CLI
+   configuration.
+5. Adding a field to CLI configuration requires an ADR.
+
+#### 4.13.2 CLI Configuration Schema
+
+WBS 8.2.1 freezes the exact schema of CLI configuration.
+
+##### The schema
+
+| Field | Type | Allowed values | Default | YAML key | Env var |
+|-------|------|----------------|---------|----------|---------|
+| `LogLevel` | string | `debug`, `info`, `warn`, `error` | `info` | `log_level` | `FORGE_LOG_LEVEL` |
+| `OutputFormat` | string | `text`, `json` | `text` | `output_format` | `FORGE_OUTPUT_FORMAT` |
+| `SourcePath` | string | (metadata) | `""` | (not in file) | (not in env) |
+
+##### The schema rules
+
+1. Two configuration fields only. Adding a field requires an ADR.
+2. Both fields are strings with enumerated values. No numeric,
+   boolean, or freeform fields.
+3. Enumerations are case-insensitive on input, normalised to
+   lowercase on output.
+4. Unknown values produce a validation error.
+5. Unknown YAML keys produce a validation error (strict parsing).
+6. Unknown env vars in the `FORGE_` prefix are ignored silently.
+7. `SourcePath` is set by the loader, not read from the file.
+8. Field names in Go use PascalCase; YAML keys use snake_case; env
+   vars use `UPPER_SNAKE_CASE`. The mapping is explicit and tested.
+
+##### The `LogLevel` values
+
+| Value | Meaning |
+|-------|---------|
+| `debug` | Keep everything |
+| `info` | Keep INFO, WARN, ERROR (the default) |
+| `warn` | Keep WARN, ERROR |
+| `error` | Keep ERROR only |
+
+##### The `OutputFormat` values
+
+| Value | Meaning |
+|-------|---------|
+| `text` | The machine-friendly line-oriented format |
+| `json` | The machine-readable JSON format |
+
+The schema has two output formats; `human` was removed by
+WBS 8.2.1.
+
+#### 4.13.3 Configuration Field Naming
+
+WBS 8.2.2 freezes the mapping between a configuration field's four
+representations.
+
+##### The mapping
+
+| Go field | YAML key | Env var | CLI flag |
+|----------|----------|---------|----------|
+| `LogLevel` | `log_level` | `FORGE_LOG_LEVEL` | `--log-level` |
+| `OutputFormat` | `output_format` | `FORGE_OUTPUT_FORMAT` | `--output-format` |
+| `SourcePath` | (metadata) | (metadata) | (metadata) |
+
+##### The conventions
+
+| Representation | Convention | Example |
+|----------------|------------|---------|
+| Go identifier | PascalCase | `LogLevel` |
+| YAML key | snake_case | `log_level` |
+| Environment variable | `FORGE_` + `UPPER_SNAKE_CASE` | `FORGE_LOG_LEVEL` |
+| CLI flag | kebab-case with `--` prefix | `--log-level` |
+
+##### The derivation rules
+
+The mapping is one-way deterministic: given a Go field name, each
+non-Go representation is a pure function of it.
+
+- **`GoFieldToYAML`** inserts an underscore before each uppercase
+  letter (except the first) and lowercases the result.
+- **`GoFieldToEnv`** applies `GoFieldToYAML` and uppercases the
+  result, prefixed with `FORGE_`.
+- **`GoFieldToFlag`** applies `GoFieldToYAML`, replaces each
+  underscore with a hyphen, and prefixes with `--`.
+
+#### 4.13.4 Configuration Defaults
+
+WBS 8.3.1 freezes the built-in default values.
+
+##### The defaults
+
+| Field | Default | Rationale |
+|-------|---------|-----------|
+| `LogLevel` | `info` | Balanced output; not silent, not noisy |
+| `OutputFormat` | `text` | Human-readable is the assumed default |
+
+The metadata field (`SourcePath`) has no default.
+
+##### Safety criteria
+
+Every default satisfies all six criteria:
+
+1. **Non-destructive.** No default causes file writes, network
+   access, or process execution.
+2. **Non-silent.** The `LogLevel` default (`info`) produces
+   enough output to be useful.
+3. **Non-noisy.** The `LogLevel` default (`info`) does not
+   produce debug-level spam.
+4. **Interoperable.** The `OutputFormat` default (`text`) is
+   readable in any terminal.
+5. **Stable.** The defaults do not change without an ADR.
+6. **Testable.** Every default has a test asserting its exact
+   value.
+
+##### The `Defaults` function
+
+```go
+func Defaults() Config
+```
+
+The function is pure: no I/O, no package-level state,
+deterministic. Its return value is the lowest-precedence layer of
+the configuration chain.
+
+##### Changing a default
+
+Changing a default requires an ADR. The ADR must name the field,
+state the old and new values, explain why the new default is
+better, name the WBS item, and update this section.
+
+#### 4.13.5 Configuration Precedence
+
+WBS 8.1.2 freezes the order in which configuration values override
+one another.
+
+##### The precedence order
+
+Highest priority first:
+
+| # | Source | Example | Notes |
+|---|--------|---------|-------|
+| 1 | CLI flags | `--log-level=debug` | Highest priority |
+| 2 | Environment variables | `FORGE_LOG_LEVEL=debug` | Prefixed with `FORGE_` |
+| 3 | Config file | `log_level: debug` in `~/.forge/config.yaml` | YAML |
+| 4 | Built-in defaults | `log_level: info` | Frozen in code |
+
+A higher-numbered source does **not** override a lower-numbered
+one.
+
+##### Rules
+
+1. The order is linear.
+2. A flag that is explicitly set wins. A flag whose value is the
+   flag's default value is not "explicitly set".
+3. Environment variables use the `FORGE_` prefix.
+4. Environment variable names are derived from field names by the
+   rule in § 4.13.3.
+5. The config file is YAML with snake_case keys.
+6. Defaults are defined in code and cannot be overridden by an
+   empty config file.
+7. An empty flag value is treated as "not set" unless the flag
+   specifically accepts empty strings.
+
+##### Testing
+
+The precedence chain is tested at each pairwise boundary:
+
+- Flag beats env.
+- Env beats file.
+- File beats default.
+- Flag beats default (transitivity).
+
+#### 4.13.6 Config File Discovery
+
+WBS 8.4.1 freezes the algorithm that finds the config file's path.
+
+##### The algorithm
+
+The loader tries the following paths in order, stopping at the
+first existing file:
+
+| # | Source | Path | Condition |
+|---|--------|------|-----------|
+| 1 | `--config <path>` flag | As given | Highest priority |
+| 2 | `FORGE_CONFIG` env var | As given | Second priority |
+| 3 | Project-local | `./.forge/config.yaml` | If cwd is inside a repo |
+| 4 | User-level (XDG) | `$XDG_CONFIG_HOME/forge/config.yaml` | If `XDG_CONFIG_HOME` is set |
+| 5 | User-level (fallback) | `$HOME/.config/forge/config.yaml` | If XDG not set |
+| 6 | User-level (Windows) | `%APPDATA%\forge\config.yaml` | Windows only |
+| 7 | None | (empty) | Falls back to defaults |
+
+##### Rules
+
+1. The first existing file wins.
+2. `--config` and `FORGE_CONFIG` are explicit. If the file they
+   name does not exist, the algorithm produces an error.
+3. Discovery paths 3 through 6 are optional.
+4. A directory is not a valid config file.
+5. Symlinks are followed.
+6. Discovery does not create files or directories.
+7. Discovery does not read the file — only checks existence.
+8. Discovery is pure with respect to its inputs.
+
+##### The Go signature
+
+```go
+func Discover(explicit string, env func(string) string, cwd string) (string, error)
+```
+
+#### 4.13.7 Config File Loading
+
+WBS 8.4.2 freezes the config file loader.
+
+##### The pipeline
+
+```text
+path
+  -> Read file (with 1 MiB size limit)
+  -> Parse YAML (strict mode: unknown fields rejected)
+  -> Unmarshal into Config
+  -> Validate values (enum check, case-insensitive)
+  -> Return Config
+```
+
+##### The Go signature
+
+```go
+func Load(path string) (Config, error)
+```
+
+##### The strictness rules
+
+1. Unknown YAML fields produce an error.
+2. Type mismatches produce an error.
+3. Invalid enum values produce an error.
+4. Enum matching is case-insensitive.
+5. Empty files and empty mappings produce a `Config` with zero
+   values; the caller applies the defaults.
+6. Null values are treated as "not set".
+7. Duplicate keys produce an error.
+8. Malformed YAML produces an error with a line number.
+9. Trailing content after the first YAML document produces an
+   error.
+10. A BOM at the file's start produces an error.
+11. Environment-variable expansion is not performed.
+
+##### The size limit
+
+The file is limited to 1 MiB. A larger file produces an error.
+
+##### The library
+
+The loader uses `gopkg.in/yaml.v3`, pinned to an exact version in
+`go.mod`. The dependency is authorised by
+`docs/decisions/ADR-008-yaml-library.md`.
+
+#### 4.13.8 Environment Variable Resolution
+
+WBS 8.4.3 freezes the algorithm that applies `FORGE_*` environment
+variables to a `Config` value.
+
+##### The algorithm
+
+For each configuration field in the schema:
+
+1. Compute the field's environment variable name via
+   `EnvVarNameFor`.
+2. Read the variable.
+3. Trim leading and trailing whitespace from the value.
+4. If the trimmed value is empty, leave the field unchanged.
+5. If the trimmed value is non-empty, validate it against the
+   field's allowed values.
+   - A valid value overrides the field (normalised to lowercase).
+   - An invalid value produces an error wrapping
+     `ErrConfigInvalid`.
+
+##### The Go signature
+
+```go
+func OverrideFromEnv(cfg Config, env func(string) string) (Config, error)
+```
+
+##### The rules
+
+1. Env vars use the naming convention from § 4.13.3.
+2. Empty values are treated as "not set".
+3. Invalid values produce an error.
+4. Enum matching is case-insensitive.
+5. Unknown `FORGE_*` variables are silently ignored.
+6. Values are trimmed of leading and trailing whitespace.
+7. `FORGE_CONFIG` is reserved for the config file path and is not
+   treated as a config value.
+
+##### The precedence chain
+
+The full chain, from lowest to highest:
+
+| Layer | Applied by |
+|-------|------------|
+| 4. Default | `Defaults()` |
+| 3. Config file | `Load(path)` |
+| 2. Environment variable | `OverrideFromEnv(cfg, env)` |
+| 1. CLI flag | A future WBS item |
+
+A caller applies the layers in ascending order. Each layer's
+non-empty values override the layer below.
+
+#### 4.13.9 Configuration Summary
+
+| Contract | Source WBS | Section | Enforcement |
+|----------|-----------|---------|-------------|
+| Configuration scope | WBS 8.1.1 | § 4.13.1 | `scope_test.go` |
+| Configuration schema | WBS 8.2.1 | § 4.13.2 | `schema_test.go`, `config_test.go` |
+| Field naming | WBS 8.2.2 | § 4.13.3 | `naming_test.go` |
+| Safe defaults | WBS 8.3.1 | § 4.13.4 | `defaults_test.go` |
+| Precedence order | WBS 8.1.2 | § 4.13.5 | `precedence_test.go` |
+| File discovery | WBS 8.4.1 | § 4.13.6 | `discover_test.go` |
+| File loading | WBS 8.4.2 | § 4.13.7 | `loader_test.go` |
+| Env resolution | WBS 8.4.3 | § 4.13.8 | `env_test.go` |
+
+### 4.14 `--format` Flag Semantics
 
 Commands that produce structured output accept a per-command
 `--format` flag.
@@ -1603,6 +2060,7 @@ Commands that produce structured output accept a per-command
 | Command | Value set | Default | Introduced by |
 |---------|-----------|---------|---------------|
 | `forge version` | `text`, `json` | `text` | WBS 6.4.2 |
+| `forge config` | `human`, `json` | `human` | WBS 8.2.1 |
 | `forge new` | `human`, `json` | `human` | Phase 5 |
 | `forge init` | `human`, `json` | `human` | Phase 5 |
 | `forge validate` | `human`, `json` | `human` | Phase 5 |
@@ -1718,6 +2176,7 @@ Dry-run is **optional** for:
 - `forge diff`
 - `forge explain`
 - `forge template list`
+- `forge config`
 - `forge version`
 
 ---
@@ -1751,6 +2210,11 @@ malformed `forge.yaml` syntax, ambiguous foundation selection, and
 malformed invocations rejected by `validateArgs`.
 
 #### 3 - Configuration failure
+
+Includes: config file not found, config file unreadable, config
+file invalid (unknown field, type mismatch, invalid enum value,
+malformed YAML, duplicate key, BOM, trailing content), and config
+env var invalid.
 
 #### 4 - Filesystem failure
 
@@ -1797,6 +2261,10 @@ field.
 **Exception: `forge version --format json`.** The `forge version`
 JSON output does not include a `schemaVersion` field.
 
+**Exception: `forge config --format json`.** The `forge config`
+JSON output is a map of field descriptors, not a versioned
+document. The schema is identified by the field names.
+
 ### 8.2 Output Streams
 
 - **stdout** - successful command output
@@ -1838,7 +2306,7 @@ by `\n`.
 ### 9.6 Human-Readable Output
 
 Default output is optimised for humans. In Phase 2, the symbols are
-ASCII-safe (see § 4.9j). The vocabulary is:
+ASCII-safe (see § 4.10j). The vocabulary is:
 
 | ASCII marker | Meaning | Usage |
 |--------------|---------|-------|
@@ -1864,13 +2332,13 @@ See § 9.6 for the ASCII-safe markers.
 
 - Colour is a visual aid, never a requirement.
 - Meaning is always encoded in the symbol or text.
-- Phase 2 emits no colour. See § 4.9j.
-- When colour is introduced (Phase 6+), the rules in § 4.9j apply.
+- Phase 2 emits no colour. See § 4.10j.
+- When colour is introduced (Phase 6+), the rules in § 4.10j apply.
 
 ### 9.12 Accessibility
 
 - Output is readable in monochrome terminals.
-- Phase 2 output is ASCII-only. See § 4.9j.
+- Phase 2 output is ASCII-only. See § 4.10j.
 - Long lines wrap at 80 columns where practical.
 - No information is conveyed by position alone.
 
@@ -1896,7 +2364,7 @@ Non-interactive mode is triggered by:
 - Explicit `--non-interactive` flag
 - Presence of `--format json` (implies non-interactive)
 
-`forge version` is always non-interactive.
+`forge version` and `forge config` are always non-interactive.
 
 ---
 
@@ -1928,6 +2396,8 @@ Example codes:
 - `FORGE_INPUT_MISSING_ARGUMENT`
 - `FORGE_CONFIG_NOT_FOUND`
 - `FORGE_CONFIG_INVALID`
+- `FORGE_CONFIG_TOO_LARGE`
+- `FORGE_CONFIG_BOM`
 - `FORGE_FOUNDATION_NOT_FOUND`
 - `FORGE_TEMPLATE_NOT_FOUND`
 - `FORGE_TEMPLATE_INCOMPATIBLE`
@@ -1959,6 +2429,10 @@ The following questions remain open:
   remote templates once a registry exists?
 - Should the JSON format of `forge version` gain a `schemaVersion`
   field once a second JSON-emitting mode is added?
+- Should `forge config` gain subcommands (`get`, `set`, `unset`,
+  `list`) in Phase 8, or remain a read-only view?
+- Should the config file support a `$ENV_VAR` interpolation
+  syntax, or is the "no expansion" rule permanent?
 
 ---
 
@@ -1988,4 +2462,5 @@ becomes **Approved** when:
 | 0.3.0 | 2026-10-10 | @thapelomagqazana | Added § 4.8 (Version Output Contract) in response to WBS 5.1.2. Corrected the "Where each string appears" table in § 4.7. |
 | 0.4.0 | 2026-10-10 | @thapelomagqazana | Added § 4.9 (Help Behaviour) in response to WBS 5.2.2. Added § 4.10 (Version Behaviour) in response to WBS 5.2.3. Added § 4.11 (Global Flags) in response to WBS 5.3.1. |
 | 0.5.0 | 2026-10-10 | @thapelomagqazana | Extended § 4.6, § 4.8, and § 4.10 in response to WBS 6.4.1 and WBS 6.4.2. Added § 4.12 (`--format` Flag Semantics). Updated § 8 (Machine-Readable Output). |
-| 0.6.0 | 2026-10-10 | @thapelomagqazana | Added § 4.9b through § 4.9m in response to WBS 7.1.1, WBS 7.1.2, WBS 7.1.3, WBS 7.2.1, WBS 7.2.2, WBS 7.3.1, WBS 7.3.2, WBS 7.4.1, WBS 7.4.2, and WBS 7.4.3. The new subsections cover: the help invocation matrix (§ 4.9b), the root help content contract (§ 4.9c), the per-command help content contract (§ 4.9d), the Examples convention (§ 4.9e), the invalid-command contract (§ 4.9f), the error message format (§ 4.9g), the output stream boundary (§ 4.9h), the global flag interaction matrix (§ 4.9i), the colour and terminal policy (§ 4.9j), and a summary of contracts (§ 4.9m). Updated § 4.7 to reflect the ASCII-only constants (`RootShortDesc` uses `-`; `RootLongDesc` uses `->`). Updated § 9.6 and § 9.8 to use ASCII-safe markers (`[OK]`, `[WARN]`, `[ERROR]`, `[SKIP]`, `[!]`). Updated § 3.1 and § 4.1's interactive wizard example to use ASCII-safe markers. |
+| 0.6.0 | 2026-10-10 | @thapelomagqazana | Added § 4.9b through § 4.9m in response to WBS 7.1.1 through WBS 7.4.3. The new subsections cover the help invocation matrix, the root and per-command help content contracts, the Examples convention, the invalid-command contract, the error message format, the output stream boundary, the global flag interaction matrix, and the colour and terminal policy. Updated § 4.7 to reflect the ASCII-only constants. Updated § 9.6 and § 9.8 to use ASCII-safe markers. |
+| 0.7.0 | 2026-10-11 | @thapelomagqazana | Added § 4.13 (Configuration) with nine subsections in response to WBS 8.1.1, WBS 8.1.2, WBS 8.2.1, WBS 8.2.2, WBS 8.3.1, WBS 8.4.1, WBS 8.4.2, and WBS 8.4.3. The new subsections cover the CLI configuration scope, the schema, the field-name mapping rules, the safe defaults, the precedence order, the file discovery algorithm, the YAML loading with strict validation, and the environment-variable resolution. Added § 4.6 (`forge config` command reference). Updated § 3.1 (command tree) and § 3.2 (tier assignments) to include `forge config`. Renumbered § 4.9 through § 4.12 to § 4.10 through § 4.14 to make room for the new `forge config` section. Updated § 6 (dry-run list), § 7.2 (exit-code semantics for the config category), § 8.1 (schema-versioning exceptions), § 10 (non-interactive commands), and § 11 (error catalogue) to reference the config subsystem. |

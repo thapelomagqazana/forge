@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+
+	"github.com/thapelomagqazana/forge/internal/config"
 )
 
 // mockCategorizedError is a minimal implementation of the
@@ -230,5 +232,118 @@ func TestExitCodeFromError_AllCategoriesAreMapped(t *testing.T) {
 					category)
 			}
 		})
+	}
+}
+
+// TestExitCodeFromError_ConfigErrorsClassifyAsExitConfig verifies
+// that every error the config package produces is classified as
+// ExitConfig.
+//
+// # Why this test exists alongside the mock-based tests
+//
+// The other tests in this file exercise the classifier against a
+// mock CategorizedError. The mock's category string is chosen
+// by the test; it always matches the classifier's switch. The
+// tests therefore verify the classifier's *interface* contract
+// but cannot catch a drift between the classifier's string
+// literals and a real package's categories.
+//
+// This test closes the gap. It constructs every category of
+// error the config package produces and asserts that the
+// classifier maps each to ExitConfig (3). If someone changes
+// the config package's Category() method to return a different
+// string, this test fails; the contributor sees the failure and
+// updates the classifier's switch in the same commit.
+//
+// # Why the test uses the config package's constructors
+//
+// The config package's error type is unexported. The test cannot
+// construct a *configError directly. It uses the package's
+// exported constructors (NewConfigNotFound, NewConfigPermission,
+// and so on) to obtain an error whose Category() method the
+// classifier reads. The constructors' signatures are documented
+// in the config package; the test's use is exactly the way a
+// caller (the loader) uses them.
+//
+// # Why the test lists every category explicitly
+//
+// The list is deliberately explicit. A future WBS that adds a
+// ninth category to the config package's taxonomy must add a
+// row here. The explicit list is the checkpoint that forces the
+// contributor to consider the classifier's handling of the new
+// category.
+func TestExitCodeFromError_ConfigErrorsClassifyAsExitConfig(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{"E1 not found", config.NewConfigNotFound("/p/forge.yaml")},
+		{"E2 permission", config.NewConfigPermission("/p/forge.yaml", nil)},
+		{"E3 malformed", config.NewConfigMalformed("/p/forge.yaml", 5, 3, nil)},
+		{"E4 unknown field", config.NewConfigUnknownField("/p/forge.yaml", "log_levl", nil)},
+		{"E5 invalid type", config.NewConfigInvalidType("/p/forge.yaml", "log_level", nil)},
+		{"E6 invalid value", config.NewConfigInvalid("log_level", "verbose", []string{"debug", "info"})},
+		{"E7 too large", config.NewConfigTooLarge("/p/forge.yaml")},
+		{"E8 invalid encoding", config.NewConfigInvalidEncoding("/p/forge.yaml")},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := exitCodeFromError(tc.err)
+			if got != ExitConfig {
+				t.Errorf("exitCodeFromError = %d; want %d (ExitConfig)\n"+
+					"the config package's Category() may have changed; "+
+					"check the switch in exitcodes.go",
+					got, ExitConfig)
+			}
+		})
+	}
+}
+
+// TestExitCodeFromError_ConfigErrorsCategoryMatches verifies that
+// the config package's Category() method returns the string the
+// classifier recognises.
+//
+// # Why this test is separate from the classification test
+//
+// The classification test asserts the end-to-end property: a
+// config error maps to ExitConfig. This test asserts the
+// intermediate property: the config package's category string
+// is exactly "config". A failure here is more specific than a
+// failure in the classification test; it tells the contributor
+// that the string changed, not just that the classification
+// broke.
+//
+// # How the test reads the category
+//
+// The config package's error type is unexported; the test cannot
+// assert on the concrete type. It uses the CategorizedError
+// interface (defined in this package) to read the error's
+// category string. The interface assertion works because the
+// config error implements Category() string.
+func TestExitCodeFromError_ConfigErrorsCategoryMatches(t *testing.T) {
+	t.Parallel()
+
+	// One representative config error is sufficient; the
+	// classification test above covers every category. This
+	// test asserts the string the classifier compares against.
+	err := config.NewConfigNotFound("/p/forge.yaml")
+
+	var cat CategorizedError
+	if !errors.As(err, &cat) {
+		t.Fatalf("config error does not implement CategorizedError")
+	}
+	if got := cat.Category(); got != "config" {
+		t.Errorf("config error's Category() = %q; want %q\n"+
+			"the classifier's switch compares against the literal %q; "+
+			"if the config package changed its category string, "+
+			"update the switch in exitcodes.go and the string in the "+
+			"config package's errors.go",
+			got, "config", "config")
 	}
 }

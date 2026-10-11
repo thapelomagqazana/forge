@@ -134,6 +134,24 @@ type Dependencies struct {
 	// environment variable call this function rather than calling
 	// os.Getenv directly.
 	Env func(string) string
+
+	// RootPath is the directory against which relative paths are
+	// resolved.
+	//
+	// The value is normally the process's current working directory.
+	// Tests set it to a temporary directory so that path resolution
+	// is deterministic.
+	//
+	// The field is a collaborator, not a derived value: it is read
+	// from the process boundary (options.rootPath) by
+	// buildDependencies and passed through to commands unchanged.
+	// The config loader (WBS 8.4.1) reads it to discover the
+	// configuration file when the --config flag is not set.
+	//
+	// The empty string means "use the process's current working
+	// directory". A caller that wants the default behaviour sets
+	// the field to the empty string.
+	RootPath string
 }
 
 // Logger is the diagnostic logging interface used by commands.

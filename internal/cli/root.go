@@ -374,22 +374,49 @@ func newRootCmd(deps Dependencies) *cobra.Command {
 		// value against a future Cobra default change.
 		SuggestionsMinimumDistance: suggestionsMinimumDistance,
 
-		// PersistentPreRunE is reserved for cross-cutting concerns
-		// that must initialize uniformly across every subcommand:
-		// configuration loading (WBS 8.0) and logger initialization
-		// (WBS 12.0). In Phase 2 the hook is a no-op stub. The hook
-		// point is claimed before any subcommand might be tempted
-		// to use it for a local purpose.
+		// PersistentPreRunE is the root command's pre-run hook.
+		// It runs after Cobra parses the arguments and before the
+		// dispatched subcommand's RunE. The hook loads the CLI's
+		// configuration (WBS 8.4.5) and stores the resolved Config
+		// for the dispatched command to read.
+		//
+		// # Why the assignment is a call
+		//
+		// initializeCommandEnvironment is a constructor: it takes
+		// the Dependencies value and returns the closure Cobra
+		// calls. The constructor pattern is what lets the hook
+		// capture deps without changing Cobra's required
+		// signature.
+		//
+		// The alternative — a plain function with the signature
+		// Cobra requires — would have no access to deps. The hook
+		// needs deps.Env (the environment lookup), deps.RootPath
+		// (the working directory for config discovery), and
+		// deps.Config (the pointer the resolved config is written
+		// through). The constructor is the mechanism that supplies
+		// them.
+		//
+		// # What the hook does
+		//
+		// The hook applies the four configuration layers in order:
+		// defaults, config file, environment variables, CLI flags.
+		// The resolved Config is stored in the command's context
+		// (the primary transport, read by RunE with
+		// ConfigFromContext(cmd.Context())) and in the pointer
+		// deps.Config (a secondary store, visible only inside the
+		// closure).
+		//
+		// The full documentation is in hooks.go.
+		//
+		// # Enforcement
 		//
 		// No subcommand may define its own PersistentPreRunE; a
 		// subcommand-level hook would override the root's hook for
-		// that subcommand's subtree, and the cross-cutting
-		// initialization would be silently skipped. The rule is
-		// enforced by TestHooks_NoSubcommandOverrides in
-		// hooks_test.go and by the Taskfile target verify:hooks.
-		// See hooks.go for the hook's full documentation and
-		// docs/architecture.md § 11.16 for the pattern.
-		PersistentPreRunE: initializeCommandEnvironment,
+		// that subcommand's subtree, and the configuration would
+		// not be loaded. The rule is enforced by
+		// TestHooks_NoSubcommandOverrides in hooks_test.go and by
+		// the Taskfile target verify:hooks.
+		PersistentPreRunE: initializeCommandEnvironment(deps),
 
 		// The handler runs only when Cobra has not dispatched to a
 		// subcommand. See the docstring above for the two cases.
