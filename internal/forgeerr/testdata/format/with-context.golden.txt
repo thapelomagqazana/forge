@@ -1,0 +1,4 @@
+Error: invalid YAML in config.yaml
+Code:  FORGE_CONFIG_MALFORMED
+       file: config.yaml
+       line: 12

@@ -1,21 +1,8 @@
-package cli
-
-import (
-	"errors"
-	"fmt"
-
-	"github.com/spf13/cobra"
-
-	appversion "github.com/thapelomagqazana/forge/internal/app/version"
-)
-
-// newVersionCmd constructs the `forge version` command.
+// Package cli — the `forge version` command.
 //
-// # The handler / service pattern
-//
-// This file is the reference implementation of the pattern defined
-// by WBS 4.3.1 and documented in docs/architecture.md "Handler /
-// Service Boundary".
+// This file is the reference implementation of the handler /
+// service pattern defined by WBS 4.3.1 and documented in
+// docs/architecture.md "Handler / Service Boundary".
 //
 // The handler:
 //
@@ -44,28 +31,47 @@ import (
 // frozen by WBS 6.4.1. The "json" value produces the machine-
 // readable output frozen by WBS 6.4.2.
 //
-// An unknown value produces an error from the service
-// (`appversion.ErrUnknownFormat`). The handler wraps the error
-// with a diagnostic that names the flag and the offending value,
-// and returns it. `executeWithOptions` maps the error to the
-// `ExitUsage` exit code (2), matching the "usage error" category
-// for invalid flag values.
+// An unknown value produces a *forgeerr.Error with category
+// CategoryCLI and code CodeCLIUnknownFormat. The handler
+// constructs the error; executeWithOptions renders it and maps
+// its category to the exit code (2, ExitUsage).
 //
-// # Why the error is wrapped, not replaced
+// # Why the error is a *forgeerr.Error
 //
-// The sentinel `appversion.ErrUnknownFormat` is preserved by the
-// wrap, so callers can test with errors.Is. The wrapping message
-// is the user-facing text; the sentinel is the machine-facing
-// signal. Both are useful.
+// The WBS 10.5.1 invariant is that every error reaching the CLI
+// boundary is a *forgeerr.Error. Before the migration, the
+// handler returned a plain error wrapped around the service's
+// sentinel; the boundary classified the plain error as
+// FORGE_INTERNAL_UNEXPECTED, and the exit code was
+// ExitFailure (1) instead of ExitUsage (2).
+//
+// The handler now constructs a *forgeerr.Error directly. The
+// category is CategoryCLI, because the failure is a usage error
+// (the user passed a value the command does not accept). The
+// code is CodeCLIUnknownFormat, which is a member of the
+// registry (WBS 10.3.1). The offending value is in the error's
+// context under the key "format", and the remediation names the
+// accepted values.
+//
+// # What about the service's sentinel
+//
+// The service still exports appversion.ErrUnknownFormat. The
+// handler does not use it in the new implementation: the
+// *forgeerr.Error carries the same information in a structured
+// form (the code), and the CLI's consumer can match on the code
+// via errors.As + Code() (the pattern documented in ADR-015).
+// The sentinel remains exported for callers outside the CLI that
+// need it; a future WBS item may deprecate it.
 //
 // # Error path
 //
 // Two error paths exist:
 //
-//  1. Unknown format — the service returns ErrUnknownFormat,
-//     wrapped by the handler. Exit code ExitUsage (2).
+//  1. Unknown format — the handler constructs a *forgeerr.Error
+//     with code CodeCLIUnknownFormat. Exit code ExitUsage (2).
 //  2. Write error — the service returns the writer's error,
-//     wrapped by the service. Exit code ExitError (1).
+//     wrapped by the service. Exit code depends on the service's
+//     category; for a write failure it is ExitFailure (1).
 //
 // Both are returned by the handler; neither is written to stderr
 // by the handler. The error-to-message and error-to-exit-code
@@ -94,6 +100,22 @@ import (
 // change to the field's content changes the rendered output and
 // fails TestHelpGolden_Subcommands/version until the golden file
 // is regenerated.
+package cli
+
+import (
+	"github.com/spf13/cobra"
+
+	appversion "github.com/thapelomagqazana/forge/internal/app/version"
+	"github.com/thapelomagqazana/forge/internal/forgeerr"
+)
+
+// newVersionCmd constructs the `forge version` command.
+//
+// The constructor's signature is fixed by the command registry
+// (registry.go): every constructor takes a Dependencies value and
+// returns a *cobra.Command. The handler body is under ten lines
+// of executable code; the flags, arguments, and formatting are
+// delegated.
 func newVersionCmd(deps Dependencies) *cobra.Command {
 	var format string
 
@@ -114,11 +136,49 @@ See the CLI UX specification for the frozen format of each.`,
   forge version --format json`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// The dispatch is delegated to the application
+			// service. The service returns a plain error when
+			// the writer fails; the handler wraps it as a
+			// *forgeerr.Error if it is not one.
+			//
+			// The unknown-format error is constructed below,
+			// before the call, because the service's sentinel
+			// (ErrUnknownFormat) is not a *forgeerr.Error.
+			// Pre-checking the format keeps the handler's
+			// error path uniform: every error the handler
+			// returns is a *forgeerr.Error.
+			switch format {
+			case appversion.FormatText, appversion.FormatJSON:
+				// The value is supported; proceed.
+			default:
+				return forgeerr.New(
+					forgeerr.CategoryCLI,
+					string(forgeerr.CodeCLIUnknownFormat),
+					"unknown output format",
+				).
+					WithContext("format", format).
+					WithRemediation("Use '--format text' or '--format json'.")
+			}
+
 			if err := appversion.FormatAs(deps.Stdout, appversion.Get(), format); err != nil {
-				if errors.Is(err, appversion.ErrUnknownFormat) {
-					return fmt.Errorf("--format: %w", err)
-				}
-				return err
+				// The service returned a writer error. Wrap
+				// it as an INTERNAL error, so the invariant
+				// "every error reaching the boundary is a
+				// *forgeerr.Error" holds without the
+				// boundary's safety-net wrapping firing.
+				//
+				// The wrapper is the FORGE_INTERNAL_UNEXPECTED
+				// shape: the failure is a write to the
+				// injected writer, which is an internal
+				// concern (the caller supplied the writer,
+				// and its failure is not a user input
+				// problem).
+				return forgeerr.Wrap(
+					forgeerr.CategoryInternal,
+					string(forgeerr.CodeInternalUnexpected),
+					"failed to write version output",
+					err,
+				)
 			}
 			return nil
 		},

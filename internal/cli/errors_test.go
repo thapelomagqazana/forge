@@ -11,15 +11,27 @@
 // table-driven subtest; the subtest name carries the case ID so
 // that a failure points at the case in the documentation.
 //
-// # Golden files
+// # The frozen error format
 //
-// For the five cases that produce stable, fully-deterministic
-// output, the test compares the stderr against a golden file under
-// testdata/errors/. The two cases that involve Cobra's suggestion
-// mechanism (I2) or that produce output whose exact form is
-// sensitive to Cobra's internals (I6) are asserted by substring
-// rather than by byte-for-byte comparison. The choice is
-// documented on each case's test.
+// The user-facing error format is frozen in WBS 10.4.1 and lives
+// in internal/forgeerr/format.go. The CLI produces
+// *forgeerr.Error values and lets forgeerr.Format render them. The
+// assertions below therefore expect the frozen format:
+//
+//	Error: <message>
+//	Code:  <code>
+//	       <context-key>: <value>
+//
+//	Suggestion:
+//	  <remediation>
+//
+// The format's byte-exactness is tested in
+// internal/forgeerr/format_test.go against the golden files in
+// internal/forgeerr/testdata/format/. This file does not
+// duplicate that coverage; it asserts the properties the CLI is
+// responsible for: exit code, empty stdout, the required
+// substrings, the absence of ANSI escapes, and the first-line and
+// trailing-newline rules.
 //
 // # How the tests invoke the CLI
 //
@@ -27,18 +39,22 @@
 // executeWithOptions. The invocation exercises the same path
 // production code uses: argument parsing, pre-parse validation,
 // command dispatch, and error rendering.
+//
+// # The Cobra-error wrapping (WBS 10.5.1)
+//
+// Cobra's parser and dispatcher produce plain errors for the
+// failures they detect: unknown flags, unknown commands. The CLI
+// wraps each as a *forgeerr.Error (via wrapCobraError in
+// execute.go), so the frozen format applies uniformly. The
+// wrapped error puts the varying data (the flag name, the command
+// name) in the context map, not in the message. The I4 and I5
+// assertions below reflect that shape.
 package cli
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
-
-// =============================================================================
-// The matrix
-// =============================================================================
 
 // invalidCase describes one invalid invocation.
 type invalidCase struct {
@@ -55,21 +71,28 @@ type invalidCase struct {
 	// include the program name; runCLI prepends it.
 	args []string
 
-	// contains is a list of substrings that must appear in stderr.
-	// It is used for cases where the exact output is not pinned
-	// by a golden file.
+	// contains is a list of substrings that must appear in
+	// stderr.
 	contains []string
-
-	// golden is the path to the golden file for stderr, relative
-	// to the test's working directory. It is empty for cases that
-	// use `contains` instead.
-	golden string
 }
 
 // invalidCases returns the seven cases the contract pins.
 //
 // The function is a method-style helper; it returns a fresh slice
 // on each call so that a caller cannot mutate a shared value.
+//
+// # The substrings
+//
+// The substrings are chosen to match the frozen format's
+// structure. Two properties are asserted for each case: the code
+// (the stable identifier) and the varying data (the flag name,
+// the command name, the unknown topic). A third property — the
+// message — is asserted for cases whose message is stable and
+// distinctive.
+//
+// The substrings do not assert the exact indentation of context
+// lines. The indentation is the frozen format's concern (rule F3
+// of WBS 10.4.1); the CLI's tests assert on the semantic content.
 func invalidCases() []invalidCase {
 	return []invalidCase{
 		{
@@ -77,7 +100,9 @@ func invalidCases() []invalidCase {
 			name: "unknown root command",
 			args: []string{"foobar"},
 			contains: []string{
-				`unknown command "foobar" for "forge"`,
+				"unknown command",
+				"foobar",
+				"FORGE_CLI_UNKNOWN_COMMAND",
 			},
 		},
 		{
@@ -85,7 +110,9 @@ func invalidCases() []invalidCase {
 			name: "typo of a known command",
 			args: []string{"verison"},
 			contains: []string{
-				`unknown command "verison" for "forge"`,
+				"unknown command",
+				"verison",
+				"FORGE_CLI_UNKNOWN_COMMAND",
 				"Did you mean",
 				"version",
 			},
@@ -97,6 +124,7 @@ func invalidCases() []invalidCase {
 			contains: []string{
 				"unknown command",
 				"extra",
+				"FORGE_CLI_UNKNOWN_COMMAND",
 			},
 		},
 		{
@@ -104,7 +132,9 @@ func invalidCases() []invalidCase {
 			name: "unknown flag at the root",
 			args: []string{"--unknown-flag"},
 			contains: []string{
-				"unknown flag: --unknown-flag",
+				"unknown flag",
+				"FORGE_CLI_UNKNOWN_FLAG",
+				"--unknown-flag",
 			},
 		},
 		{
@@ -112,7 +142,9 @@ func invalidCases() []invalidCase {
 			name: "unknown flag at a subcommand",
 			args: []string{"version", "--unknown-flag"},
 			contains: []string{
-				"unknown flag: --unknown-flag",
+				"unknown flag",
+				"FORGE_CLI_UNKNOWN_FLAG",
+				"--unknown-flag",
 			},
 		},
 		{
@@ -140,11 +172,12 @@ func invalidCases() []invalidCase {
 
 // TestErrors_Matrix exercises every case of the invalid-command
 // contract and asserts the shared properties: exit code 2, empty
-// stdout, non-empty stderr, and the required substrings.
+// stdout, non-empty stderr, the required substrings, and the
+// first-line and trailing-newline rules of the frozen format.
 //
-// The test does not assert the exact bytes of stderr. That is the
-// job of TestErrors_Golden for the cases that have a golden file.
-// This test asserts the properties that apply to every case.
+// The test does not assert the exact bytes of stderr. That
+// coverage lives in internal/forgeerr/format_test.go, which tests
+// the frozen format's golden files directly.
 func TestErrors_Matrix(t *testing.T) {
 	t.Parallel()
 
@@ -204,97 +237,21 @@ func TestErrors_Matrix(t *testing.T) {
 }
 
 // =============================================================================
-// Golden files
-// =============================================================================
-
-// TestErrors_Golden compares each case's stderr against a golden
-// file, for the cases that have one.
-//
-// The cases without a golden file (I2 and I6) use TestErrors_Matrix's
-// substring assertions instead. The choice is documented in
-// errors.go's case list.
-//
-// # How to regenerate a golden file
-//
-// Regenerate it from the binary:
-//
-//	task build
-//	./forge <args> 2> internal/cli/testdata/errors/<name>.golden.txt
-//
-// Then run this test. If it passes, the golden file records the
-// current output.
-//
-// # Why the shell redirect writes to a file
-//
-// The shell redirect ("2>") captures stderr, not stdout. The
-// golden file records the diagnostic, not the (empty) stdout.
-// Redirecting stdout would produce an empty file.
-func TestErrors_Golden(t *testing.T) {
-	t.Parallel()
-
-	for _, tc := range invalidCases() {
-		if tc.golden == "" {
-			continue
-		}
-		tc := tc
-		t.Run(tc.id+" "+tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := runCLI(t, tc.args, nil)
-
-			wantBytes, err := os.ReadFile(filepath.Join("testdata", tc.golden))
-			if err != nil {
-				t.Fatalf("read golden %s: %v", tc.golden, err)
-			}
-			want := string(wantBytes)
-
-			if got.stderr != want {
-				// Report the first differing line.
-				gotLines := strings.Split(got.stderr, "\n")
-				wantLines := strings.Split(want, "\n")
-				for i := 0; i < len(gotLines) || i < len(wantLines); i++ {
-					var g, w string
-					if i < len(gotLines) {
-						g = gotLines[i]
-					}
-					if i < len(wantLines) {
-						w = wantLines[i]
-					}
-					if g != w {
-						t.Errorf("first difference at line %d:\n"+
-							"got:  %q\nwant: %q\n"+
-							"if the change is intentional, regenerate %s "+
-							"from the binary",
-							i+1, g, w, tc.golden)
-						return
-					}
-				}
-				t.Errorf("outputs differ in length but not in lines:\n"+
-					"got length:  %d\nwant length: %d",
-					len(got.stderr), len(want))
-			}
-		})
-	}
-}
-
-// =============================================================================
 // Suggestion mechanism
-// =============================================================================// TestErrors_TypoSuggestsVersion verifies that the typo case (I2)
-// produces a suggestion.
-//
-// The test is separate from the matrix because the suggestion's
-// exact text depends on Cobra's internal formatting, which is not
-// part of the contract. The test asserts the presence of the
-// distinctive substrings ("Did you mean this?" and "version") that
-// the suggestion must contain.
+// =============================================================================
+
 // TestErrors_TypoSuggestsVersion verifies that the typo case (I2)
 // produces a suggestion.
 //
-// The test is separate from the matrix because the suggestion's
-// exact text depends on Cobra's internal formatting, which is not
-// part of the contract. The test asserts the presence of the
-// distinctive substrings ("Did you mean" and "version") that the
-// suggestion must contain, plus the "Suggestion:" block header.
+// The suggestion is carried as the *forgeerr.Error's remediation
+// and rendered by forgeerr.Format as the Suggestion block. The
+// test asserts the distinctive substrings the block must contain.
+//
+// The test is separate from the matrix because the exact
+// rendering of the suggestion is a property of the frozen format
+// (tested in internal/forgeerr/format_test.go), not of the CLI.
+// This test asserts that the CLI attaches a suggestion to the
+// error in the first place.
 func TestErrors_TypoSuggestsVersion(t *testing.T) {
 	t.Parallel()
 
@@ -307,6 +264,9 @@ func TestErrors_TypoSuggestsVersion(t *testing.T) {
 	if !strings.HasPrefix(got.stderr, "Error: ") {
 		t.Errorf("stderr does not start with %q:\n%s",
 			"Error: ", got.stderr)
+	}
+	if !strings.Contains(got.stderr, "Code:  FORGE_CLI_UNKNOWN_COMMAND") {
+		t.Errorf("stderr does not contain the code line:\n%s", got.stderr)
 	}
 	if !strings.Contains(got.stderr, "Suggestion:") {
 		t.Errorf("stderr does not contain a Suggestion block:\n%s",
@@ -321,21 +281,14 @@ func TestErrors_TypoSuggestsVersion(t *testing.T) {
 	}
 }
 
-// TestErrors_SuggestionMinimumDistanceIsTwo verifies that the root
-// command's SuggestionsMinimumDistance field is 2.
+// TestErrors_SuggestionMinimumDistanceIsTwo verifies that the
+// suggestion distance is 2.
 //
-// The check reads the constant suggestionsMinimumDistance (defined
-// in errors.go). A future change to the constant is a change to
-// the contract; the test would fail and the contributor would
-// update the contract's documentation in the same commit.
-//
-// # Why a constant, not a field read
-//
-// The value is set on the root command in newRootCmd. Reading it
-// back from a constructed command would work, but the construction
-// requires a Dependencies value and the read would be indirect.
-// The constant is the source of truth; the root command's
-// assignment references it. The test asserts the constant's value.
+// The check reads the constant suggestionsMinimumDistance
+// (defined in errors.go). A future change to the constant is a
+// change to the contract; the test would fail and the
+// contributor would update the contract's documentation in the
+// same commit.
 func TestErrors_SuggestionMinimumDistanceIsTwo(t *testing.T) {
 	t.Parallel()
 
@@ -350,7 +303,9 @@ func TestErrors_SuggestionMinimumDistanceIsTwo(t *testing.T) {
 // =============================================================================
 
 // minInt returns the smaller of two ints. It is used by the ANSI
-// escape check to bound a slice operation.
+// escape check to bound a slice operation. The helper exists
+// because the project's go.mod may declare a Go version older
+// than 1.21, where the built-in min was introduced.
 func minInt(a, b int) int {
 	if a < b {
 		return a

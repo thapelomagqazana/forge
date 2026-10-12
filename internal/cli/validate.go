@@ -5,11 +5,32 @@
 // and dispatcher would otherwise accept silently. See the function's
 // docstring for the four cases and for the rationale of placing the
 // check before Cobra parses the arguments.
+//
+// # Errors
+//
+// Every rejection is a *forgeerr.Error with category CategoryCLI.
+// The code is CodeCLIInvalidArg for a malformed flag-value pair,
+// and CodeCLIUnknownCommand for an unknown help topic. The
+// category and codes are members of the frozen taxonomy and
+// registry (WBS 10.2.1 and WBS 10.3.1).
+//
+// # Why the rejections are *forgeerr.Error values
+//
+// The invariant the WBS 10.5.1 task establishes is that every
+// error reaching the process boundary (Execute) is a
+// *forgeerr.Error. The validator's rejections are usage errors;
+// they carry the CLI category, not the INTERNAL category that
+// the boundary assigns to a non-*Error error. A validator that
+// returned a plain error would route its rejections through the
+// boundary's wrapping path, mislabelling a usage error as an
+// internal error.
 package cli
 
 import (
 	"fmt"
 	"strings"
+
+	"github.com/thapelomagqazana/forge/internal/forgeerr"
 )
 
 // validateArgs inspects the raw argument list and returns an error
@@ -154,11 +175,15 @@ func validateArgs(args []string) error {
 //
 // # What the function returns
 //
-// For a malformed invocation, the function returns an error whose
-// message names the offending positional argument and suggests the
-// correct form (`forge help <cmd>`). For a well-formed
-// invocation — one with no help flag, or with a help flag but no
-// following positional argument — the function returns nil.
+// For a malformed invocation, the function returns a
+// *forgeerr.Error with category CategoryCLI, code
+// CodeCLIInvalidArg, message "the <flag> flag takes no argument",
+// context "argument" = the offending token, and a remediation
+// suggesting the `forge help <cmd>` form.
+//
+// For a well-formed invocation — one with no help flag, or with a
+// help flag but no following positional argument — the function
+// returns nil.
 //
 // # The scan
 //
@@ -181,10 +206,13 @@ func validateHelpFlagWithArgs(args []string) error {
 		// appeared before it, the invocation is malformed.
 		if !strings.HasPrefix(arg, "-") {
 			if seenHelpFlag {
-				return fmt.Errorf(
-					"%s takes no arguments; got %q. "+
-						"Use `forge help %s` instead",
-					seenHelpFlagName, arg, arg)
+				return forgeerr.New(
+					forgeerr.CategoryCLI,
+					string(forgeerr.CodeCLIInvalidArg),
+					fmt.Sprintf("the %s flag takes no argument", seenHelpFlagName),
+				).
+					WithContext("argument", arg).
+					WithRemediation(fmt.Sprintf("Use 'forge help %s' instead.", arg))
 			}
 			return nil
 		}
@@ -240,11 +268,15 @@ func validateHelpFlagWithArgs(args []string) error {
 //
 // # What the function returns
 //
-// For a malformed invocation, the function returns an error whose
-// message names the offending positional argument and the flag
-// that was misused. For a well-formed invocation — one with no
-// version flag, or with a version flag but no following positional
-// argument — the function returns nil.
+// For a malformed invocation, the function returns a
+// *forgeerr.Error with category CategoryCLI, code
+// CodeCLIInvalidArg, message "the <flag> flag takes no argument",
+// context "argument" = the offending token, and a remediation
+// suggesting the `forge version` form.
+//
+// For a well-formed invocation — one with no version flag, or with
+// a version flag but no following positional argument — the
+// function returns nil.
 func validateVersionFlagWithArgs(args []string) error {
 	seenVersionFlag := false
 	seenVersionFlagName := ""
@@ -254,10 +286,13 @@ func validateVersionFlagWithArgs(args []string) error {
 		// appeared before it, the invocation is malformed.
 		if !strings.HasPrefix(arg, "-") {
 			if seenVersionFlag {
-				return fmt.Errorf(
-					"%s takes no arguments; got %q. "+
-						"Use `forge version` for the version block",
-					seenVersionFlagName, arg)
+				return forgeerr.New(
+					forgeerr.CategoryCLI,
+					string(forgeerr.CodeCLIInvalidArg),
+					fmt.Sprintf("the %s flag takes no argument", seenVersionFlagName),
+				).
+					WithContext("argument", arg).
+					WithRemediation("Use 'forge version' for the version block.")
 			}
 			return nil
 		}
@@ -295,9 +330,8 @@ func validateVersionFlagWithArgs(args []string) error {
 // Without a value, the flag is incomplete. Cobra's parser would
 // reject the invocation on its own, but with Cobra's own error
 // message and via Cobra's own error path. The pre-parse check
-// gives the rejection the same shape as the other three:
-// a diagnostic on stderr and the exit code that
-// exitCodeFromError produces for a plain error (ExitUsage).
+// gives the rejection the same shape as the other three: a
+// *forgeerr.Error with category CategoryCLI.
 //
 // # The `--config=path` form
 //
@@ -324,10 +358,13 @@ func validateVersionFlagWithArgs(args []string) error {
 //
 // # What the function returns
 //
-// For a malformed invocation, the function returns an error whose
-// message names the flag and explains what is expected. For a
-// well-formed invocation — one with no --config, or with --config
-// followed by a value — the function returns nil.
+// For a malformed invocation, the function returns a
+// *forgeerr.Error with category CategoryCLI, code
+// CodeCLIInvalidArg, message "the --config flag requires a value",
+// and a remediation suggesting the `--config <path>` form.
+//
+// For a well-formed invocation — one with no --config, or with
+// --config followed by a value — the function returns nil.
 func validateConfigFlagWithArgs(args []string) error {
 	for i, arg := range args {
 		// Match the exact string "--config" or "-config". The
@@ -338,16 +375,21 @@ func validateConfigFlagWithArgs(args []string) error {
 
 		// The flag is present. Check for a following value.
 		if i+1 >= len(args) {
-			return fmt.Errorf(
-				"--config requires a value; got the flag with no value. " +
-					"Use `--config <path>` to specify a configuration file")
+			return forgeerr.New(
+				forgeerr.CategoryCLI,
+				string(forgeerr.CodeCLIInvalidArg),
+				"the --config flag requires a value",
+			).WithRemediation("Use '--config <path>' to specify a configuration file.")
 		}
 		next := args[i+1]
 		if strings.HasPrefix(next, "-") {
-			return fmt.Errorf(
-				"--config requires a value; got %q. "+
-					"Use `--config <path>` to specify a configuration file",
-				next)
+			return forgeerr.New(
+				forgeerr.CategoryCLI,
+				string(forgeerr.CodeCLIInvalidArg),
+				"the --config flag requires a value",
+			).
+				WithContext("argument", next).
+				WithRemediation("Use '--config <path>' to specify a configuration file.")
 		}
 
 		// The flag has a value. The scan continues: a second
@@ -370,11 +412,13 @@ func validateConfigFlagWithArgs(args []string) error {
 //
 // # What the function returns
 //
-// For an unknown topic, the function returns an error whose
-// message names the topic and suggests running `forge --help` for
-// a list of valid commands. For a well-formed invocation — one
-// that is not a `help <topic>` invocation, or whose topic is
-// known — the function returns nil.
+// For an unknown topic, the function returns a *forgeerr.Error
+// with category CategoryCLI, code CodeCLIUnknownCommand, message
+// "unknown help topic <topic>", context "topic" = the topic, and
+// a remediation suggesting `forge --help`.
+//
+// For a well-formed invocation — one that is not a `help <topic>`
+// invocation, or whose topic is known — the function returns nil.
 //
 // # The scan
 //
@@ -421,10 +465,13 @@ func validateHelpTopic(args []string) error {
 		return nil
 	}
 
-	return fmt.Errorf(
-		"unknown help topic %q. "+
-			"Use `forge --help` for a list of commands",
-		topic)
+	return forgeerr.New(
+		forgeerr.CategoryCLI,
+		string(forgeerr.CodeCLIUnknownCommand),
+		fmt.Sprintf("unknown help topic %q", topic),
+	).
+		WithContext("topic", topic).
+		WithRemediation("Use 'forge --help' for a list of commands.")
 }
 
 // isKnownCommandName reports whether name is a valid help topic.

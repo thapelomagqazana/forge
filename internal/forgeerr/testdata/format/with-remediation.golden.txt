@@ -1,0 +1,5 @@
+Error: unknown command "foobar"
+Code:  FORGE_CLI_UNKNOWN_COMMAND
+
+Suggestion:
+  Run 'forge --help' for usage.

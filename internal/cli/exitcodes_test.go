@@ -2,7 +2,25 @@
 // package.
 //
 // This file tests the exit code constants and the mapping from
-// errors to exit codes. See exitcodes.go for the implementation.
+// errors to exit codes. See exitcodes.go for the constants and
+// execute.go (exitCodeOf) for the mapping.
+//
+// # The mapping's home
+//
+// The mapping is Category.ExitCode() in internal/forgeerr, not a
+// switch in this package. The CLI's local helper exitCodeOf (in
+// execute.go) extracts the *forgeerr.Error from the chain and
+// reads the category's method. This file tests the helper's
+// behaviour; the category's method is tested by
+// internal/forgeerr/category_test.go.
+//
+// # Why the tests do not reference CategorizedError
+//
+// Before WBS 10.5.1, this package defined a CategorizedError
+// interface and an exitCodeFromError function. Both were
+// superseded: the interface by the closed forgeerr.Category type
+// (WBS 10.2.1), and the function by the category's ExitCode
+// method. The tests below assert the replacement's behaviour.
 package cli
 
 import (
@@ -10,26 +28,24 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/thapelomagqazana/forge/internal/config"
+	"github.com/thapelomagqazana/forge/internal/forgeerr"
 )
 
-// mockCategorizedError is a minimal implementation of the
-// CategorizedError interface, used to exercise the mapping without
-// depending on any specific error type from other packages.
-type mockCategorizedError struct {
-	msg      string
-	category string
-}
-
-func (e *mockCategorizedError) Error() string    { return e.msg }
-func (e *mockCategorizedError) Category() string { return e.category }
-
 // TestExitCodeConstants_HaveExpectedValues verifies that the exit
-// code constants have the integer values declared in the WBS.
+// code constants have the integer values declared in WBS 4.1.2.
 //
 // The test is deliberately brittle: it asserts on the exact values.
 // If a value is changed, the test fails, and the change must be
 // recorded in an ADR.
+//
+// # Relationship to the categories' exit codes
+//
+// The constants in this file and the categories'
+// Category.ExitCode() methods must agree. The agreement is
+// policed by TestAC4_ExitCodesMatchCLIConstants in
+// internal/forgeerr/category_test.go. This test asserts the
+// constants' values; the forgeerr test asserts their agreement
+// with the categories.
 func TestExitCodeConstants_HaveExpectedValues(t *testing.T) {
 	t.Parallel()
 
@@ -86,264 +102,211 @@ func TestExitCodeConstants_AreDistinct(t *testing.T) {
 	}
 }
 
-// TestExitCodeFromError_Nil verifies the nil-error case.
-func TestExitCodeFromError_Nil(t *testing.T) {
+// TestExitCodeOf_Nil verifies the nil-error case.
+//
+// The helper returns ExitSuccess for a nil error. This is the
+// same convention as the removed exitCodeFromError and is what
+// the boundary relies on: a nil error means the command
+// succeeded.
+func TestExitCodeOf_Nil(t *testing.T) {
 	t.Parallel()
 
-	if got := exitCodeFromError(nil); got != ExitSuccess {
+	if got := exitCodeOf(nil); got != ExitSuccess {
 		t.Errorf("nil error: got %d, want %d", got, ExitSuccess)
 	}
 }
 
-// TestExitCodeFromError_Categorized verifies every category maps to
-// the expected exit code.
-func TestExitCodeFromError_Categorized(t *testing.T) {
+// TestExitCodeOf_ForgeError verifies that a *forgeerr.Error maps
+// to its category's exit code.
+//
+// The test constructs one error per category and asserts that the
+// helper returns Category.ExitCode(). The taxonomy is closed
+// (WBS 10.2.1), so the set is enumerated here rather than
+// discovered dynamically.
+func TestExitCodeOf_ForgeError(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		category string
-		expected int
+	cases := []struct {
+		cat  forgeerr.Category
+		code forgeerr.Code
 	}{
-		{"config", ExitConfig},
-		{"filesystem", ExitFilesystem},
-		{"validation", ExitValidation},
-		{"security", ExitSecurity},
-		{"conflict", ExitConflict},
+		{forgeerr.CategoryCLI, forgeerr.CodeCLIUnknownCommand},
+		{forgeerr.CategoryConfig, forgeerr.CodeConfigMalformed},
+		{forgeerr.CategoryFilesystem, forgeerr.CodeFilesystemNotFound},
+		{forgeerr.CategorySecurity, forgeerr.CodeSecurityPathTraversal},
+		{forgeerr.CategoryInternal, forgeerr.CodeInternalUnexpected},
 	}
 
-	for _, tc := range tests {
+	for _, tc := range cases {
 		tc := tc
-		t.Run(tc.category, func(t *testing.T) {
+		t.Run(string(tc.cat), func(t *testing.T) {
 			t.Parallel()
-			err := &mockCategorizedError{
-				msg:      "test error",
-				category: tc.category,
-			}
-			if got := exitCodeFromError(err); got != tc.expected {
-				t.Errorf("category %q: got %d, want %d",
-					tc.category, got, tc.expected)
+
+			e := forgeerr.New(tc.cat, string(tc.code), "message")
+			got := exitCodeOf(e)
+			want := tc.cat.ExitCode()
+			if got != want {
+				t.Errorf("exitCodeOf(%v) = %d; want %d (category's code)",
+					tc.cat, got, want)
 			}
 		})
 	}
 }
 
-// TestExitCodeFromError_UnknownCategory verifies that a category the
-// mapping does not recognise falls through to ExitFailure.
-func TestExitCodeFromError_UnknownCategory(t *testing.T) {
+// TestExitCodeOf_WrappedForgeError verifies that a *forgeerr.Error
+// wrapped inside another error is still detected.
+//
+// This is the common case when an error is wrapped with
+// fmt.Errorf and the %w verb: the outer error does not carry a
+// category, but errors.As unwraps until it finds the inner error
+// that does.
+func TestExitCodeOf_WrappedForgeError(t *testing.T) {
 	t.Parallel()
 
-	err := &mockCategorizedError{
-		msg:      "test error",
-		category: "some-future-category",
-	}
+	inner := forgeerr.New(
+		forgeerr.CategoryConfig,
+		string(forgeerr.CodeConfigMalformed),
+		"inner error",
+	)
+	wrapped := fmt.Errorf("outer context: %w", inner)
 
-	if got := exitCodeFromError(err); got != ExitFailure {
-		t.Errorf("unknown category: got %d, want %d", got, ExitFailure)
+	if got := exitCodeOf(wrapped); got != ExitConfig {
+		t.Errorf("wrapped *forgeerr.Error: got %d, want %d",
+			got, ExitConfig)
 	}
 }
 
-// TestExitCodeFromError_Uncategorized verifies that an error which
-// does not implement CategorizedError maps to ExitUsage.
+// TestExitCodeOf_DeeplyWrappedForgeError verifies that the helper
+// finds the *forgeerr.Error through multiple layers of wrapping.
+func TestExitCodeOf_DeeplyWrappedForgeError(t *testing.T) {
+	t.Parallel()
+
+	inner := forgeerr.New(
+		forgeerr.CategorySecurity,
+		string(forgeerr.CodeSecurityPathTraversal),
+		"inner error",
+	)
+	wrapped := fmt.Errorf("a: %w", fmt.Errorf("b: %w", fmt.Errorf("c: %w", inner)))
+
+	if got := exitCodeOf(wrapped); got != ExitSecurity {
+		t.Errorf("deeply wrapped *forgeerr.Error: got %d, want %d",
+			got, ExitSecurity)
+	}
+}
+
+// TestExitCodeOf_PlainError verifies that an error which is
+// neither a *forgeerr.Error nor wraps one maps to ExitFailure.
 //
-// This is the case for Cobra's own errors: unknown command, unknown
-// flag. They are, by definition, usage errors.
-func TestExitCodeFromError_Uncategorized(t *testing.T) {
+// This is the safety-net branch. The boundary (Execute) wraps
+// such errors as FORGE_INTERNAL_UNEXPECTED before they reach the
+// user, so the branch is reached only when executeWithOptions is
+// called directly by a caller that constructs a non-*Error error.
+// The branch's behaviour is ExitFailure (1), the INTERNAL
+// category's code.
+func TestExitCodeOf_PlainError(t *testing.T) {
 	t.Parallel()
 
 	err := errors.New("some plain error")
 
-	if got := exitCodeFromError(err); got != ExitUsage {
-		t.Errorf("uncategorized error: got %d, want %d", got, ExitUsage)
+	if got := exitCodeOf(err); got != ExitFailure {
+		t.Errorf("plain error: got %d, want %d", got, ExitFailure)
 	}
 }
 
-// TestExitCodeFromError_WrappedCategorized verifies that a
-// CategorizedError wrapped inside another error is still detected.
-//
-// This is the common case when an error is wrapped with fmt.Errorf
-// and the %w verb: the outer error does not implement
-// CategorizedError, but errors.As unwraps until it finds the inner
-// error that does.
-func TestExitCodeFromError_WrappedCategorized(t *testing.T) {
-	t.Parallel()
-
-	inner := &mockCategorizedError{
-		msg:      "inner error",
-		category: "filesystem",
-	}
-	wrapped := fmt.Errorf("outer context: %w", inner)
-
-	if got := exitCodeFromError(wrapped); got != ExitFilesystem {
-		t.Errorf("wrapped categorized error: got %d, want %d",
-			got, ExitFilesystem)
-	}
-}
-
-// TestExitCodeFromError_Pure verifies that the mapping is
+// TestExitCodeOf_IsPure verifies that the helper is
 // deterministic. Calling it twice with the same error returns the
 // same code.
-func TestExitCodeFromError_Pure(t *testing.T) {
+func TestExitCodeOf_IsPure(t *testing.T) {
 	t.Parallel()
 
-	err := &mockCategorizedError{
-		msg:      "test error",
-		category: "security",
-	}
+	err := forgeerr.New(
+		forgeerr.CategorySecurity,
+		string(forgeerr.CodeSecurityPathTraversal),
+		"test error",
+	)
 
-	first := exitCodeFromError(err)
+	first := exitCodeOf(err)
 	for i := 0; i < 100; i++ {
-		if got := exitCodeFromError(err); got != first {
+		if got := exitCodeOf(err); got != first {
 			t.Fatalf("iteration %d: got %d, want %d", i, got, first)
 		}
 	}
 }
 
-// TestExitCodeFromError_AllCategoriesAreMapped verifies that every
-// category the repository knows about is handled by the mapping.
+// TestExitCodeOf_MatchesCategoryExitCode verifies that the
+// helper's result for a *forgeerr.Error is exactly the category's
+// method's result.
 //
-// The list is maintained manually: when a new category is
-// introduced by a future WBS, it must be added here and to the
-// switch in exitCodeFromError.
-func TestExitCodeFromError_AllCategoriesAreMapped(t *testing.T) {
+// The test iterates the closed taxonomy (WBS 10.2.1) and asserts
+// the agreement for every category. It is the type-level
+// companion to TestAC4_ExitCodesMatchCLIConstants in
+// internal/forgeerr/category_test.go: that test asserts the
+// categories' codes agree with the CLI constants; this test
+// asserts the CLI's helper reads the categories' codes correctly.
+func TestExitCodeOf_MatchesCategoryExitCode(t *testing.T) {
 	t.Parallel()
 
-	knownCategories := []string{
-		"config",
-		"filesystem",
-		"validation",
-		"security",
-		"conflict",
-	}
-
-	for _, category := range knownCategories {
-		category := category
-		t.Run(category, func(t *testing.T) {
+	for _, cat := range forgeerr.AllCategories() {
+		cat := cat
+		t.Run(string(cat), func(t *testing.T) {
 			t.Parallel()
-			err := &mockCategorizedError{
-				msg:      "test",
-				category: category,
+
+			// Find a registered code for the category. If none
+			// exists (the VALIDATION and TEMPLATE categories in
+			// Phase 2), skip; the helper's behaviour is the same
+			// regardless of the code, and the skip is honest
+			// about the registry's current coverage.
+			var code forgeerr.Code
+			for _, c := range forgeerr.AllCodes() {
+				if c2, ok := c.Category(); ok && c2 == cat {
+					code = c
+					break
+				}
 			}
-			if got := exitCodeFromError(err); got == ExitFailure {
-				// ExitFailure is the default for unrecognised
-				// categories. Reaching it for a known category
-				// means the category is missing from the switch.
-				t.Errorf("category %q maps to ExitFailure; "+
-					"it should map to a specific exit code",
-					category)
+			if code == "" {
+				t.Skipf("no registered code for category %s", cat)
+			}
+
+			e := forgeerr.New(cat, string(code), "message")
+
+			got := exitCodeOf(e)
+			want := cat.ExitCode()
+			if got != want {
+				t.Errorf("exitCodeOf(%v) = %d; want %d",
+					cat, got, want)
 			}
 		})
 	}
 }
 
-// TestExitCodeFromError_ConfigErrorsClassifyAsExitConfig verifies
-// that every error the config package produces is classified as
-// ExitConfig.
+// TestExitCodeOf_UnknownCategoryCannotExist verifies the closed
+// taxonomy by construction: a *forgeerr.Error cannot carry a
+// category outside the closed set. The check is a compile-time
+// assertion in the current implementation; the test documents the
+// property.
 //
-// # Why this test exists alongside the mock-based tests
+// # Why the test is a tautology
 //
-// The other tests in this file exercise the classifier against a
-// mock CategorizedError. The mock's category string is chosen
-// by the test; it always matches the classifier's switch. The
-// tests therefore verify the classifier's *interface* contract
-// but cannot catch a drift between the classifier's string
-// literals and a real package's categories.
-//
-// This test closes the gap. It constructs every category of
-// error the config package produces and asserts that the
-// classifier maps each to ExitConfig (3). If someone changes
-// the config package's Category() method to return a different
-// string, this test fails; the contributor sees the failure and
-// updates the classifier's switch in the same commit.
-//
-// # Why the test uses the config package's constructors
-//
-// The config package's error type is unexported. The test cannot
-// construct a *configError directly. It uses the package's
-// exported constructors (NewConfigNotFound, NewConfigPermission,
-// and so on) to obtain an error whose Category() method the
-// classifier reads. The constructors' signatures are documented
-// in the config package; the test's use is exactly the way a
-// caller (the loader) uses them.
-//
-// # Why the test lists every category explicitly
-//
-// The list is deliberately explicit. A future WBS that adds a
-// ninth category to the config package's taxonomy must add a
-// row here. The explicit list is the checkpoint that forces the
-// contributor to consider the classifier's handling of the new
-// category.
-func TestExitCodeFromError_ConfigErrorsClassifyAsExitConfig(t *testing.T) {
+// The category is validated by forgeerr.New, which panics on an
+// invalid category. There is no way to construct a *forgeerr.Error
+// with an out-of-set category. The test exists to document this
+// property: a future change that removed the validation would
+// allow an unknown category, and this test would fail to compile
+// or fail at runtime depending on the shape of the change.
+func TestExitCodeOf_UnknownCategoryCannotExist(t *testing.T) {
 	t.Parallel()
 
-	cases := []struct {
-		name string
-		err  error
-	}{
-		{"E1 not found", config.NewConfigNotFound("/p/forge.yaml")},
-		{"E2 permission", config.NewConfigPermission("/p/forge.yaml", nil)},
-		{"E3 malformed", config.NewConfigMalformed("/p/forge.yaml", 5, 3, nil)},
-		{"E4 unknown field", config.NewConfigUnknownField("/p/forge.yaml", "log_levl", nil)},
-		{"E5 invalid type", config.NewConfigInvalidType("/p/forge.yaml", "log_level", nil)},
-		{"E6 invalid value", config.NewConfigInvalid("log_level", "verbose", []string{"debug", "info"})},
-		{"E7 too large", config.NewConfigTooLarge("/p/forge.yaml")},
-		{"E8 invalid encoding", config.NewConfigInvalidEncoding("/p/forge.yaml")},
-	}
-
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := exitCodeFromError(tc.err)
-			if got != ExitConfig {
-				t.Errorf("exitCodeFromError = %d; want %d (ExitConfig)\n"+
-					"the config package's Category() may have changed; "+
-					"check the switch in exitcodes.go",
-					got, ExitConfig)
-			}
-		})
-	}
-}
-
-// TestExitCodeFromError_ConfigErrorsCategoryMatches verifies that
-// the config package's Category() method returns the string the
-// classifier recognises.
-//
-// # Why this test is separate from the classification test
-//
-// The classification test asserts the end-to-end property: a
-// config error maps to ExitConfig. This test asserts the
-// intermediate property: the config package's category string
-// is exactly "config". A failure here is more specific than a
-// failure in the classification test; it tells the contributor
-// that the string changed, not just that the classification
-// broke.
-//
-// # How the test reads the category
-//
-// The config package's error type is unexported; the test cannot
-// assert on the concrete type. It uses the CategorizedError
-// interface (defined in this package) to read the error's
-// category string. The interface assertion works because the
-// config error implements Category() string.
-func TestExitCodeFromError_ConfigErrorsCategoryMatches(t *testing.T) {
-	t.Parallel()
-
-	// One representative config error is sufficient; the
-	// classification test above covers every category. This
-	// test asserts the string the classifier compares against.
-	err := config.NewConfigNotFound("/p/forge.yaml")
-
-	var cat CategorizedError
-	if !errors.As(err, &cat) {
-		t.Fatalf("config error does not implement CategorizedError")
-	}
-	if got := cat.Category(); got != "config" {
-		t.Errorf("config error's Category() = %q; want %q\n"+
-			"the classifier's switch compares against the literal %q; "+
-			"if the config package changed its category string, "+
-			"update the switch in exitcodes.go and the string in the "+
-			"config package's errors.go",
-			got, "config", "config")
-	}
+	// The constructor panics on an invalid category. The test
+	// asserts the panic to pin the property.
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("forgeerr.New did not panic on an invalid category; " +
+				"the closed taxonomy is no longer enforced")
+		}
+	}()
+	_ = forgeerr.New(
+		forgeerr.Category("UNKNOWN"),
+		string(forgeerr.CodeConfigMalformed),
+		"message",
+	)
 }
