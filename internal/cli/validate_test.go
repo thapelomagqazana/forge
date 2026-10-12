@@ -39,8 +39,11 @@
 package cli
 
 import (
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/thapelomagqazana/forge/internal/forgeerr"
 )
 
 // =============================================================================
@@ -382,5 +385,40 @@ func TestValidateConfigFlagWithArgs(t *testing.T) {
 					"wantErr = %v", tc.args, err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// TestValidateArgs_ErrorsAreForgeErrors asserts the WBS 11.2.2
+// property that the argument validator's errors are structured.
+//
+// The validator's public function returns an error. The audit
+// claims that every error it returns is a *forgeerr.Error (so that
+// the exit-code mapping can classify it). The test asserts the
+// claim directly: it invokes the validator with a malformed
+// invocation and inspects the returned error's type.
+//
+// # Why this is the right test shape
+//
+// The audit's other claims (no raw errors.New in domain code, no
+// os.Exit outside main.go) are source-tree properties enforced by
+// the shell scripts in scripts/deps/. The claim that the
+// validator's errors are structured is a runtime property, and
+// this test is the runtime half.
+func TestValidateArgs_ErrorsAreForgeErrors(t *testing.T) {
+	t.Parallel()
+
+	// A malformed invocation: --help takes no argument.
+	err := validateArgs([]string{"--help", "extra"})
+	if err == nil {
+		t.Fatal("validateArgs returned nil for a malformed invocation")
+	}
+
+	var fe *forgeerr.Error
+	if !errors.As(err, &fe) {
+		t.Fatalf("validateArgs returned %T, not *forgeerr.Error", err)
+	}
+	if fe.Category() != forgeerr.CategoryCLI {
+		t.Errorf("validateArgs returned category %v; want %v",
+			fe.Category(), forgeerr.CategoryCLI)
 	}
 }

@@ -19,6 +19,37 @@
 // codes.go (WBS 10.3.1). Tests that call Category methods
 // directly do not consult the registry and use only the category
 // constants.
+//
+// # Exit codes and the WBS 11.1.1 taxonomy
+//
+// The exit codes asserted below are the WBS 11.1.1 values, not the
+// WBS 4.1.2 flat values. The migration is documented in
+// docs/decisions/ADR-018-exit-code-taxonomy.md and in
+// internal/cli/exitcodes.go; the numeric agreement between this
+// package's Category.ExitCode() and the cli package's constants is
+// policed by TestAC4_ExitCodesMatchCLIConstants below.
+//
+// The two non-zero domains named by the taxonomy are:
+//
+//   - Forge findings (1–9): the command ran; the subject is in a
+//     detectable state. CategoryValidation lives here (code 2).
+//   - Forge execution failures (10–19): the command could not run;
+//     Forge itself hit a problem. CategoryConfig (10),
+//     CategoryTemplate (11), CategoryFilesystem (12),
+//     CategorySecurity (13), and CategoryConflict (14) live here.
+//
+// Two categories sit outside those ranges: CategoryCLI maps to the
+// usage singleton (64, BSD EX_USAGE), and CategoryInternal maps to
+// the internal-error range (70–78; the generic code is 70, BSD
+// EX_SOFTWARE).
+//
+// # What changed from WBS 4.1.2
+//
+// The WBS 4.1.2 mapping was flat: CLI=2, CONFIG=3, FILESYSTEM=4,
+// VALIDATION=5, TEMPLATE=1, SECURITY=6, INTERNAL=1. The WBS 11.1.1
+// taxonomy split the flat range into findings and execution
+// failures and moved CLI and INTERNAL out of the flat range
+// entirely. The migration table is in ADR-018.
 package forgeerr
 
 import (
@@ -93,9 +124,24 @@ func TestAC1_EnumerationOrderIsStable(t *testing.T) {
 // --- AC2: each category has a fixed exit code -------------------------
 
 // TestAC2_ExitCodes pins the exit code for every category against
-// the frozen values from WBS 4.1.2. If a category is added without
-// an entry in ExitCode, this test fails via the panic in the
-// default branch.
+// the WBS 11.1.1 values. If a category is added without an entry
+// in ExitCode, this test fails via the panic in the default branch.
+//
+// # The mapping and the ranges
+//
+//	CLI         → 64  (ExitUsage; usage singleton, BSD EX_USAGE)
+//	CONFIG      → 10  (ExitConfig; execution failures)
+//	FILESYSTEM  → 12  (ExitFilesystem; execution failures)
+//	VALIDATION  → 2   (ExitValidation; findings)
+//	TEMPLATE    → 11  (ExitTemplate; execution failures)
+//	SECURITY    → 13  (ExitSecurity; execution failures)
+//	INTERNAL    → 70  (ExitInternal; internal errors, BSD EX_SOFTWARE)
+//
+// The mapping is the same one asserted by
+// TestAC4_ExitCodesMatchCLIConstants. The two tests are
+// deliberately redundant: this one asserts the values directly,
+// the other asserts them against the cli constants. A drift
+// between the two surfaces in whichever fails first.
 func TestAC2_ExitCodes(t *testing.T) {
 	t.Parallel()
 
@@ -103,13 +149,13 @@ func TestAC2_ExitCodes(t *testing.T) {
 		c    Category
 		want int
 	}{
-		{CategoryCLI, 2},
-		{CategoryConfig, 3},
-		{CategoryFilesystem, 4},
-		{CategoryValidation, 5},
-		{CategoryTemplate, 1},
-		{CategorySecurity, 6},
-		{CategoryInternal, 1},
+		{CategoryCLI, 64},
+		{CategoryConfig, 10},
+		{CategoryFilesystem, 12},
+		{CategoryValidation, 2},
+		{CategoryTemplate, 11},
+		{CategorySecurity, 13},
+		{CategoryInternal, 70},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -228,29 +274,48 @@ func TestAC3_PrefixSatisfiesCodePattern(t *testing.T) {
 	}
 }
 
-// --- AC4: exit codes match WBS 4.1.2 constants ------------------------
+// --- AC4: exit codes match the CLI constants --------------------------
 //
-// The constants ExitUsage, ExitConfig, ExitFilesystem,
-// ExitValidation, ExitFailure, and ExitSecurity are frozen in
-// WBS 4.1.2 and defined in internal/cli/exitcodes.go. This test
-// asserts that Category.ExitCode returns the same numeric values
-// as those constants.
+// The constants ExitUsage, ExitConfig, ExitTemplate,
+// ExitFilesystem, ExitSecurity, ExitValidation, and ExitInternal
+// are frozen in WBS 11.1.1 and defined in
+// internal/cli/exitcodes.go. This test asserts that
+// Category.ExitCode returns the same numeric values as those
+// constants.
 //
-// The constants are duplicated here on purpose: the test asserts
-// that Category.ExitCode returns the same values. If WBS 4.1.2
-// changes, this test fails and the reviewer updates both the
-// constants and the switch in Category.ExitCode.
+// # Why the constants are duplicated in the test
+//
+// The test could import internal/cli and compare against the
+// actual cli constants. It does not, because forgeerr is imported
+// by cli: a non-test import of cli from forgeerr would create the
+// cycle cli → forgeerr → cli. The test is in package forgeerr
+// (internal test), so it cannot import cli either. The constants
+// are therefore duplicated as local literals, and the test is the
+// police for their agreement. If WBS 11.1.1 changes, this test
+// fails, and the reviewer updates both the local literals and the
+// switch in Category.ExitCode in the same commit.
+//
+// # What changed from WBS 4.1.2
+//
+// The WBS 4.1.2 constants were flat: ExitUsage=2, ExitConfig=3,
+// ExitFilesystem=4, ExitValidation=5, ExitFailure=1 (shared by
+// TEMPLATE and INTERNAL), ExitSecurity=6. The WBS 11.1.1 taxonomy
+// removed ExitFailure and split the values across the findings
+// range (1–9), the execution-failure range (10–19), the usage
+// singleton (64), and the internal-error range (70–78). The
+// migration table is in ADR-018.
 
 func TestAC4_ExitCodesMatchCLIConstants(t *testing.T) {
 	t.Parallel()
 
 	const (
-		wantUsage      = 2
-		wantConfig     = 3
-		wantFilesystem = 4
-		wantValidation = 5
-		wantFailure    = 1
-		wantSecurity   = 6
+		wantUsage      = 64 // ExitUsage; usage singleton, BSD EX_USAGE
+		wantConfig     = 10 // ExitConfig; execution failures
+		wantTemplate   = 11 // ExitTemplate; execution failures
+		wantFilesystem = 12 // ExitFilesystem; execution failures
+		wantSecurity   = 13 // ExitSecurity; execution failures
+		wantValidation = 2  // ExitValidation; findings
+		wantInternal   = 70 // ExitInternal; internal errors, BSD EX_SOFTWARE
 	)
 
 	cases := []struct {
@@ -262,9 +327,9 @@ func TestAC4_ExitCodesMatchCLIConstants(t *testing.T) {
 		{CategoryConfig, wantConfig, "ExitConfig"},
 		{CategoryFilesystem, wantFilesystem, "ExitFilesystem"},
 		{CategoryValidation, wantValidation, "ExitValidation"},
-		{CategoryTemplate, wantFailure, "ExitFailure"},
+		{CategoryTemplate, wantTemplate, "ExitTemplate"},
 		{CategorySecurity, wantSecurity, "ExitSecurity"},
-		{CategoryInternal, wantFailure, "ExitFailure"},
+		{CategoryInternal, wantInternal, "ExitInternal"},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -427,6 +492,14 @@ func TestString_InvalidReturnsUnknown(t *testing.T) {
 //
 // The error is constructed with a registered code from the
 // registry in codes.go.
+//
+// # The exit code
+//
+// The error's category is CategoryConfig, whose ExitCode() is
+// ExitConfig (10) under the WBS 11.1.1 taxonomy. Before the
+// taxonomy, the same category returned 3, in the flat range that
+// no longer exists. The test asserts the current value; the
+// migration is documented in ADR-018.
 func TestBDD_CategoryDrivesExitCode(t *testing.T) {
 	t.Parallel()
 
@@ -437,9 +510,13 @@ func TestBDD_CategoryDrivesExitCode(t *testing.T) {
 	// When: the caller maps the error to an exit code.
 	code := e.Category().ExitCode()
 
-	// Then: the exit code matches the frozen value for CONFIG.
-	if code != 3 {
-		t.Fatalf("ExitCode() = %d, want 3", code)
+	// Then: the exit code matches the frozen value for CONFIG
+	// in the execution-failure range.
+	if code != 10 {
+		t.Fatalf("ExitCode() = %d, want 10 (ExitConfig)", code)
+	}
+	if !(code >= 10 && code <= 19) {
+		t.Fatalf("ExitCode() = %d is not in the execution-failure range (10–19)", code)
 	}
 }
 
@@ -449,8 +526,13 @@ func TestBDD_CategoryDrivesExitCode(t *testing.T) {
 // collapsing SECURITY into FILESYSTEM or INTERNAL during a
 // refactor.
 //
-// The code is a member of the registry (WBS 10.3.1); the previous
-// placeholder FORGE_SECURITY_TRAVERSAL is not.
+// The code is a member of the registry (WBS 10.3.1).
+//
+// # The exit code
+//
+// The category's ExitCode() is ExitSecurity (13) under the
+// WBS 11.1.1 taxonomy, in the execution-failure range. Before the
+// taxonomy, the same category returned 6.
 func TestBDD_SecurityCategoryIsObservable(t *testing.T) {
 	t.Parallel()
 
@@ -466,8 +548,8 @@ func TestBDD_SecurityCategoryIsObservable(t *testing.T) {
 	if got := e.Category(); got != CategorySecurity {
 		t.Fatalf("Category() = %v, want %v", got, CategorySecurity)
 	}
-	if got := e.Category().ExitCode(); got != 6 {
-		t.Fatalf("ExitCode() = %d, want 6", got)
+	if got := e.Category().ExitCode(); got != 13 {
+		t.Fatalf("ExitCode() = %d, want 13 (ExitSecurity)", got)
 	}
 	if got := e.Category().Prefix(); got != "FORGE_SECURITY_" {
 		t.Fatalf("Prefix() = %q", got)
@@ -583,4 +665,29 @@ func FuzzCategoryValid(f *testing.F) {
 			t.Fatalf("valid(%q) = %v, want %v", s, got, wantValid)
 		}
 	})
+}
+
+// TestAC4_DefaultExitCodesMatchExitCodes asserts that each
+// category's DefaultExitCode equals its ExitCode. The two methods
+// exist so that the mapping contract (WBS 11.2.1) can refer to
+// "the category's default" without implying a per-error override.
+// In the current design the two are identical; the test asserts
+// the invariant so that a future change that added a per-error
+// override cannot accidentally change DefaultExitCode's meaning.
+func TestAC4_DefaultExitCodesMatchExitCodes(t *testing.T) {
+	t.Parallel()
+
+	for _, cat := range AllCategories() {
+		cat := cat
+		t.Run(string(cat), func(t *testing.T) {
+			t.Parallel()
+
+			def := cat.DefaultExitCode()
+			eff := cat.ExitCode()
+			if def != eff {
+				t.Errorf("%v.DefaultExitCode() = %d; %v.ExitCode() = %d; must agree",
+					cat, def, cat, eff)
+			}
+		})
+	}
 }

@@ -598,3 +598,27 @@ func validationDependencies() Dependencies {
 		Logger: newNoopLogger(),
 	}
 }
+
+// invalidFlagValue constructs a temporary error that the caller
+// wraps into a *forgeerr.Error.
+//
+// # Why this is not a forgeerr.Wrap call
+//
+// The function's result is passed to forgeerr.Wrap by the caller,
+// which converts it into a structured error with the appropriate
+// category and code. Constructing the wrapped error inside this
+// function would require it to know the caller's category and
+// code, which would couple the two. The two-step pattern keeps
+// the message-shaping concern (this function) separate from the
+// classification concern (the caller).
+//
+// # WBS 11.2.2 audit classification
+//
+// The audit found this call and classified it as an approved
+// exception: the error never reaches the user directly. The CI
+// check scripts/deps/verify-no-raw-errors.sh exempts this file;
+// a future cleanup may inline the message into the caller's
+// forgeerr.Wrap call, at which point the exemption can be removed.
+func invalidFlagValue(flag, value string) error {
+	return fmt.Errorf("invalid value for %s: %q", flag, value)
+}

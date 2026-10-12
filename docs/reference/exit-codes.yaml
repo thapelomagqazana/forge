@@ -1,0 +1,183 @@
+# Exit Codes — machine-readable form.
+#
+# This file is the single source of truth for tooling that
+# introspects Forge's exit codes. The human-readable counterpart is
+# docs/reference/exit-codes.md; the Go source is
+# internal/cli/exitcodes.go. The three are kept in agreement by
+# scripts/deps/verify-exit-codes.sh.
+#
+# Stability: public contract. Additive only. Never reassigned.
+# Traceability: FR-CLI-EXIT-002..020, WBS 11.1.2.
+# Schema: schemas/exit-codes.schema.json.
+
+version: "1.0.0"
+compatibility_policy: additive-only
+platform:
+  min: 0
+  max: 255
+  notes: |
+    Windows 32-bit exit codes are masked with & 0xFF. Forge emits
+    only 0–255 on all platforms.
+
+severities:
+  ok:
+    description: Success.
+    fails_ci: false
+  warn:
+    description: |
+      A finding the user should see, but which does not fail CI.
+      Escalated to error by --strict, by a forge.yaml policy, or
+      by a future CI environment variable.
+    fails_ci: false
+    escalation: [strict, policy]
+  error:
+    description: A finding or execution failure that fails CI.
+    fails_ci: true
+  fatal:
+    description: An internal error or unrecoverable condition.
+    fails_ci: true
+
+codes:
+  - code: 0
+    name: Success
+    severity: ok
+    suppressible_by: []
+    trigger: "Success."
+    stdout: "Any."
+    stderr: "Empty."
+    range: Success
+
+  - code: 1
+    name: CheckFailed
+    severity: error
+    suppressible_by: [quiet]
+    trigger: "check found an ERROR-level finding."
+    stdout: "Report."
+    stderr: "Diagnostic."
+    range: Forge findings
+
+  - code: 2
+    name: DriftDetected
+    severity: error
+    suppressible_by: [quiet]
+    trigger: "diff detected drift between blueprint and project."
+    stdout: "Diff."
+    stderr: "Diagnostic."
+    range: Forge findings
+
+  - code: 3
+    name: UpdateConflict
+    severity: error
+    suppressible_by: [quiet]
+    trigger: "update could not apply a change without overwriting developer modifications."
+    stdout: "Conflict report."
+    stderr: "Diagnostic."
+    range: Forge findings
+
+  - code: 4
+    name: Ambiguity
+    severity: error
+    suppressible_by: [quiet]
+    trigger: "init could not decide the foundation from the given inputs (ambiguous)."
+    stdout: "Candidates list."
+    stderr: "Diagnostic."
+    range: Forge findings
+
+  - code: 10
+    name: ConfigError
+    severity: error
+    suppressible_by: []
+    trigger: "forge.yaml is missing, unreadable, malformed, or violates its schema."
+    stdout: "Empty."
+    stderr: "Diagnostic."
+    range: Forge execution failures
+
+  - code: 11
+    name: TemplateNotFound
+    severity: error
+    suppressible_by: []
+    trigger: "A template referenced by the blueprint does not exist."
+    stdout: "Empty."
+    stderr: "Diagnostic."
+    range: Forge execution failures
+
+  - code: 12
+    name: TemplateIncompatible
+    severity: error
+    suppressible_by: []
+    trigger: "A template exists but is incompatible with the blueprint or the Forge version."
+    stdout: "Empty."
+    stderr: "Diagnostic."
+    range: Forge execution failures
+
+  - code: 13
+    name: RenderingFailed
+    severity: error
+    suppressible_by: []
+    trigger: "A template failed to render (missing variables, invalid syntax)."
+    stdout: "Empty."
+    stderr: "Diagnostic."
+    range: Forge execution failures
+
+  - code: 14
+    name: FilesystemError
+    severity: error
+    suppressible_by: []
+    trigger: "A filesystem operation failed (permission denied, path not found, write error)."
+    stdout: "Empty."
+    stderr: "Diagnostic."
+    range: Forge execution failures
+
+  - code: 15
+    name: PathSafetyViolation
+    severity: error
+    suppressible_by: []
+    trigger: "A computed path resolved outside the project root."
+    stdout: "Empty."
+    stderr: "Diagnostic."
+    range: Forge execution failures
+
+  - code: 16
+    name: SecurityPolicyViolation
+    severity: error
+    suppressible_by: []
+    trigger: "A security policy was violated (path traversal, symlink escape, secret exposure)."
+    stdout: "Empty."
+    stderr: "Diagnostic."
+    range: Forge execution failures
+
+  - code: 17
+    name: InternalError
+    severity: fatal
+    suppressible_by: []
+    trigger: "An internal invariant was violated, or a panic was recovered."
+    stdout: "Empty."
+    stderr: "Diagnostic."
+    range: Forge execution failures
+
+  - code: 64
+    name: UsageError
+    severity: error
+    suppressible_by: []
+    trigger: "A usage error: unknown flag, missing argument, invalid subcommand."
+    stdout: "Empty."
+    stderr: "Usage diagnostic."
+    range: Usage error
+
+  - code: 130
+    name: SIGINT
+    severity: null
+    suppressible_by: []
+    trigger: "SIGINT (Ctrl-C)."
+    stdout: "Empty."
+    stderr: "Empty (or cleanup trace)."
+    range: "Signals (128 + N)"
+
+  - code: 143
+    name: SIGTERM
+    severity: null
+    suppressible_by: []
+    trigger: "SIGTERM."
+    stdout: "Empty."
+    stderr: "Empty (or cleanup trace)."
+    range: "Signals (128 + N)"

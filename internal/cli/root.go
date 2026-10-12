@@ -192,16 +192,21 @@ Run 'forge <command> --help' for details on any command.`
 // unknown commands and prints the help text to stdout instead of an
 // error to stderr.
 //
-// The RunE handler distinguishes the two cases the root command must
-// handle:
+// The RunE handler distinguishes the three cases the root command
+// must handle:
+//
+//   - The context is cancelled: the user or supervisor requested
+//     termination. Return the context's error; runWithOptions maps
+//     it to ExitSIGINT (130) or ExitSIGTERM (143) and does not
+//     render an error message. See WBS 11.3.1.
 //
 //   - No positional arguments: the user requested information.
 //     Print help to stdout and return nil, which maps to ExitSuccess.
 //
 //   - One or more positional arguments that do not match a registered
 //     subcommand: the user typed a command that does not exist.
-//     Return an error. executeWithOptions prints the error to stderr,
-//     and exitCodeFromError maps it to ExitUsage.
+//     Return an error. runWithOptions prints the error to stderr,
+//     and exitCodeOf maps it to ExitUsage.
 //
 // This pattern is the standard way to build a Cobra command tree
 // where the root is a dispatcher rather than a runnable command
@@ -260,7 +265,7 @@ Run 'forge <command> --help' for details on any command.`
 //   - `forge --config` with no value — the flag requires a value.
 //
 // All four rejections are implemented in validateArgs
-// (validate.go), which runs in executeWithOptions before Cobra
+// (validate.go), which runs in runWithOptions before Cobra
 // parses the arguments. The checks cannot live in this file:
 // Cobra's --help and --version interception run before any hook, so
 // a PersistentPreRunE or RunE here would never see the malformed
@@ -273,6 +278,11 @@ Run 'forge <command> --help' for details on any command.`
 // controls error formatting and exit codes. Without these flags,
 // Cobra prints usage on every error and writes errors to stdout, both
 // of which break the CLI UX contract.
+//
+// The two flags are the WBS 11.3.1 requirement: the boundary
+// (runWithOptions) renders the error exactly once, through
+// forgeerr.Format; Cobra must not render it a second time in its
+// own format. See docs/architecture/exit-boundary.md.
 //
 // Version is set to a non-empty string so that Cobra's built-in
 // --version flag is enabled. The value is produced by version.Raw,
@@ -291,7 +301,7 @@ Run 'forge <command> --help' for details on any command.`
 // The function performs no I/O of its own. It does not read os.Args,
 // does not write to any stream, and does not touch the filesystem.
 // The handler is delegated to Cobra, which uses the streams bound by
-// executeWithOptions from the Dependencies value.
+// runWithOptions from the Dependencies value.
 //
 // # Relationship to options
 //
@@ -299,7 +309,7 @@ Run 'forge <command> --help' for details on any command.`
 // only place os.Args, os.Stdin, os.Stdout, os.Stderr, os.Getenv, and
 // os.Getwd are read. The Dependencies struct is the command boundary:
 // it is the resolved, injectable set of collaborators that commands
-// consume. executeWithOptions is the single transformation point
+// consume. runWithOptions is the single transformation point
 // between the two. This function sees only Dependencies.
 //
 // # Subcommand registration
@@ -359,6 +369,12 @@ func newRootCmd(deps Dependencies) *cobra.Command {
 		// change to the format is made in one place.
 		Version: version.Raw(),
 
+		// SilenceUsage and SilenceErrors are the WBS 11.3.1
+		// requirement: the boundary (runWithOptions) renders the
+		// error exactly once. Cobra must not print it a second
+		// time in its own format, and must not print the usage
+		// line after an error. The two flags disable Cobra's
+		// printing; the boundary does the rendering.
 		SilenceUsage:  true,
 		SilenceErrors: true,
 
@@ -419,13 +435,58 @@ func newRootCmd(deps Dependencies) *cobra.Command {
 		PersistentPreRunE: initializeCommandEnvironment(deps),
 
 		// The handler runs only when Cobra has not dispatched to a
-		// subcommand. See the docstring above for the two cases.
+		// subcommand. See the docstring above for the three cases.
 		//
 		// The handler does not reject the malformed invocations;
 		// those are rejected by validateArgs before Cobra's parser
 		// runs. See the "Where malformed invocations are rejected"
 		// section of the docstring above.
+		//
+		// # Context cancellation (WBS 11.3.1)
+		//
+		// The handler checks the context before dispatching. If
+		// the context is cancelled — by a signal in main, or by
+		// a test — the handler returns the context's error. The
+		// boundary (runWithOptions) inspects the context's Cause
+		// and returns ExitSIGINT (130) or ExitSIGTERM (143)
+		// without rendering an error message.
+		//
+		// The check is the tree's first line of defense against
+		// a signal that arrives before the dispatched command
+		// runs. A dispatched command that respects the context
+		// returns the context's error on its own; this check
+		// covers the case where no command is dispatched (the
+		// user invoked the root with no subcommand, or with an
+		// unknown subcommand, when the signal arrived).
+		//
+		// # Why the context check tolerates a nil context
+		//
+		// Cobra installs the command's context when ExecuteContext
+		// runs. A caller that invokes RunE directly on a command
+		// that has not been executed — a pattern used by tests in
+		// root_test.go, and available to any future caller that
+		// treats the command as a function — sees a nil context.
+		//
+		// The nil case is not a cancellation: a command with no
+		// context has not been cancelled. The handler treats nil
+		// as "no cancellation in progress" and proceeds to the
+		// argument handling. Without the nil guard, the handler
+		// would panic on `cmd.Context().Err()` — the failure
+		// mode the direct-call pattern exposes.
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Context cancellation: return the context's error
+			// so the boundary can map it to the signal's code.
+			//
+			// The nil check is deliberate. Cobra's normal path
+			// always installs a context before RunE runs; the
+			// guard is exercised by direct callers (tests, and
+			// any future library consumer that invokes RunE
+			// without going through ExecuteContext).
+			if ctx := cmd.Context(); ctx != nil {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+			}
 			if len(args) == 0 {
 				return cmd.Help()
 			}

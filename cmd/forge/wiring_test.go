@@ -1,8 +1,16 @@
 // Package main_test contains a wiring test that proves main.go depends
-// on internal/cli.Execute(). The test is unusual: rather than asserting
+// on internal/cli. The test is unusual: rather than asserting
 // behaviour, it asserts a build-time relationship, by deliberately
 // breaking the wiring in a temporary copy of the module and confirming
 // that the build fails.
+//
+// # Why the test names the package, not a function
+//
+// The substantive property is that main.go imports internal/cli.
+// The specific function main.go calls (Execute in WBS 2.2.1, Run in
+// WBS 11.3.1) is an implementation detail that may change without
+// affecting the property. Stating the property at the package level
+// keeps the test resilient to renames inside the package.
 package main_test
 
 import (
@@ -14,19 +22,30 @@ import (
 )
 
 // TestMainGoWiringIsReal verifies AC7: removing the dependency on
-// internal/cli.Execute() causes a compile error. This is a negative
-// test: it asserts that a specific *failure* occurs.
+// internal/cli causes a compile error. This is a negative test: it
+// asserts that a specific *failure* occurs.
 //
 // Implementation notes:
 //
-//   - We copy the entire module to a temporary directory.
-//   - We rewrite the import in the copy to point at a non-existent
-//     package.
-//   - We attempt to build, and assert that the build fails with an
-//     error mentioning the missing package.
+//  1. Copy the entire module to a temporary directory.
+//  2. Positive control: build the unmodified copy. If the build
+//     fails, the environment is broken (wrong GOOS, missing module
+//     cache, network restrictions) and the negative build's failure
+//     would be uninformative. The test stops here to avoid a
+//     false-positive pass.
+//  3. Rewrite the internal/cli import in the copy to point at a
+//     non-existent package.
+//  4. Build again. Assert that the build fails, and that the failure
+//     names the broken import.
 //
-// This is slower than a unit test (it invokes `go build`), but it is
-// the only way to prove that the wiring is not decorative.
+// Step 2 is the load-bearing addition relative to the original
+// (WBS 2.2.1) version. Without it, a broken `go` command would cause
+// both builds to fail, and the test would pass for the wrong reason.
+// The control costs one extra `go build` invocation and removes the
+// false-positive mode entirely.
+//
+// This is slower than a unit test (it invokes `go build` twice), but
+// it is the only way to prove that the wiring is not decorative.
 func TestMainGoWiringIsReal(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping wiring test in short mode")
@@ -38,9 +57,27 @@ func TestMainGoWiringIsReal(t *testing.T) {
 	tmpDir := t.TempDir()
 	copyTree(t, moduleRoot, tmpDir)
 
-	// Rewrite main.go in the copy so that the internal/cli import points
-	// at a package that does not exist. If main.go were not genuinely
-	// wired to internal/cli, this rewrite would not break anything.
+	// Step 2: positive control. Prove the unmodified copy builds.
+	// If this fails, the environment is broken and the negative
+	// build's failure would be uninformative.
+	//
+	// The control runs before the import is broken, so it builds
+	// the same module the developer's checkout would build. The
+	// build target is ./cmd/forge because that is the package the
+	// test is about; building the whole module would be slower and
+	// would make the test sensitive to unrelated packages' build
+	// health.
+	positiveCmd := exec.Command("go", "build", "./cmd/forge")
+	positiveCmd.Dir = tmpDir
+	if out, err := positiveCmd.CombinedOutput(); err != nil {
+		t.Fatalf("positive control: unmodified module failed to build: %v\n%s",
+			err, out)
+	}
+
+	// Step 3: rewrite main.go in the copy so that the internal/cli
+	// import points at a package that does not exist. If main.go
+	// were not genuinely wired to internal/cli, this rewrite would
+	// not break anything.
 	mainCopy := filepath.Join(tmpDir, "cmd", "forge", "main.go")
 	data, err := os.ReadFile(mainCopy)
 	if err != nil {
@@ -60,15 +97,23 @@ func TestMainGoWiringIsReal(t *testing.T) {
 		t.Fatalf("write %s: %v", mainCopy, err)
 	}
 
-	// Attempt to build the copied module. Expect failure.
-	cmd := exec.Command("go", "build", "./cmd/forge")
-	cmd.Dir = tmpDir
-	out, err := cmd.CombinedOutput()
+	// Step 4: attempt to build the copied module again. Expect
+	// failure.
+	negativeCmd := exec.Command("go", "build", "./cmd/forge")
+	negativeCmd.Dir = tmpDir
+	out, err := negativeCmd.CombinedOutput()
 
 	if err == nil {
-		t.Fatalf("AC7 FAIL: build succeeded despite broken import; wiring is not real")
+		t.Fatalf("AC7 FAIL: build succeeded despite broken import; " +
+			"wiring is not real")
 	}
 
+	// The build's failure must be attributable to the broken import,
+	// not to something else. The Go toolchain's error message for a
+	// missing package mentions the package path; the test checks for
+	// the sentinel string we wrote into the import, and for the two
+	// common phrasings the toolchain uses ("no required module",
+	// "cannot find package").
 	if !strings.Contains(string(out), "__nonexistent__") &&
 		!strings.Contains(string(out), "no required module") &&
 		!strings.Contains(string(out), "cannot find package") {

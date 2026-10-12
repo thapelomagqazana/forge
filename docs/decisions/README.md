@@ -6,19 +6,23 @@ This index is auto-generated. Do not edit it manually.
 
 | ID | Title | Date |
 |----|-------|------|
+| [ADR-017](./ADR-017-error-verbose-modes.md) | ADR-017: Error verbose modes | 2026-10-12 |
+| [ADR-016](./ADR-016-error-redaction-policy.md) | ADR-016: Error redaction policy | 2026-10-12 |
+| [ADR-015](./ADR-015-programmer-facing-error-format.md) | ADR-015: Programmer-facing error format | 2026-10-12 |
+| [ADR-014](./ADR-014-user-facing-error-format.md) | ADR-014: User-facing error format | 2026-10-12 |
+| [ADR-013](./ADR-013-error-wrapping-contract.md) | ADR-013: Error wrapping contract | 2026-10-12 |
+| [ADR-012](./ADR-012-error-code-registry-and-stability-policy.md) | ADR-012: Error code registry and stability policy | 2026-10-12 |
+| [ADR-011](./ADR-011-closed-error-category-taxonomy.md) | ADR-011: Closed Error Category Taxonomy | 2026-10-12 |
 | [ADR-002](./ADR-002-choose-cobra-as-the-cli-framework.md) | ADR-002: Choose Cobra as the CLI framework | 2026-10-09 |
 
 ## Proposed
 
 | ID | Title | Date |
 |----|-------|------|
-| [ADR-017](./ADR-017-error-verbose-modes.md) | ADR-017: 'Error verbose modes' | 2026-10-12 |
-| [ADR-016](./ADR-016-error-redaction-policy.md) | ADR-016: 'Error redaction policy' | 2026-10-12 |
-| [ADR-015](./ADR-015-programmer-facing-error-format.md) | ADR-015: 'Programmer-facing error format' | 2026-10-12 |
-| [ADR-014](./ADR-014-user-facing-error-format.md) | ADR-014: 'User-facing error format' | 2026-10-12 |
-| [ADR-013](./ADR-013-error-wrapping-contract.md) | ADR-013: 'Error wrapping contract' | 2026-10-12 |
-| [ADR-012](./ADR-012-error-code-registry-and-stability-policy.md) | ADR-012: 'Error code registry and stability policy' | 2026-10-12 |
-| [ADR-011](./ADR-011-closed-error-category-taxonomy.md) | ADR-011: 'Closed error category taxonomy' | 2026-10-12 |
+| [ADR-021](./ADR-021-json-error-envelope-for-format-json.md) | ADR-021: 'JSON Error Envelope for --format json' | 2026-10-12 |
+| [ADR-020](./ADR-020-stdout-stderr-contract-per-exit-code.md) | ADR-020: 'stdout stderr Contract per Exit Code' | 2026-10-12 |
+| [ADR-019](./ADR-019-single-exit-boundary-in-main.md) | ADR-019: 'Single Exit Boundary in main' | 2026-10-12 |
+| [ADR-018](./ADR-018-exit-code-migration-and-stability-policy.md) | ADR-018: 'Exit Code Migration and Stability Policy' | 2026-10-12 |
 | [ADR-010](./ADR-010-forge-config-interaction-with-the-global-flags.md) | ADR-010: `forge config` Interaction with the Global Flags | 2026-10-12 |
 | [ADR-009](./ADR-009-forge-config-output-format.md) | ADR-009: `forge config` Output Format | 2026-10-12 |
 | [ADR-008](./ADR-008-forge-config-command-scope.md) | ADR-008: `forge config` Command Scope | 2026-10-12 |

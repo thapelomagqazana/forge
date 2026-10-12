@@ -1,8 +1,8 @@
 // Package cli implements the Forge command-line interface.
 //
 // This file defines the process boundary of the CLI: the options
-// struct, the functions that read os.* into it, and the entry point
-// that transforms it into the command-boundary Dependencies struct.
+// struct, the functions that read os.* into it, and the entry points
+// that transform it into the command-boundary Dependencies struct.
 //
 // # The two-boundary model
 //
@@ -30,7 +30,7 @@
 // # The single construction site
 //
 // buildDependencies is called exactly once in production code, from
-// executeWithOptions. The invariant is verified by the Taskfile
+// runWithOptions. The invariant is verified by the Taskfile
 // target `verify:deps` and by the structural test
 // TestExecuteWithOptions_BuildsDependenciesOnce.
 //
@@ -50,7 +50,7 @@
 //
 // # The pre-parse validation stage
 //
-// executeWithOptions calls validateArgs before constructing the
+// runWithOptions calls validateArgs before constructing the
 // command tree. The validator rejects malformed invocations that
 // Cobra would otherwise accept silently (see validate.go and
 // docs/cli-ux-spec.md § 4.9). The validation must run before Cobra
@@ -67,21 +67,59 @@
 //     and converts them to FORGE_INTERNAL_PANIC errors. The
 //     recovery is placed at the outermost point before os.Exit,
 //     so a panic anywhere below — including inside
-//     executeWithOptions itself — is caught.
+//     runWithOptions itself — is caught.
 //
-//   - executeWithOptions is the rendering and exit-code boundary.
-//     It ensures every error that reaches it is a *forgeerr.Error
+//   - runWithOptions is the rendering and exit-code boundary. It
+//     ensures every error that reaches it is a *forgeerr.Error
 //     (wrapping non-*Error errors as FORGE_INTERNAL_UNEXPECTED),
 //     renders the error with forgeerr.Format, writes the rendered
-//     string to the injected stderr, and returns the error's
-//     Category().ExitCode(). The wrapping runs in the same
-//     function as the rendering, so the wrapped error is what
-//     gets rendered and what gets its category's exit code.
+//     string to the injected stderr (unless --quiet suppresses
+//     it), writes the JSON error envelope to the injected stdout
+//     when --format json is set, and returns the error's
+//     Category().ExitCode() together with the error itself.
 //
 // The split is forced by the code's shape: the wrapping must run
 // in the same function as the rendering, and the recovery must
 // run at the outermost point. The two requirements put the two
 // behaviours in two different functions.
+//
+// # The output-stream contract (WBS 11.3.2)
+//
+// The CLI's output streams have fixed roles:
+//
+//   - stdout carries the command's result. In text mode, the
+//     result is human-readable. In JSON mode (--format json),
+//     the result is exactly one JSON document: a success
+//     envelope on success, an error envelope on failure.
+//
+//   - stderr carries diagnostics: the human error block on
+//     failure, rendered by forgeerr.Format. --quiet suppresses
+//     the diagnostic; it does not suppress the JSON envelope on
+//     stdout, because the envelope is the command's result in
+//     JSON mode.
+//
+// The contract is documented in docs/reference/output-streams.md
+// and enforced by the tests in error_envelope_test.go and
+// output_test.go. The envelope's schema is published at
+// schemas/error-envelope.schema.json.
+//
+// # The exit boundary (WBS 11.3.1, ADR-020)
+//
+// The package exposes two public entry points:
+//
+//   - Run(ctx context.Context) (int, error) is the process
+//     boundary. It receives the context the caller installed
+//     (cmd/forge/main.go installs a signal-aware one). Run parses
+//     the arguments, dispatches to the matching command, renders
+//     any error, and returns the process exit code and the error.
+//     Run does not call os.Exit.
+//
+//   - Execute() int is a thin wrapper around Run. It is preserved
+//     for callers that only need the code; it calls Run with a
+//     background context and discards the error.
+//
+// The two-value return is the seam for a future WBS that embeds
+// Forge as a library. See ADR-020.
 //
 // # The error message format
 //
@@ -102,6 +140,39 @@
 // are enforced by the golden files in
 // internal/forgeerr/testdata/format/.
 //
+// # The exit-code taxonomy (WBS 11.1.1)
+//
+// The exit code returned by runWithOptions is the error's
+// Category().ExitCode() (WBS 10.2.1). The numeric values are
+// grouped into documented ranges defined in exitcodes.go and
+// published in docs/reference/exit-code-ranges.md. The two
+// non-zero domains that matter at this boundary are:
+//
+//   - Forge findings (1–9): the command ran correctly; the subject
+//     of the command is in a detectable state. The drift and
+//     validation codes live here.
+//   - Forge execution failures (10–19): the command could not run;
+//     Forge itself encountered a problem. The config, template,
+//     filesystem, and security codes live here.
+//
+// Three further codes are emitted by this boundary directly:
+//
+//   - ExitUsage (64, BSD EX_USAGE): a usage error produced by the
+//     pre-parse validator or by wrapCobraError's conversion of a
+//     Cobra parser error.
+//   - ExitInternal (70, BSD EX_SOFTWARE): a panic recovered by
+//     Execute, or a non-*forgeerr.Error wrapped by
+//     wrappedUnexpectedError. Both are classified as internal
+//     errors.
+//   - ExitSIGINT (130) / ExitSIGTERM (143): the context the
+//     caller installed was cancelled by a signal. The boundary
+//     inspects the context's Cause to decide which code to
+//     return.
+//
+// The numeric values are a public contract. They are additive only
+// and are never reassigned. See ADR-018 for the decision and
+// exitcodes.go for the constants.
+//
 // # Verbose mode
 //
 // When the user passes --verbose, the CLI's error path sets
@@ -113,15 +184,18 @@
 //
 // The verbose flag is read from the command tree after Cobra has
 // parsed the arguments. It is not read from the process
-// environment; the flag is the only source.
+// environment; the flag is the only source. The JSON envelope is
+// not affected by --verbose; it carries the same fields regardless.
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+	"syscall"
 
 	"github.com/thapelomagqazana/forge/internal/config"
 	"github.com/thapelomagqazana/forge/internal/forgeerr"
@@ -135,7 +209,7 @@ import (
 // variables, resolving paths — flows through this struct.
 //
 // Tests construct an options value with synthetic inputs, call
-// executeWithOptions, and assert on the captured output. This is what
+// runWithOptions, and assert on the captured output. This is what
 // makes every command testable in-process, without spawning a
 // subprocess.
 //
@@ -253,7 +327,7 @@ type options struct {
 	// source.
 	//
 	// In tests, the field may be set directly to exercise the
-	// verbose rendering through executeWithOptions. A test that
+	// verbose rendering through runWithOptions. A test that
 	// wants the non-verbose rendering sets the field to false, or
 	// constructs an options value without setting it.
 	//
@@ -261,10 +335,10 @@ type options struct {
 	//
 	// The verbose flag changes the rendering of the error block,
 	// not the behaviour of any command. The error path is part of
-	// executeWithOptions, which reads from options. Putting the
+	// runWithOptions, which reads from options. Putting the
 	// field on Dependencies would require every command to
 	// forward it to the error path, which is not how the error
-	// path works: the error path is called by executeWithOptions
+	// path works: the error path is called by runWithOptions
 	// after the command tree returns, not by the command itself.
 	//
 	// The field's place is on the process boundary, alongside the
@@ -314,7 +388,7 @@ type options struct {
 // The verbose flag is read from the command tree after Cobra has
 // parsed the arguments. defaultOptions runs before Cobra parses,
 // so it cannot set the field. The field is populated by
-// executeWithOptions after the command tree returns, from the
+// runWithOptions after the command tree returns, from the
 // flag's value.
 func defaultOptions() options {
 	rootPath, err := os.Getwd()
@@ -332,11 +406,59 @@ func defaultOptions() options {
 	}
 }
 
+// Run runs the Forge CLI with the given context and returns the
+// process exit code and the error it rendered.
+//
+// Run is the process boundary. It is called by cmd/forge/main.go
+// with a context that is cancelled on SIGINT or SIGTERM. Run
+// itself installs no signal handlers: the caller owns the
+// context.
+//
+// # The two-value return
+//
+// The first return is the process exit code, always a documented
+// value from the WBS 11.1.2 table. The second is the error the
+// boundary rendered, or nil on success. main ignores the error
+// (it has already been rendered to stderr); a test or a future
+// library caller uses it to inspect the failure.
+//
+// A nil error paired with a non-zero code is impossible in the
+// current design: the boundary maps the error to a code, and the
+// code is non-zero if and only if the error is non-nil.
+//
+// # Signal handling
+//
+// Run expects the context to be cancelled on SIGINT or SIGTERM.
+// When the cancellation arrives, the command tree's
+// ExecuteContext returns the context's error; the boundary
+// inspects the context's Cause to decide whether the signal was
+// SIGINT (→ ExitSIGINT, 130) or SIGTERM (→ ExitSIGTERM, 143). A
+// context cancelled by something other than a signal maps to
+// ExitSIGINT as the more common case.
+//
+// # What Run does not do
+//
+// Run does not call os.Exit. The process terminates in main, not
+// here. This is the single-exit-boundary rule (ADR-020); the CI
+// check scripts/deps/verify-no-os-exit.sh enforces it.
+//
+// # Relationship to Execute
+//
+// Execute is a thin wrapper around Run. It calls Run with a
+// background context and discards the error, returning only the
+// code. Execute predates Run (WBS 4.1.1); it is preserved for
+// backward compatibility. New code should call Run.
+func Run(ctx context.Context) (int, error) {
+	return runWithOptions(ctx, defaultOptions())
+}
+
 // Execute runs the Forge CLI and returns a process exit code.
 //
-// It is the only exported symbol of this package. It exists so that
-// cmd/forge/main.go can delegate the entire process lifecycle to a
-// single, testable function.
+// It is a thin wrapper around Run. It calls Run with a
+// background context and discards the error, returning only the
+// code. The wrapper exists for backward compatibility: callers
+// that only need the code continue to work; callers that want
+// the error call Run.
 //
 // # The signature is frozen
 //
@@ -357,13 +479,12 @@ func defaultOptions() options {
 //     converted to a FORGE_INTERNAL_PANIC error (via
 //     recoveredPanicError), rendered through forgeerr.Format,
 //     written to os.Stderr, and returned as the process exit code
-//     (1, per CategoryInternal.ExitCode).
+//     (ExitInternal, 70, per CategoryInternal.ExitCode()).
 //
-//  2. Calls executeWithOptions with the default environment.
+//  2. Calls Run with a background context.
 //
-//  3. Returns the code executeWithOptions returns. The function
-//     does not re-derive the code; it trusts the inner function's
-//     result.
+//  3. Returns the code Run returned. The function does not
+//     re-derive the code; it trusts the inner function's result.
 //
 // # Why panics are recovered here
 //
@@ -376,29 +497,29 @@ func defaultOptions() options {
 // Recovering the panic at the boundary converts it into a
 // first-class error: the user sees the frozen format with the
 // FORGE_INTERNAL_PANIC code, and the process exits with the
-// INTERNAL category's code (1). The panic's value is preserved
-// in the error's context map, so a developer can see what went
-// wrong.
+// internal-error code (ExitInternal, 70). The panic's value is
+// preserved in the error's context map, so a developer can see
+// what went wrong.
 //
-// # Why the recovery is not in executeWithOptions
+// # Why the recovery is not in runWithOptions
 //
 // The recovery is placed at the outermost point before os.Exit,
-// so a panic anywhere below — including inside executeWithOptions
-// itself — is caught. Moving it into executeWithOptions would
+// so a panic anywhere below — including inside runWithOptions
+// itself — is caught. Moving it into runWithOptions would
 // leave a window in which a panic before the deferred recovery is
 // set up (for example, in defaultOptions, or in
 // buildDependencies) escapes.
 //
 // The trade-off is testability: the recovery path cannot be
 // exercised through the test helpers, because the helpers call
-// executeWithOptions, not Execute. The conversion is extracted
+// runWithOptions, not Execute. The conversion is extracted
 // into recoveredPanicError so that it can be tested directly. The
 // placement of the deferred recovery is what is not tested; its
 // correctness is a matter of code review, not of test.
 //
 // # Why the panic path writes directly to os.Stderr
 //
-// The panic recovery runs before executeWithOptions, so the
+// The panic recovery runs before runWithOptions, so the
 // injected stderr (opts.stderr) is not yet available. The
 // boundary writes to os.Stderr directly. This is one of the
 // two places in the package that touch a process stream
@@ -454,10 +575,10 @@ func Execute() (code int) {
 				Verbose: hasVerboseArg(os.Args),
 			}))
 
-			// The exit code is the INTERNAL category's code
-			// (1). We do not call os.Exit here; main.go does.
-			// The named return carries the code to the
-			// caller.
+			// The exit code is the internal-error code
+			// (ExitInternal, 70). We do not call os.Exit here;
+			// main.go does. The named return carries the code
+			// to the caller.
 			code = e.Category().ExitCode()
 		}
 	}()
@@ -466,9 +587,10 @@ func Execute() (code int) {
 	// in the tree is caught by the deferred function above.
 	//
 	// The error handling (wrapping, rendering, exit-code
-	// derivation) is performed by executeWithOptions. The
+	// derivation) is performed by runWithOptions. The
 	// boundary only handles the panic path.
-	return executeWithOptions(defaultOptions())
+	code, _ = Run(context.Background())
+	return code
 }
 
 // recoveredPanicError converts a recovered panic value into a
@@ -501,6 +623,15 @@ func Execute() (code int) {
 // LogValue. Keeping the message fixed means the message
 // invariants (single line, no trailing period, <= 80 bytes) hold
 // regardless of the panic value's content.
+//
+// # The exit code
+//
+// The error's category is CategoryInternal, whose ExitCode() is
+// ExitInternal (70, BSD EX_SOFTWARE). The panic path therefore
+// exits with the internal-error code, not with the usage code and
+// not with a finding. This is the correct classification: a panic
+// is a bug in Forge, not a usage error and not a subject-side
+// finding.
 func recoveredPanicError(panicValue any) *forgeerr.Error {
 	return forgeerr.New(
 		forgeerr.CategoryInternal,
@@ -517,7 +648,7 @@ func recoveredPanicError(panicValue any) *forgeerr.Error {
 // via WithCause, so that errors.Is and errors.As see through the
 // wrapper.
 //
-// The function is called by executeWithOptions when the command
+// The function is called by runWithOptions when the command
 // tree returns an error that is neither a *forgeerr.Error nor
 // wraps one. It is extracted so that the wrapping can be tested
 // directly, in addition to being tested through the CLI's error
@@ -544,9 +675,9 @@ func recoveredPanicError(panicValue any) *forgeerr.Error {
 //
 // # The wrapping's location
 //
-// The wrapping is in executeWithOptions, not in Execute, because
-// the rendering is in executeWithOptions. If the wrapping were in
-// Execute, it would run after executeWithOptions had already
+// The wrapping is in runWithOptions, not in Execute, because
+// the rendering is in runWithOptions. If the wrapping were in
+// Execute, it would run after runWithOptions had already
 // rendered the un-wrapped error, and the wrapped error would
 // never reach the user.
 //
@@ -557,6 +688,13 @@ func recoveredPanicError(panicValue any) *forgeerr.Error {
 // errors.Is or errors.As on the wrapper sees the original error
 // through the chain. This is the property that makes the wrapper
 // a wrapper and not a replacement.
+//
+// # The exit code
+//
+// The error's category is CategoryInternal, whose ExitCode() is
+// ExitInternal (70, BSD EX_SOFTWARE). An unexpected error is a
+// bug in Forge, not a usage error and not a subject-side finding.
+// The exit code reflects that classification.
 func wrappedUnexpectedError(cause error) *forgeerr.Error {
 	// forgeerr.Wrap returns the cause unchanged if it is already
 	// a *forgeerr.Error. The caller checks for that case before
@@ -604,8 +742,8 @@ func hasVerboseArg(args []string) bool {
 	return false
 }
 
-// executeWithOptions runs the CLI with the given options and returns
-// the process exit code.
+// runWithOptions runs the CLI with the given context and options
+// and returns the exit code and the rendered error.
 //
 // It is unexported because it is an implementation detail. Tests
 // within the package call it directly. Downstream packages must not.
@@ -632,7 +770,7 @@ func hasVerboseArg(args []string) bool {
 //
 // # The validation stage
 //
-// Before the transformation, executeWithOptions calls
+// Before the transformation, runWithOptions calls
 // validateArgs (validate.go) on the raw argument list. The
 // validator rejects malformed invocations that Cobra would
 // otherwise accept silently:
@@ -652,36 +790,46 @@ func hasVerboseArg(args []string) bool {
 // The validator returns a *forgeerr.Error with category
 // CategoryCLI. The error path renders it with forgeerr.Format,
 // writes it to the same stderr, and maps it to the CLI
-// category's exit code. The result is indistinguishable from an
-// error produced by a command: same stream, same message shape,
-// same exit code.
+// category's exit code (ExitUsage, 64). The result is
+// indistinguishable from an error produced by a command: same
+// stream, same message shape, same exit code.
 //
 // # What the function does
 //
-//  1. Validates the raw argument list via validateArgs.
-//  2. Transforms options into Dependencies via buildDependencies.
-//  3. Constructs the root command, passing Dependencies to it.
-//  4. Binds the injectable inputs and outputs to the command tree.
-//  5. Executes the command tree.
-//  6. Converts any Cobra-produced error (unknown flag, unknown
+//  1. Checks the context for cancellation. A cancelled context
+//     means the user or supervisor requested termination; the
+//     boundary returns the signal's code without doing any work.
+//  2. Validates the raw argument list via validateArgs.
+//  3. Transforms options into Dependencies via buildDependencies.
+//  4. Constructs the root command, passing Dependencies to it.
+//  5. Binds the injectable inputs and outputs to the command tree.
+//  6. Executes the command tree with the context.
+//  7. Converts any Cobra-produced error (unknown flag, unknown
 //     command) into a *forgeerr.Error with category CategoryCLI.
-//  7. Ensures the error is a *forgeerr.Error; a non-*Error error
+//  8. Ensures the error is a *forgeerr.Error; a non-*Error error
 //     is wrapped as FORGE_INTERNAL_UNEXPECTED.
-//  8. Renders the error with forgeerr.Format, in verbose mode if
+//  9. Reads the --verbose flag from the command tree.
+//  10. Reads the --format flag from the command tree.
+//  11. Reads the --quiet flag from the command tree.
+//  12. Renders the error with forgeerr.Format, in verbose mode if
 //     the --verbose flag was set.
-//  9. Writes the rendered error to the injected stderr.
-//  10. Returns the error's Category().ExitCode().
+//  13. Writes the rendered error to the injected stderr, unless
+//     --quiet suppresses it.
+//  14. Writes the JSON error envelope to the injected stdout when
+//     --format json is set (WBS 11.3.2).
+//  15. Returns the error's Category().ExitCode() and the error.
 //
 // # What the function does not do
 //
 //   - It does not read os.Args, os.Stdin, os.Stdout, os.Stderr, or
 //     os.Getenv. Every input is read from the options value.
 //   - It does not perform I/O of its own beyond writing the
-//     rendered error to opts.stderr. The command tree performs the
-//     rest.
+//     rendered error to opts.stderr and the JSON envelope to
+//     opts.stdout. The command tree performs the rest.
 //   - It does not recover panics. The recovery is in Execute, at
 //     the outermost point; see Execute's docstring for the
 //     rationale.
+//   - It does not call os.Exit. The process terminates in main.
 //
 // # The error path
 //
@@ -703,16 +851,27 @@ func hasVerboseArg(args []string) bool {
 //
 // The two-step ordering matters. A recognized Cobra error is
 // converted by the first step, so the second step does not fire
-// and the error is classified as a usage error (exit code 2).
+// and the error is classified as a usage error (ExitUsage, 64).
 // An unrecognized error falls through the first step and is
-// wrapped by the second step as internal (exit code 1).
+// wrapped by the second step as internal (ExitInternal, 70).
 //
 // The function then renders the (possibly wrapped) error with
-// forgeerr.Format, writes the rendered string to opts.stderr,
-// and returns the error's Category().ExitCode().
+// forgeerr.Format, writes the rendered string to opts.stderr
+// (unless --quiet suppresses it), writes the JSON envelope to
+// opts.stdout when --format json is set, and returns the error's
+// Category().ExitCode() together with the error itself.
 //
 // When the command tree returns a nil error, the function returns
-// ExitSuccess without writing anything.
+// (ExitSuccess, nil) without writing anything.
+//
+// # Context cancellation
+//
+// The context is passed to root.ExecuteContext. When the context
+// is cancelled (by a signal handler in main, or by a test), the
+// command tree returns the context's error. The boundary treats
+// a cancelled context specially: the error is not rendered (the
+// cancellation is the user's intent, not a failure); the code is
+// ExitSIGINT (130) or ExitSIGTERM (143) depending on the cause.
 //
 // # Why fmt.Fprint, not fmt.Fprintln
 //
@@ -730,7 +889,13 @@ func hasVerboseArg(args []string) bool {
 //
 // Successful output is written by the command tree itself, to
 // opts.stdout (which is deps.Stdout). The function does not write
-// to opts.stdout; it only wires it to the command tree.
+// to opts.stdout on success; it only wires it to the command
+// tree.
+//
+// On failure, the function may write the JSON error envelope to
+// opts.stdout. The write is performed by writeFailure
+// (output.go), which is a no-op in text mode. The two modes'
+// behaviors are documented in docs/reference/output-streams.md.
 //
 // # Why buildDependencies is called exactly once
 //
@@ -760,19 +925,65 @@ func hasVerboseArg(args []string) bool {
 //
 // When the command tree succeeds, nothing is written to stderr.
 // This is the CLI UX contract: a successful invocation produces no
-// diagnostic output. The function returns ExitSuccess immediately,
-// without touching opts.stderr.
+// diagnostic output. The function returns (ExitSuccess, nil)
+// immediately, without touching opts.stderr.
 //
 // # Why verbose is read after the command tree runs
 //
 // The verbose flag is a property of the invocation. It is parsed
 // by Cobra when the command tree runs, so the value is not
-// available before root.Execute(). The flag's only consumer in
-// this function is the error rendering, which runs after the
-// command tree returns. The ordering is therefore natural:
-// execute the tree, read the flag from the tree, render any
-// error with the flag's value.
-func executeWithOptions(opts options) int {
+// available before root.ExecuteContext(). The flag's only
+// consumer in this function is the error rendering, which runs
+// after the command tree returns. The ordering is therefore
+// natural: execute the tree, read the flag from the tree, render
+// any error with the flag's value.
+//
+// # Why format and quiet are read after the command tree runs
+//
+// The --format and --quiet flags are properties of the invocation,
+// parsed by Cobra during the tree's execution. The error path
+// reads them after the tree returns, in the same way it reads
+// --verbose. The three flags are read together so that a reader
+// sees them as a group: the flags that modify the error path's
+// output.
+//
+// # The exit-code taxonomy
+//
+// The code returned by this function is the error's
+// Category().ExitCode(). The numeric values are grouped into
+// documented ranges defined in exitcodes.go and published in
+// docs/reference/exit-code-ranges.md. The ranges this function
+// can produce are:
+//
+//   - ExitSuccess (0): the command tree returned nil.
+//   - Forge findings (1–9): a command reported a finding, e.g.
+//     drift detected or a validation warning promoted to error.
+//     These are not tool malfunctions; the caller decides what to
+//     do.
+//   - Forge execution failures (10–19): a command could not run,
+//     e.g. a config, template, filesystem, or security error.
+//     These are tool malfunctions from the caller's perspective.
+//   - ExitUsage (64): the pre-parse validator rejected the
+//     invocation, or wrapCobraError classified a Cobra parser
+//     error as a usage error.
+//   - ExitInternal (70): the boundary wrapped a non-*forgeerr.Error
+//     as FORGE_INTERNAL_UNEXPECTED, or a panic was recovered by
+//     Execute (in which case Execute returns the code, not this
+//     function).
+//   - ExitSIGINT (130) / ExitSIGTERM (143): the context was
+//     cancelled by a signal.
+//
+// The numeric values are a public contract. They are additive
+// only and are never reassigned. See ADR-018 for the decision.
+func runWithOptions(ctx context.Context, opts options) (int, error) {
+	// Fast path: the context is cancelled before we start. This
+	// happens when a signal arrives during process startup, before
+	// the command tree runs. The boundary returns the signal's
+	// code without doing any work.
+	if cerr := ctx.Err(); cerr != nil {
+		return signalExitCode(ctx), cerr
+	}
+
 	// Validate the raw arguments before Cobra parses them. The
 	// malformed invocations are rejected here; see validate.go
 	// for the rationale and docs/cli-ux-spec.md for the contract.
@@ -780,159 +991,229 @@ func executeWithOptions(opts options) int {
 	// The validator returns a *forgeerr.Error with category
 	// CategoryCLI (the four rejections are all usage errors).
 	// The error is rendered with the same format as any other
-	// error; the exit code is the CLI category's code (2).
+	// error; the exit code is the CLI category's code
+	// (ExitUsage, 64).
 	//
 	// The write uses fmt.Fprint, not fmt.Fprintln, because
 	// forgeerr.Format already includes the trailing newline
 	// (rule F10 of the frozen format).
-	//
-	// The validator's errors are rendered in the mode the
-	// options value specifies. In production, the options value
-	// does not carry the verbose flag at this point (Cobra has
-	// not run); the flag is false. In tests, a test that wants
-	// to exercise the validator's rendering in verbose mode sets
-	// opts.verbose. The current tests use the default (false).
 	if err := validateArgs(opts.args); err != nil {
 		fmt.Fprint(opts.stderr, forgeerr.Format(err, forgeerr.Options{
 			Verbose: opts.verbose,
 		}))
-		return exitCodeOf(err)
+		return exitCodeOf(err), err
 	}
 
 	// Transform the process-boundary options into the command-
 	// boundary Dependencies. This is the only call site of
 	// buildDependencies in production code.
-	//
-	// The transformation is pure: buildDependencies reads only its
-	// argument, allocates a new Dependencies value, and returns it.
-	// It does not mutate opts, does not touch the filesystem, and
-	// does not read the environment. A caller can therefore reason
-	// about the transformation by reading a single function.
 	deps := buildDependencies(opts)
 
 	// Construct the command tree with the resolved collaborators.
-	// The root command does not consume deps in Phase 2, but the
-	// signature is fixed so that subcommand constructors added in
-	// later WBS items can receive it without changing this call.
 	root := newRootCmd(deps)
 
 	// Bind the injectable inputs and outputs to the command tree.
-	// Cobra uses these for help text, usage messages, and any
-	// internal writes it performs. Commands that write their own
-	// output read the writers from deps, not from Cobra.
-	//
-	// SetArgs is the injectable equivalent of os.Args[1:]. SetIn is
-	// the injectable equivalent of os.Stdin. SetOut and SetErr are
-	// the injectable equivalents of os.Stdout and os.Stderr.
-	//
-	// The four calls below are the only places in the package that
-	// bind process-boundary values to the command tree. A reader
-	// who wants to know what the CLI reads or writes can read these
-	// four lines.
 	root.SetArgs(opts.args)
 	root.SetIn(opts.stdin)
 	root.SetOut(opts.stdout)
 	root.SetErr(opts.stderr)
 
-	// Execute the command tree. Cobra dispatches to the matching
-	// subcommand, or to the root's RunE handler if no subcommand
-	// matches. The return value is the error from the dispatched
-	// handler, or nil if the handler succeeded.
-	//
-	// A non-nil error means the invocation failed. The error may
-	// be a usage error (unknown command, invalid flag), a runtime
-	// error (filesystem failure, configuration error), or a
-	// user-cancelled operation.
-	err := root.Execute()
+	// Execute the command tree with the context. The tree's
+	// RunE handlers receive the context via cmd.Context() and
+	// may return early if it is cancelled.
+	err := root.ExecuteContext(ctx)
 	if err == nil {
 		// Success. No diagnostic output is written. The command
 		// tree has already written any successful output to
-		// opts.stdout. Return ExitSuccess.
-		return ExitSuccess
+		// opts.stdout. Return (ExitSuccess, nil).
+		return ExitSuccess, nil
+	}
+
+	// If the context is cancelled, the command tree's error is
+	// the context's error. The boundary returns the signal's
+	// code and does not render the error: a cancellation is the
+	// user's intent, not a failure to report.
+	if cerr := ctx.Err(); cerr != nil {
+		return signalExitCode(ctx), cerr
 	}
 
 	// Step 1: convert Cobra's parser and dispatcher errors into
 	// *forgeerr.Error values with category CategoryCLI.
-	//
-	// Cobra produces plain errors for the failures it detects:
-	// unknown flags, unknown shorthand flags, and unknown
-	// commands. These errors reach the CLI as generic `error`
-	// values with no structured type to match on. wrapCobraError
-	// recognizes them by their message prefixes and maps each to
-	// a registered CLI code.
-	//
-	// The conversion runs before the boundary's own wrapping, so
-	// that a recognized Cobra error is classified as a usage
-	// error (exit code 2) rather than as an internal error (exit
-	// code 1). An error that wrapCobraError does not recognize
-	// passes through unchanged.
 	err = wrapCobraError(err)
 
 	// Step 2: ensure the error is a *forgeerr.Error (or wraps
 	// one). If it is not, wrap it as FORGE_INTERNAL_UNEXPECTED.
-	// The wrapping runs here, before the rendering, so that the
-	// wrapped error is what gets rendered and what gets its
-	// category's exit code.
-	//
-	// The check is a documented invariant of the error path:
-	// errors produced by the command tree, the pre-parse
-	// validator, and Cobra are *forgeerr.Error values (the Cobra
-	// errors are converted by step 1). A non-*Error reaching this
-	// point is a bug (a command that returns a bare errors.New,
-	// a future caller that constructs an error outside the
-	// constructor API). The wrapping preserves the invariant and
-	// labels the violation: the user sees the
-	// FORGE_INTERNAL_UNEXPECTED code, which tells the developer
-	// that a command returned a non-*Error error.
 	var ferr *forgeerr.Error
 	if !errors.As(err, &ferr) {
 		err = wrappedUnexpectedError(err)
+		// Re-extract the wrapped error. wrappedUnexpectedError
+		// returns a *forgeerr.Error, so the next errors.As
+		// succeeds. The re-extraction is performed here so that
+		// the writeFailure call below receives a non-nil
+		// *forgeerr.Error regardless of which wrapping step
+		// produced it.
+		_ = errors.As(err, &ferr)
 	}
 
-	// Read the verbose flag from the command tree. The flag is
-	// a persistent flag, so it is available on the root command
-	// and inherited by every subcommand. The helper
-	// verboseRequested is in flags.go.
+	// Read the invocation flags from the command tree. The flags
+	// are properties of the invocation; they are parsed by Cobra
+	// during the tree's execution, so they are not available
+	// before root.ExecuteContext().
 	//
-	// The flag is read after the command tree has executed, so
-	// the value reflects what the user actually passed. A future
-	// refactor that reads the flag before the tree runs would
-	// see the flag's default value (false), not the user's
-	// choice.
+	// Only --verbose and --format are read here. --quiet is
+	// deliberately NOT read: the flag suppresses informational
+	// log lines (a WBS 12.0 concern), not the error block. See
+	// the comment on the error write below.
 	verbose := verboseRequested(root)
+	format := formatRequested(root)
 
-	// Render the error and write it to the injected stderr.
-	// forgeerr.Format produces the complete byte-exact string,
-	// including the trailing newline (rule F10), so the write
-	// uses fmt.Fprint, not fmt.Fprintln.
+	// Render the error and write it to the injected stderr. The
+	// write is unconditional.
 	//
-	// The stack is passed as nil in Phase 2. A future phase
-	// replaces the nil with a captured stack; the call site
-	// accommodates the change without further edits.
+	// # Why --quiet does not guard this write
 	//
-	// The write is intentionally unchecked. If opts.stderr is a
-	// broken pipe or a closed file, the write fails silently.
-	// There is nothing useful the CLI can do about it: writing an
-	// error about the error stream failing would itself fail. The
-	// exit code is still returned, so the caller (main.go) can
-	// exit with the correct status even if the diagnostic could
-	// not be delivered.
+	// WBS 7.4.3's flag-interaction contract states explicitly
+	// that errors are never suppressed by --quiet. The flag's
+	// semantics in Phase 2 are "suppress informational log
+	// lines"; Phase 2 emits none, so the flag has no effect on
+	// any Phase 2 output. The error block is not an
+	// informational log line; it is the user-facing explanation
+	// of a failure, and hiding it would make the CLI's failure
+	// modes invisible in the very scenarios (quiet CI runs,
+	// scripted invocations) where the flag is most likely to be
+	// used.
+	//
+	// WBS 11.3.2's "suppresses diagnostics" refers to
+	// informational diagnostics, not to the error block. The
+	// WBS's own parenthetical — "(errors still printed to
+	// stderr; ...)" — names the rule that this write follows.
+	//
+	// The JSON error envelope on stdout (written below) is
+	// likewise not suppressed. The envelope is the command's
+	// result in JSON mode; the exit code and the envelope's
+	// contents are the machine consumer's data.
+	//
+	// The write uses fmt.Fprint, not fmt.Fprintln, because
+	// forgeerr.Format produces the complete byte-exact string
+	// including the trailing newline (rule F10).
 	fmt.Fprint(opts.stderr, forgeerr.Format(err, forgeerr.Options{
 		Verbose: verbose,
 	}))
+
+	// Write the JSON error envelope to stdout when --format json
+	// is set. In text mode the call is a no-op.
+	//
+	// The write's error is intentionally unchecked: the exit code
+	// is the primary signal, and a failed write on stdout is not
+	// a reason to change the classification. The envelope's
+	// encoder is deterministic and produces valid JSON for every
+	// *forgeerr.Error; a write error here would be a broken pipe
+	// or a closed stream, neither of which the CLI can act on.
+	if ferr != nil {
+		_, _ = writeFailure(opts.stdout, format, ferr)
+	}
 
 	// Map the error to an exit code. The mapping is defined by
 	// the error's category; exitCodeOf extracts the
 	// *forgeerr.Error from the chain and reads its
 	// Category().ExitCode().
-	return exitCodeOf(err)
+	return exitCodeOf(err), err
+}
+
+// signalExitCode returns the exit code for a cancelled context.
+//
+// The function inspects the context's Cause to distinguish SIGINT
+// from SIGTERM. If the cause is not a signal (or the cause is not
+// available), the function returns ExitSIGINT (130) as the more
+// common case.
+//
+// # The Cause's shape
+//
+// signal.NotifyContext attaches an os.Signal to the context by
+// passing it to context.WithCancelCause, whose cancel function
+// takes an error. Since os.Signal does not satisfy error, the
+// standard library wraps the signal in an unexported type that
+// satisfies both interfaces. The wrapper's dynamic type is not
+// syscall.Signal; a direct `cause == syscall.SIGTERM` comparison
+// fails.
+//
+// The function therefore checks two shapes:
+//
+//  1. The cause is a bare syscall.Signal (the shape a caller that
+//     bypasses signal.NotifyContext might produce). The direct
+//     comparison `sig == syscall.SIGTERM` succeeds.
+//
+//  2. The cause is a wrapper whose embedded os.Signal is
+//     syscall.SIGTERM. The wrapper's dynamic type is not
+//     syscall.Signal, so the direct comparison fails. The
+//     comparison is made via the signal's String()
+//     representation instead: syscall.SIGTERM.String() is
+//     "terminated", and the wrapper's promoted String() method
+//     returns the same string.
+//
+// The two checks together cover both shapes. A future Go version
+// that changes the wrapper's shape must be matched by a change to
+// this function; the test TestRun_ContextCancelled_ReturnsSIGTERM
+// exercises the wrapper shape, and a failure of that test is the
+// signal that the function needs updating.
+//
+// # Why the fallback is ExitSIGINT
+//
+// A cancelled context whose cause is not a signal is most often a
+// Ctrl-C that the signal handler delivered without a cause, or a
+// context cancelled by a test. The SIGINT code is the more common
+// case; the alternative would be to invent a third code for
+// "cancelled by an unknown cause", which the taxonomy does not
+// have.
+//
+// # The exit codes
+//
+//   - syscall.SIGTERM → ExitSIGTERM (143, 128 + 15).
+//   - os.Interrupt, nil, or any other cause → ExitSIGINT
+//     (130, 128 + 2).
+//
+// Both codes are in the signals range (129–255) and follow the
+// POSIX shell convention.
+func signalExitCode(ctx context.Context) int {
+	cause := context.Cause(ctx)
+	if cause == nil {
+		return ExitSIGINT
+	}
+
+	// The cause must satisfy os.Signal for the comparison to be
+	// meaningful. A cause that does not satisfy os.Signal is not
+	// a signal; the fallback applies.
+	sig, ok := cause.(os.Signal)
+	if !ok {
+		return ExitSIGINT
+	}
+
+	// Shape 1: the cause is a bare syscall.Signal. The direct
+	// comparison works because the dynamic type of the interface
+	// value equals the concrete type of syscall.SIGTERM.
+	if sig == syscall.SIGTERM {
+		return ExitSIGTERM
+	}
+
+	// Shape 2: the cause is a wrapper around an os.Signal. The
+	// wrapper's dynamic type is not syscall.Signal, so the
+	// direct comparison above is false. The comparison is made
+	// via the signal's String() representation instead.
+	//
+	// syscall.SIGTERM.String() returns "terminated"; the
+	// wrapper's promoted String() returns the same string.
+	if sig.String() == syscall.SIGTERM.String() {
+		return ExitSIGTERM
+	}
+
+	return ExitSIGINT
 }
 
 // exitCodeOf returns the process exit code for err.
 //
 // If err is a *forgeerr.Error or wraps one, the code is the
 // error's Category().ExitCode(). Otherwise, the code is
-// ExitFailure (1).
+// ExitInternal (70, BSD EX_SOFTWARE).
 //
 // The function is the CLI's exit-code derivation. It is
 // deliberately small: the category's ExitCode method is the
@@ -950,13 +1231,19 @@ func executeWithOptions(opts options) int {
 //
 // # The non-*Error branch
 //
-// The branch is a safety net. The wrapping in executeWithOptions
+// The branch is a safety net. The wrapping in runWithOptions
 // ensures a *forgeerr.Error is present in the chain when this
 // function is called from the error path. A caller that
-// constructs executeWithOptions directly and returns a
+// constructs runWithOptions directly and returns a
 // non-*Error error without the wrapping is responsible for the
-// consequence; the helper's fallback (ExitFailure, 1) is the
+// consequence; the helper's fallback (ExitInternal, 70) is the
 // correct code for an unclassified internal error.
+//
+// The fallback is ExitInternal, not ExitFailure. The latter was
+// the WBS 4.1.2 constant and has been superseded by the WBS
+// 11.1.1 taxonomy: a bare error is a bug in Forge, not a finding,
+// and its code belongs in the internal-error range (70–78), not
+// in the findings range (1–9).
 func exitCodeOf(err error) int {
 	if err == nil {
 		return ExitSuccess
@@ -966,7 +1253,12 @@ func exitCodeOf(err error) int {
 		return ferr.Category().ExitCode()
 	}
 	// The error is not a *forgeerr.Error and does not wrap one.
-	return ExitFailure
+	// Classify it as an internal error: the boundary's safety net
+	// (wrappedUnexpectedError) normally prevents this branch from
+	// being reached through runWithOptions; a direct caller of
+	// runWithOptions that constructs a non-*Error error is
+	// responsible for the consequence.
+	return ExitInternal
 }
 
 // wrapCobraError converts a Cobra-produced error into a
@@ -1019,6 +1311,14 @@ func exitCodeOf(err error) int {
 //	Error: unknown flag
 //	Code:  FORGE_CLI_UNKNOWN_FLAG
 //	       flag: --unknown-flag
+//
+// # The exit code
+//
+// The error's category is CategoryCLI, whose ExitCode() is
+// ExitUsage (64, BSD EX_USAGE). A Cobra parser error is a usage
+// error: the user invoked the command incorrectly. It is not a
+// finding (the command did not run) and not an internal error
+// (the CLI is working as designed).
 //
 // # Why the function is not inlined
 //

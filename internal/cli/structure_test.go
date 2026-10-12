@@ -24,8 +24,10 @@
 //
 // Those are tested by the white-box tests in root_test.go,
 // execute_test.go, version_test.go, deps_test.go, registry_test.go,
-// contract_test.go, validate_test.go, and flags_test.go, which live
-// in package cli (not cli_test).
+// contract_test.go, validate_test.go, flags_test.go,
+// exitcodes_test.go, exitcodes_semantics_test.go,
+// exitcodes_compat_test.go, and mapping_test.go, which live in
+// package cli (not cli_test).
 //
 // # Why structural tests
 //
@@ -35,11 +37,15 @@
 //   - Cobra is imported only under internal/cli. If a second package
 //     imports it, the CLI framework leaks into a layer that should
 //     not know about it.
-//   - Only one function may be exported from the package (Execute).
-//     If a second function becomes exported, downstream packages can
-//     depend on internals, which locks the design in place.
-//   - The package's exported constants are a bounded vocabulary. New
-//     ones require review.
+//   - Only a small set of functions and constants may be exported
+//     from the package. If a new one appears, downstream packages
+//     can depend on internals, which locks the design in place.
+//     The exit-code taxonomy (WBS 11.1.1) added eight functions
+//     and twenty-five constants; the per-code enumeration and
+//     severity classification (WBS 11.1.2) added eight more
+//     constants (one new code and seven aliases) and four severity
+//     classes; the error-to-exit-code mapping (WBS 11.2.1) added
+//     one function (ExitCode). Each was reviewed and cited.
 //   - The package must contain no unused files. Orphaned source files
 //     accumulate over time and create confusion.
 //
@@ -172,10 +178,15 @@ func findModuleRoot(t *testing.T) string {
 // This constant is used by both TestExpectedFilesExist and
 // TestNoOrphanedFiles. Keeping the allowlist in one place ensures the
 // two tests never disagree.
+//
+// Test files (*_test.go) are not listed here; listGoFiles excludes
+// them. The test-file package declarations are checked separately by
+// TestTestFilePackageDeclarations.
 var expectedSourceFiles = map[string]string{
 	"doc.go":       "WBS 2.4.2 — package documentation and public contract",
 	"execute.go":   "WBS 2.4.2 — Execute and executeWithOptions",
-	"exitcodes.go": "WBS 2.4.2 — exit code constants and error mapping",
+	"exitcodes.go": "WBS 2.4.2 / WBS 11.1.1 / WBS 11.1.2 — exit code constants, range taxonomy, classifiers, and severity",
+	"mapping.go":   "WBS 11.2.1 — ExitCode(err error) int, the error-to-exit-code mapping contract",
 	"root.go":      "WBS 2.4.2 — root command constructor",
 	"deps.go":      "WBS 4.2.2 — Dependencies injection struct and Logger",
 
@@ -204,8 +215,28 @@ var expectedSourceFiles = map[string]string{
 	"examples.go":         "WBS 7.2.2 — Examples convention rules and helpers",
 	"stream_boundary.go":  "WBS 7.4.1 — output stream boundary rules and fixtures",
 	"ascii_policy.go":     "WBS 7.4.2 — ASCII-only output policy predicate and constants",
-	"flag_interaction.go": "WBS 7.4.3 - global flag interaction contract rules and fixtures",
+	"flag_interaction.go": "WBS 7.4.3 — global flag interaction contract rules and fixtures",
 	"flags_adapter.go":    "WBS 4.3.1 (follow-up) — adapter implementing config.FlagReader over a *cobra.Command",
+
+	// WBS 11.3.2 adds the JSON error envelope and the
+	// format-aware writers. The two files are a single unit: the
+	// envelope's encoder produces the JSON document; the writers
+	// dispatch on the OutputFormat and route the document to
+	// stdout. Splitting them into one file would mix the
+	// encoding concern (a pure data transformation) with the
+	// dispatch concern (a decision that depends on the
+	// invocation's flags).
+	//
+	// error_envelope.go defines the errorEnvelope and
+	// errorEnvelopeError types and the encodeErrorEnvelope
+	// function. The envelope's schema is published at
+	// schemas/error-envelope.schema.json.
+	//
+	// output.go defines the OutputFormat type and its two values
+	// (FormatText, FormatJSON), the writeFailure and
+	// writeSuccessResult functions, and the successEnvelope type.
+	"error_envelope.go": "WBS 11.3.2 — JSON error envelope encoder",
+	"output.go":         "WBS 11.3.2 — format-aware stdout/stderr writers",
 }
 
 // TestExpectedFilesExist verifies that every file this WBS expects is
@@ -488,8 +519,8 @@ func TestStdlibOnlyForVersionImports(t *testing.T) {
 // =============================================================================
 
 // expectedExportedFunctions enumerates every function the cli
-// package is permitted to export, along with the WBS item that
-// introduced it.
+// package is permitted to export, along with the WBS item or ADR
+// that introduced it.
 //
 // # Why the map is explicit
 //
@@ -499,7 +530,7 @@ func TestStdlibOnlyForVersionImports(t *testing.T) {
 // addition in a citation. Removing a function is a breaking
 // change for any importer and requires the same review.
 //
-// # The two entries
+// # The entries
 //
 //   - Execute is the CLI's process entry point. It is called by
 //     cmd/forge/main.go. WBS 4.1.1 froze its signature.
@@ -511,21 +542,95 @@ func TestStdlibOnlyForVersionImports(t *testing.T) {
 //     internal/app/<name>) both need to read the resolved
 //     configuration from the command's context.
 //
+//   - ExitCode is the error-to-exit-code mapping contract. WBS
+//     11.2.1 introduced it. The export is required because
+//     cmd/forge/main.go and downstream consumers (IDE tooling,
+//     wrapper scripts, CI integrations) need the same mapping;
+//     the mapping is a public contract, not an implementation
+//     detail. It is documented in docs/reference/error-mapping.md.
+//
+//   - The eight taxonomy functions (ExitCodeRanges,
+//     LookupExitCodeRange, VerifyExitCodeRange, IsFinding,
+//     IsExecutionFailure, IsUsageError, IsInternalError, IsSignal)
+//     are the introspection surface of the WBS 11.1.1 exit-code
+//     taxonomy. They are exported because:
+//
+//   - Documentation generators and IDE tooling need to read
+//     the range table (ExitCodeRanges) and find the range
+//     containing a code (LookupExitCodeRange).
+//
+//   - CI checks and wrapper scripts need to validate that an
+//     observed exit code is in the documented namespace
+//     (VerifyExitCodeRange).
+//
+//   - Callers that branch on the two failure domains
+//     (findings vs. execution failures) need the classifiers
+//     (IsFinding, IsExecutionFailure, IsUsageError,
+//     IsInternalError, IsSignal) rather than the numeric range
+//     boundaries. The classifiers are the stable contract; the
+//     boundaries are the machine-readable form of the same
+//     information.
+//
+//     The eight functions are the only exported API the taxonomy
+//     adds. The range table itself is returned by value from
+//     ExitCodeRanges; there is no exported mutable table.
+//
 // # Extending the map
 //
-// A future WBS item that adds a third exported function adds a
-// row with its citation. The row's presence is the record of the
-// addition; the test's iteration is what enforces the policy.
+// A future WBS item that adds a function adds a row with its
+// citation. The row's presence is the record of the addition; the
+// test's iteration is what enforces the policy.
 //
 // # Why the map's values are citations
 //
 // The values are not consulted by the test; they are for a human
 // reader who wants to know why a function is on the list. The
-// citation names the WBS item; the WBS item's text names the
+// citation names the WBS item or ADR; that document names the
 // rationale.
 var expectedExportedFunctions = map[string]string{
 	"Execute":           "WBS 4.1.1 — the CLI's process entry point",
 	"ConfigFromContext": "WBS 8.4.5 — accessor for the resolved configuration",
+
+	// WBS 11.2.1 — the error-to-exit-code mapping contract.
+	//
+	// ExitCode is the mapping function the process boundary calls
+	// to convert a Go error into a process exit code. It is
+	// exported because cmd/forge/main.go and downstream consumers
+	// (IDE tooling, wrapper scripts) need the same mapping; the
+	// mapping is a public contract, not an implementation detail.
+	//
+	// The function is defined in internal/cli/mapping.go and
+	// documented in docs/reference/error-mapping.md. It is
+	// distinct from the boundary's unexported helper exitCodeOf
+	// (in execute.go): exitCodeOf assumes a *forgeerr.Error and
+	// reads its category's code; ExitCode handles every error
+	// shape (nil, sentinels, wrapped chains, fallback).
+	"ExitCode": "WBS 11.2.1 — the error-to-exit-code mapping contract",
+
+	// WBS 11.1.1 — exit-code taxonomy introspection surface.
+	"ExitCodeRanges":      "WBS 11.1.1, ADR-018 — the documented range table",
+	"LookupExitCodeRange": "WBS 11.1.1, ADR-018 — find the range containing a code",
+	"VerifyExitCodeRange": "WBS 11.1.1, ADR-018 — validate a code is in [0, 255]",
+
+	// WBS 11.1.1 — the two-failure-domains classifiers.
+	"IsFinding":          "WBS 11.1.1, ADR-018 — findings range classifier (1–9)",
+	"IsExecutionFailure": "WBS 11.1.1, ADR-018 — execution-failure range classifier (10–19)",
+	"IsUsageError":       "WBS 11.1.1, ADR-018 — usage-error singleton classifier (64)",
+	"IsInternalError":    "WBS 11.1.1, ADR-018 — internal-error range classifier (70–78)",
+	"IsSignal":           "WBS 11.1.1, ADR-018 — signal-termination classifier (129–255)",
+
+	// WBS 11.3.1 — the process boundary.
+	//
+	// Run is the primary entry point introduced by WBS 11.3.1. It
+	// receives the caller's context, parses the arguments,
+	// dispatches to the matching command, renders any error, and
+	// returns the process exit code and the error. It does not
+	// call os.Exit; main does.
+	//
+	// Execute (above) is preserved as a thin wrapper around Run
+	// for backward compatibility. Both functions are on the
+	// allowlist; the pair is the entry-point contract.
+	"Run": "WBS 11.3.1 — the process boundary entry point (Run(ctx) (int, error))",
 }
 
 // TestOnlyExpectedFunctionsAreExported verifies that the package
@@ -658,79 +763,243 @@ func collectExportedFunctions(t *testing.T, files []string) []string {
 // =============================================================================
 
 // expectedConstants enumerates every exported constant the package is
-// permitted to expose, along with the WBS item that introduced it.
+// permitted to expose, along with the WBS item or ADR that
+// introduced it.
 //
-// # Three kinds of exported constant
+// # Five kinds of exported constant
 //
-// The map contains three categories of exported constant:
+// The map contains five categories of exported constant:
 //
-//  1. The exit-code constants (ExitSuccess through ExitConflict).
-//     These form a stable numeric vocabulary. They are exported
-//     because downstream code and tests may reference them by name
-//     to interpret the CLI's exit codes.
+//  1. The exit-code constants (WBS 11.1.1). These form a stable
+//     numeric vocabulary. They are exported because downstream
+//     code, tests, and wrapper scripts may reference them by name
+//     to interpret the CLI's exit codes. The set includes the
+//     named codes (ExitDriftDetected, ExitConfig, …), the range
+//     boundaries (ExitRangeFindingsMin, …), the POSIX-derived
+//     singletons (ExitSuccess, ExitUsage, ExitInvalidArgument,
+//     ExitSIGHUP, ExitSIGINT, ExitSIGTERM), and the three
+//     Stability class constants (StabilityFrozen,
+//     StabilityAdditive, StabilityReserved).
 //
-//  2. The root identity constants (RootName through RootLongDesc),
+//  2. The exit-code aliases and the ambiguity code (WBS 11.1.2).
+//     The aliases (ExitUpdateConflict, ExitInternalError,
+//     ExitTemplateNotFound, ExitTemplateIncompatible,
+//     ExitRenderingFailed, ExitPathSafetyViolation,
+//     ExitSecurityPolicyViolation) give the WBS 11.1.2 vocabulary
+//     a Go symbol; their values are identical to their canonical
+//     constants by construction. ExitAmbiguity (4) is the one
+//     genuinely new code the enumeration adds.
+//
+//  3. The severity classes (WBS 11.1.2). The four string-typed
+//     constants of the Severity type (SeverityOK, SeverityWarn,
+//     SeverityError, SeverityFatal). They are exported so that
+//     callers compare a code's severity to a named value rather
+//     than to a string literal, and so that the YAML's
+//     `severity` field and the Go source agree on the vocabulary.
+//
+//  4. The root identity constants (RootName through RootLongDesc),
 //     added by WBS 5.1.1. These form a stable string vocabulary.
-//     They are exported because the tests in root_test.go assert on
-//     them and the specification in docs/cli-ux-spec.md § 4.7
+//     They are exported because the tests in root_test.go assert
+//     on them and the specification in docs/cli-ux-spec.md § 4.7
 //     quotes them.
 //
-//  3. The global flag-name constants (FlagVerbose, FlagQuiet,
-//     FlagConfig), added by WBS 5.3.1. These form a stable string
-//     vocabulary that the flag readers and the tests reference by
-//     name. The names themselves are part of the CLI's surface:
-//     scripts and documentation use them.
+//  5. The global flag-name constants (FlagVerbose, FlagQuiet,
+//     FlagConfig, FlagFormat, FlagFormatText, FlagFormatJSON),
+//     added by WBS 5.3.1 and WBS 9.4.1. These form a stable
+//     string vocabulary that the flag readers and the tests
+//     reference by name. The names themselves are part of the
+//     CLI's surface: scripts and documentation use them.
 //
 // # Why the map is explicit
 //
 // The map is deliberately explicit. Adding a constant requires
 // updating this map, which forces the contributor to justify the
-// addition. Removing a constant is a breaking change and requires an
-// ADR, because downstream code may depend on the name.
+// addition. Removing a constant is a breaking change and requires
+// an ADR, because downstream code may depend on the name.
 //
 // The update is a review checkpoint: a reviewer who sees the map
 // change asks "why did the exported surface grow?" and the answer
 // must be in the diff.
+//
+// # The WBS 4.1.2 → WBS 11.1.1 migration
+//
+// The WBS 4.1.2 exit-code constants (ExitSuccess, ExitFailure,
+// ExitUsage, ExitConfig, ExitFilesystem, ExitValidation,
+// ExitSecurity, ExitConflict) were replaced by the WBS 11.1.1
+// taxonomy. The mapping is documented in ADR-018 § "Migration from
+// WBS 4.1.2". In summary:
+//
+//   - ExitFailure (1) is removed. Its meaning split into
+//     ExitDriftDetected (1, a finding) and ExitInternal (70, an
+//     internal error).
+//   - ExitUsage moved from 2 to 64 (BSD EX_USAGE).
+//   - ExitConfig moved from 3 to 10.
+//   - ExitFilesystem moved from 4 to 12.
+//   - ExitValidation moved from 5 to 2 and reclassified from an
+//     execution failure to a finding.
+//   - ExitSecurity moved from 6 to 13.
+//   - ExitConflict moved from 7 to 14.
+//   - ExitSuccess (0) is unchanged.
+//
+// The constants' names are preserved where the meaning is
+// preserved; the names are new where the meaning is new.
+//
+// # The WBS 11.1.1 → WBS 11.1.2 relationship
+//
+// WBS 11.1.2 is additive on top of WBS 11.1.1. It does not
+// renumber, rename, or reclassify any WBS 11.1.1 code. It adds:
+//
+//   - One new code, ExitAmbiguity (4), in the findings range.
+//
+//   - Seven aliases (ExitUpdateConflict, ExitInternalError,
+//     ExitTemplateNotFound, ExitTemplateIncompatible,
+//     ExitRenderingFailed, ExitPathSafetyViolation,
+//     ExitSecurityPolicyViolation) whose values equal their
+//     canonical WBS 11.1.1 constants.
+//
+//   - Four severity classes (SeverityOK, SeverityWarn,
+//     SeverityError, SeverityFatal) for the CI classification.
+//
+// A consumer that used only WBS 11.1.1 constants sees no change in
+// the numbers. A consumer that adopts the WBS 11.1.2 vocabulary
+// gains finer-grained names for the same codes. A consumer that
+// branches on severity gains a machine-readable CI classification.
 var expectedConstants = map[string]string{
-	"ExitSuccess":    "WBS 2.4.2 — successful command exit code",
-	"ExitFailure":    "WBS 2.4.2 — general failure exit code",
-	"ExitUsage":      "WBS 2.4.2 — usage error exit code",
-	"ExitConfig":     "WBS 2.4.2 — configuration failure exit code (reserved)",
-	"ExitFilesystem": "WBS 2.4.2 — filesystem failure exit code (reserved)",
-	"ExitValidation": "WBS 2.4.2 — validation failure exit code (reserved)",
-	"ExitSecurity":   "WBS 2.4.2 — security failure exit code (reserved)",
-	"ExitConflict":   "WBS 4.1.2 — update conflict exit code (reserved)",
+	// --- WBS 11.1.1 — exit-code taxonomy ---------------------------
 
-	// WBS 5.1.1 freezes the root command's identity strings as
-	// exported constants. They are exported because they are
-	// referenced by tests (root_test.go) and quoted by the
-	// documentation (docs/cli-ux-spec.md § 4.7). The exported
-	// surface is a vocabulary of frozen strings, not a set of
-	// functions downstream packages depend on.
+	// Range boundaries. Each boundary is a named constant so that
+	// callers can write `code <= ExitRangeFindingsMax` rather than
+	// a magic number.
+	"ExitRangeFindingsMin":         "WBS 11.1.1, ADR-018 — findings range lower bound (1)",
+	"ExitRangeFindingsMax":         "WBS 11.1.1, ADR-018 — findings range upper bound (9)",
+	"ExitRangeExecutionMin":        "WBS 11.1.1, ADR-018 — execution-failure range lower bound (10)",
+	"ExitRangeExecutionMax":        "WBS 11.1.1, ADR-018 — execution-failure range upper bound (19)",
+	"ExitRangeReservedRegistryMin": "WBS 11.1.1, ADR-018 — reserved registry/network/enterprise range lower bound (20)",
+	"ExitRangeReservedRegistryMax": "WBS 11.1.1, ADR-018 — reserved registry/network/enterprise range upper bound (29)",
+	"ExitRangeReservedForgeMin":    "WBS 11.1.1, ADR-018 — reserved future Forge use range lower bound (30)",
+	"ExitRangeReservedForgeMax":    "WBS 11.1.1, ADR-018 — reserved future Forge use range upper bound (63)",
+	"ExitRangeReservedSysexitsMin": "WBS 11.1.1, ADR-018 — reserved sysexits sub-range lower bound (65)",
+	"ExitRangeReservedSysexitsMax": "WBS 11.1.1, ADR-018 — reserved sysexits sub-range upper bound (69)",
+	"ExitRangeInternalMin":         "WBS 11.1.1, ADR-018 — internal-error range lower bound (70)",
+	"ExitRangeInternalMax":         "WBS 11.1.1, ADR-018 — internal-error range upper bound (78)",
+	"ExitRangeReservedFutureMin":   "WBS 11.1.1, ADR-018 — reserved future use range lower bound (79)",
+	"ExitRangeReservedFutureMax":   "WBS 11.1.1, ADR-018 — reserved future use range upper bound (127)",
+	"ExitRangeSignalsMin":          "WBS 11.1.1, ADR-018 — signal-termination range lower bound (129)",
+	"ExitRangeSignalsMax":          "WBS 11.1.1, ADR-018 — signal-termination range upper bound (255)",
+
+	// Frozen singletons.
+	"ExitSuccess":         "WBS 11.1.1, ADR-018 — success (0)",
+	"ExitUsage":           "WBS 11.1.1, ADR-018 — usage error (64, BSD EX_USAGE)",
+	"ExitInvalidArgument": "WBS 11.1.1, ADR-018 — invalid exit argument (128)",
+
+	// Signal codes.
+	"ExitSIGHUP":  "WBS 11.1.1, ADR-018 — SIGHUP termination (129)",
+	"ExitSIGINT":  "WBS 11.1.1, ADR-018 — SIGINT termination (130)",
+	"ExitSIGTERM": "WBS 11.1.1, ADR-018 — SIGTERM termination (143)",
+
+	// Named codes in the findings range.
+	"ExitDriftDetected": "WBS 11.1.1, ADR-018 — drift detected (1, finding)",
+	"ExitValidation":    "WBS 11.1.1, ADR-018 — validation finding (2)",
+	"ExitCheckFailed":   "WBS 11.1.1, ADR-018 — check assertion failed (3, finding)",
+
+	// Named codes in the execution-failure range.
+	"ExitConfig":     "WBS 11.1.1, ADR-018 — configuration error (10)",
+	"ExitTemplate":   "WBS 11.1.1, ADR-018 — template error (11)",
+	"ExitFilesystem": "WBS 11.1.1, ADR-018 — filesystem error (12)",
+	"ExitSecurity":   "WBS 11.1.1, ADR-018 — security boundary violation (13)",
+	"ExitConflict":   "WBS 11.1.1, ADR-018 — update conflict (14)",
+
+	// Named code in the internal-error range.
+	"ExitInternal": "WBS 11.1.1, ADR-018 — internal error (70, BSD EX_SOFTWARE)",
+
+	// Stability classes. These are string-typed constants, not
+	// integers. They are exported so that callers can compare a
+	// range's Stability field to a named value rather than to a
+	// string literal.
+	"StabilityFrozen":   "WBS 11.1.1, ADR-018 — frozen range class",
+	"StabilityAdditive": "WBS 11.1.1, ADR-018 — additive range class",
+	"StabilityReserved": "WBS 11.1.1, ADR-018 — reserved range class",
+
+	// --- WBS 11.1.2 — per-code enumeration and severity ------------
+	//
+	// The WBS 11.1.2 enumeration (ADR-019) fills in the triggers
+	// that WBS 11.1.1 left unspecified and gives every code a
+	// severity. Two kinds of constant are introduced:
+	//
+	//   1. Alias constants for the WBS 11.1.2 vocabulary. Where
+	//      WBS 11.1.1 already names a trigger, the WBS 11.1.2 name
+	//      is declared as `const X = Y` (an alias); where the
+	//      WBS 11.1.2 name is finer-grained than the WBS 11.1.1
+	//      name, the alias shares the WBS 11.1.1 code (the
+	//      taxonomy does not have room for distinct values, and
+	//      the stability policy forbids renumbering).
+	//
+	//   2. The Severity type's four constants. They are exported
+	//      so that callers can compare a code's severity to a
+	//      named value rather than to a string literal, and so
+	//      that the YAML's `severity` field and the Go source
+	//      agree on the vocabulary.
+	//
+	// ExitAmbiguity is the one genuinely new code: value 4, in
+	// the findings range. The WBS 11.1.2 doc lists the ambiguity
+	// trigger as a finding (the command ran correctly; the inputs
+	// do not uniquely determine the foundation). The value 4 was
+	// free in WBS 11.1.1.
+	"ExitAmbiguity":               "WBS 11.1.2, ADR-019 — init ambiguity (4, finding)",
+	"ExitUpdateConflict":          "WBS 11.1.2, ADR-019 — alias of ExitConflict (14)",
+	"ExitInternalError":           "WBS 11.1.2, ADR-019 — alias of ExitInternal (70)",
+	"ExitTemplateNotFound":        "WBS 11.1.2, ADR-019 — alias of ExitTemplate (11)",
+	"ExitTemplateIncompatible":    "WBS 11.1.2, ADR-019 — alias of ExitTemplate (11)",
+	"ExitRenderingFailed":         "WBS 11.1.2, ADR-019 — alias of ExitTemplate (11)",
+	"ExitPathSafetyViolation":     "WBS 11.1.2, ADR-019 — alias of ExitFilesystem (12)",
+	"ExitSecurityPolicyViolation": "WBS 11.1.2, ADR-019 — alias of ExitSecurity (13)",
+
+	// Severity classes. String-typed constants; exported so that a
+	// caller compares a code's severity to a named value.
+	"SeverityOK":    "WBS 11.1.2, ADR-019 — success severity class",
+	"SeverityWarn":  "WBS 11.1.2, ADR-019 — warning severity class (does not fail CI)",
+	"SeverityError": "WBS 11.1.2, ADR-019 — error severity class (fails CI)",
+	"SeverityFatal": "WBS 11.1.2, ADR-019 — fatal severity class (fails CI)",
+
+	// --- WBS 5.1.1 — root identity strings ------------------------
 	"RootName":      "WBS 5.1.1 — frozen CLI name (lowercase)",
 	"RootUsage":     "WBS 5.1.1 — frozen usage line",
 	"RootShortDesc": "WBS 5.1.1 — frozen short description (<= 80 chars)",
 	"RootLongDesc":  "WBS 5.1.1 — frozen long description (raw string)",
 
-	// WBS 5.3.1 freezes the three Phase 2 global flag names as
-	// exported constants. They are exported because the flag
-	// readers (verboseRequested, quietRequested, configPath) and
-	// the tests reference them by name. The names themselves are
-	// part of the CLI's surface: scripts and documentation use
-	// them.
+	// --- WBS 5.3.1 — global flag names ----------------------------
 	"FlagVerbose": "WBS 5.3.1 — name of the --verbose global flag",
 	"FlagQuiet":   "WBS 5.3.1 — name of the --quiet global flag",
 	"FlagConfig":  "WBS 5.3.1 — name of the --config global flag",
 
-	// WBS 9.4.1 adds three exported constants for the --format
-	// flag's name and value set. They are exported because the
-	// flag's registration (flags.go), its reader (formatValue),
-	// and the per-command dispatch (config.go) reference them by
-	// name; the values themselves are part of the CLI's public
-	// surface (text, json).
+	// --- WBS 9.4.1 — --format flag --------------------------------
 	"FlagFormat":     "WBS 9.4.1 — name of the --format global flag",
 	"FlagFormatText": "WBS 9.4.1 — value \"text\" for the --format flag",
 	"FlagFormatJSON": "WBS 9.4.1 — value \"json\" for the --format flag",
+
+	// WBS 11.3.2 — output format values.
+	//
+	// The two values of the --format flag. They are exported so
+	// that downstream consumers (and the tests in this package)
+	// can reference the canonical values by name rather than by
+	// string literal. The values are part of the CLI's public
+	// surface: scripts and documentation use them.
+	//
+	// The constants were added alongside the JSON error
+	// envelope (WBS 11.3.2). They are distinct from the
+	// FlagFormat, FlagFormatText, and FlagFormatJSON names
+	// already in the allowlist from WBS 9.4.1:
+	//
+	//   - FlagFormat / FlagFormatText / FlagFormatJSON are the
+	//     *flag name* and the *string values* as the flag stores
+	//     them. They are registered by registerGlobalFlags.
+	//
+	//   - FormatText / FormatJSON are the *typed* OutputFormat
+	//     values used by the error path's dispatch. They are a
+	//     distinct vocabulary; the two vocabularies coincide in
+	//     value but not in type.
+	"FormatText": "WBS 11.3.2 — typed text output format",
+	"FormatJSON": "WBS 11.3.2 — typed JSON output format",
 }
 
 // TestOnlyExpectedConstantsAreExported verifies that the package
@@ -738,10 +1007,11 @@ var expectedConstants = map[string]string{
 // nothing more.
 //
 // The exported constants form a stable vocabulary that downstream
-// code and tests may reference by name. The vocabulary has three
-// parts: the exit-code integers, the root identity strings, and the
-// global flag names. All three are enumerated in the
-// expectedConstants map above.
+// code and tests may reference by name. The vocabulary has five
+// parts: the exit-code taxonomy (WBS 11.1.1), the aliases and
+// ambiguity code (WBS 11.1.2), the severity classes (WBS 11.1.2),
+// the root identity strings, and the global flag names. All five
+// are enumerated in the expectedConstants map above.
 //
 // Adding a new exported constant requires updating the map. The
 // update is a review checkpoint: it forces the contributor to
@@ -958,14 +1228,17 @@ func TestTestFilePackageDeclarations(t *testing.T) {
 
 	expected := map[string]string{
 		// White-box: need unexported symbols.
-		"root_test.go":     "package cli",
-		"execute_test.go":  "package cli",
-		"version_test.go":  "package cli",
-		"deps_test.go":     "package cli",
-		"registry_test.go": "package cli",
-		"contract_test.go": "package cli",
-		"validate_test.go": "package cli",
-		"flags_test.go":    "package cli",
+		"root_test.go":             "package cli",
+		"execute_test.go":          "package cli",
+		"version_test.go":          "package cli",
+		"deps_test.go":             "package cli",
+		"registry_test.go":         "package cli",
+		"contract_test.go":         "package cli",
+		"validate_test.go":         "package cli",
+		"flags_test.go":            "package cli",
+		"exitcodes_test.go":        "package cli",
+		"exitcodes_compat_test.go": "package cli",
+		"mapping_test.go":          "package cli",
 
 		// Black-box: read source files as data.
 		"structure_test.go": "package cli_test",
@@ -1068,7 +1341,7 @@ func parseImportPaths(t *testing.T, content string) []string {
 
 // TestNoRawExitCodeLiterals verifies that no file in the package
 // (other than exitcodes.go) contains a bare integer literal that
-// matches an exit code.
+// matches an exit code in a `return` statement or an `os.Exit` call.
 //
 // The invariant is: exit codes are defined in exactly one file, and
 // every other file refers to them by name. This makes the mapping
@@ -1084,10 +1357,41 @@ func parseImportPaths(t *testing.T, content string) []string {
 //     integer in table-driven tests.
 //
 // A literal is considered an exit code if its value is one of the
-// known exit code values (0 through 7). The test is deliberately
-// over-broad: any integer in that range triggers the failure, even
-// if the contributor intended it as something else. Renaming the
-// intended constant clarifies the code.
+// known exit code values. The set is the WBS 11.1.1 + WBS 11.1.2
+// taxonomy; see the `reserved` map below. The test is deliberately
+// over-broad within the set: any integer in the set triggers the
+// failure, even if the contributor intended it as something else.
+// Renaming the intended constant clarifies the code.
+//
+// # Why only `return` and `os.Exit`
+//
+// A bare integer literal is legitimate in many contexts: slice
+// indices, loop bounds, array sizes, arithmetic. The test therefore
+// looks for two specific node shapes where an integer is almost
+// certainly an exit code:
+//
+//	return <int-literal>
+//	os.Exit(<int-literal>)
+//
+// A literal elsewhere is not flagged. This keeps the test's false-
+// positive rate low without weakening its coverage of the intended
+// shapes.
+//
+// # Why exitcodes.go is excluded
+//
+// The exit codes are defined in exitcodes.go. That file's constants
+// are the source of truth; the test does not need to check that the
+// source of truth agrees with itself. The test's purpose is to catch
+// raw literals in *other* files, where the code should use a named
+// constant.
+//
+// # The mapping's literals
+//
+// mapping.go (WBS 11.2.1) returns named constants (ExitSuccess,
+// ExitSIGINT, ExitInternal, ExitUsage), not raw integers. The test
+// therefore does not flag it. If a future change introduced a raw
+// literal in mapping.go, the test would catch it; that is the
+// intent.
 func TestNoRawExitCodeLiterals(t *testing.T) {
 	t.Parallel()
 
@@ -1098,15 +1402,49 @@ func TestNoRawExitCodeLiterals(t *testing.T) {
 	}
 
 	// The set of integers that are reserved as exit codes.
+	//
+	// The values are the WBS 11.1.1 + WBS 11.1.2 codes, not the
+	// WBS 4.1.2 flat values. A raw integer in a return statement
+	// or an os.Exit call that matches one of these is a bug: the
+	// code should reference the named constant.
+	//
+	// The map is deliberately over-broad within each range: it
+	// covers every assigned code, not just the ones currently
+	// referenced. A new code added to the taxonomy should be added
+	// here in the same commit, so that the test's coverage grows
+	// with the registry.
+	//
+	// ExitAmbiguity (4) was added by WBS 11.1.2. The other codes
+	// were introduced by WBS 11.1.1; the WBS 11.1.2 aliases share
+	// their canonical constants' values, so no additional entries
+	// are needed for the aliases.
 	reserved := map[int64]string{
+		// Success.
 		0: "ExitSuccess",
-		1: "ExitFailure",
-		2: "ExitUsage",
-		3: "ExitConfig",
-		4: "ExitFilesystem",
-		5: "ExitValidation",
-		6: "ExitSecurity",
-		7: "ExitConflict",
+
+		// Findings range.
+		1: "ExitDriftDetected",
+		2: "ExitValidation",
+		3: "ExitCheckFailed",
+		4: "ExitAmbiguity",
+
+		// Execution-failure range.
+		10: "ExitConfig",
+		11: "ExitTemplate",
+		12: "ExitFilesystem",
+		13: "ExitSecurity",
+		14: "ExitConflict",
+
+		// Usage singleton.
+		64: "ExitUsage",
+
+		// Internal-error range.
+		70: "ExitInternal",
+
+		// Signal singletons.
+		129: "ExitSIGHUP",
+		130: "ExitSIGINT",
+		143: "ExitSIGTERM",
 	}
 
 	fset := token.NewFileSet()
@@ -1130,15 +1468,6 @@ func TestNoRawExitCodeLiterals(t *testing.T) {
 		}
 
 		ast.Inspect(parsed, func(n ast.Node) bool {
-			// We look for two specific node shapes:
-			//
-			//   return <int-literal>
-			//   os.Exit(<int-literal>)
-			//
-			// A bare integer literal anywhere else in the file is
-			// legitimate: slice indices, length comparisons, loop bounds,
-			// array sizes. Only these two shapes indicate an exit code.
-
 			switch node := n.(type) {
 			case *ast.ReturnStmt:
 				// A return statement with exactly one result that is an
