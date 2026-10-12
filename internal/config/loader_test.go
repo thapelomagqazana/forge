@@ -355,6 +355,13 @@ func TestLoad_MissingFileErrors(t *testing.T) {
 
 // TestLoad_EmptyPathReturnsDefaults verifies that an empty path
 // returns the defaults with SourcePath set to "".
+//
+// # Why not ==
+//
+// Config contains an unexported sources map (WBS 9.2.2), which
+// makes the struct non-comparable. The comparison is therefore
+// field-by-field. The fields are strings, so each comparison is
+// valid.
 func TestLoad_EmptyPathReturnsDefaults(t *testing.T) {
 	t.Parallel()
 
@@ -364,11 +371,16 @@ func TestLoad_EmptyPathReturnsDefaults(t *testing.T) {
 	}
 
 	want := Defaults()
-	if got != want {
-		t.Errorf("Load(\"\") = %+v; want %+v", got, want)
+	if got.LogLevel != want.LogLevel {
+		t.Errorf("LogLevel = %q; want %q", got.LogLevel, want.LogLevel)
 	}
-	if got.SourcePath != "" {
-		t.Errorf("SourcePath = %q; want empty", got.SourcePath)
+	if got.OutputFormat != want.OutputFormat {
+		t.Errorf("OutputFormat = %q; want %q",
+			got.OutputFormat, want.OutputFormat)
+	}
+	if got.SourcePath != want.SourcePath {
+		t.Errorf("SourcePath = %q; want %q",
+			got.SourcePath, want.SourcePath)
 	}
 }
 

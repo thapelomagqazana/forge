@@ -172,6 +172,7 @@ vars:
     github.com/spf13/cobra
     github.com/spf13/pflag
     gopkg.in/yaml.v3
+    github.com/stretchr/testify
 
   # ───────────────────────────────────────────────────────────────────────────
   # Markdown lint configuration (WBS 2.1.x — documentation quality)

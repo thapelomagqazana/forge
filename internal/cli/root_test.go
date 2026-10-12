@@ -2068,6 +2068,7 @@ func TestGlobalFlags_InventoryIsExhaustive(t *testing.T) {
 		FlagVerbose: true,
 		FlagQuiet:   true,
 		FlagConfig:  true,
+		FlagFormat:  true, // WBS 9.4.1; see ADR-010
 	}
 
 	actual := map[string]bool{}
@@ -2091,9 +2092,14 @@ func TestGlobalFlags_InventoryIsExhaustive(t *testing.T) {
 		}
 		if !expected[name] {
 			t.Errorf("unexpected global flag %q; "+
-				"the Phase 2 inventory is exactly %v. "+
+				"the current inventory is exactly %v. "+
 				"Adding a new global flag requires an ADR",
-				name, []string{FlagVerbose, FlagQuiet, FlagConfig})
+				name, []string{
+					FlagVerbose,
+					FlagQuiet,
+					FlagConfig,
+					FlagFormat,
+				})
 		}
 	}
 }

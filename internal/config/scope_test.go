@@ -1,10 +1,17 @@
 // Package config contains unit tests for the CLI configuration
 // type.
 //
-// This file pins the CLI configuration scope (WBS 8.1.1). The
-// scope is deliberately small: three fields, no secrets, no
-// repository paths, no project-level configuration. The tests in
-// this file enforce the scope against the Config type and against
+// This file pins the CLI configuration scope (WBS 8.1.1, amended
+// by ADR-009). The scope distinguishes two kinds of Config field:
+//
+//   - Value fields (exported, three of them, all strings) carry
+//     the configuration values the CLI exposes.
+//
+//   - Bookkeeping fields (unexported) carry internal state about
+//     the value fields; they are not part of the configuration
+//     surface.
+//
+// The tests enforce both categories against the Config type and
 // the package's imports.
 //
 // # How the tests work
@@ -15,9 +22,9 @@
 // require an update every time a field is added, which defeats
 // the purpose of the test.
 //
-// The tests do not construct a Config value or invoke any method.
-// The Config type has no methods; the tests are about the type's
-// shape, not its behaviour.
+// The tests do not construct a Config value or invoke any method
+// except where the test's purpose requires it (SourceFor, in
+// TestScope_SourceForIsBookkeeping).
 package config
 
 import (
@@ -28,26 +35,40 @@ import (
 )
 
 // =============================================================================
-// The field count
+// The value-field count
 // =============================================================================
 
-// TestScope_ConfigHasExactlyThreeFields verifies that the Config
-// type has exactly three fields.
+// TestScope_ConfigHasExactlyThreeValueFields verifies that the
+// Config type has exactly three value (exported) fields.
 //
-// The count is frozen by WBS 8.1.1. Adding a fourth field requires
-// an ADR; the ADR must update this test and the constant
-// configFieldCount.
-func TestScope_ConfigHasExactlyThreeFields(t *testing.T) {
+// # Why the test counts exported fields, not all fields
+//
+// ADR-009 distinguishes value fields from bookkeeping fields. The
+// value-field count is frozen at three; the total field count is
+// not. The test counts exported fields, which are exactly the
+// value fields.
+//
+// A future contributor who adds a fourth value field sees the
+// failure. A contributor who adds a bookkeeping field (unexported)
+// does not, because the count is unchanged. The distinction is
+// the amendment ADR-009 makes.
+func TestScope_ConfigHasExactlyThreeValueFields(t *testing.T) {
 	t.Parallel()
 
 	typ := reflect.TypeOf(Config{})
-	n := typ.NumField()
+	valueCount := 0
+	for i := 0; i < typ.NumField(); i++ {
+		if typ.Field(i).IsExported() {
+			valueCount++
+		}
+	}
 
-	if n != configFieldCount {
-		t.Errorf("Config has %d fields; want %d\n"+
-			"adding a field requires an ADR (WBS 8.1.1) and an "+
-			"update to configFieldCount in scope.go",
-			n, configFieldCount)
+	if valueCount != configFieldCount {
+		t.Errorf("Config has %d value fields; want %d\n"+
+			"adding a value field requires an ADR (WBS 8.1.1, "+
+			"amended by ADR-009) and an update to configFieldCount "+
+			"in scope.go",
+			valueCount, configFieldCount)
 	}
 }
 
@@ -56,35 +77,54 @@ func TestScope_ConfigHasExactlyThreeFields(t *testing.T) {
 // =============================================================================
 
 // TestScope_FieldNamesAreInScope verifies that every Config field
-// is one of the names the scope contract permits.
+// is either a permitted value field or a permitted bookkeeping
+// field.
 //
-// The permitted names are returned by InScopeFieldNames. A field
-// whose name is not in the list fails the test. The failure names
-// the field; the contributor either renames the field to a
-// permitted name or opens an ADR to extend the list.
+// # The two lists
+//
+// The value fields are the exported fields; their names are
+// returned by InScopeFieldNames.
+//
+// The bookkeeping fields are the unexported fields; their names
+// are returned by InScopeBookkeepingFieldNames.
+//
+// A field that is not in either list fails the test. The failure
+// names the field and the appropriate list; the contributor
+// either renames the field, opens an ADR (for a value field), or
+// amends the scope contract (for a bookkeeping field).
 func TestScope_FieldNamesAreInScope(t *testing.T) {
 	t.Parallel()
 
-	permitted := make(map[string]bool)
+	permittedValues := make(map[string]bool)
 	for _, name := range InScopeFieldNames() {
-		permitted[name] = true
+		permittedValues[name] = true
+	}
+	permittedBookkeeping := make(map[string]bool)
+	for _, name := range InScopeBookkeepingFieldNames() {
+		permittedBookkeeping[name] = true
 	}
 
 	typ := reflect.TypeOf(Config{})
 	for i := 0; i < typ.NumField(); i++ {
 		field := typ.Field(i)
-		if !field.IsExported() {
-			t.Errorf("Config has unexported field %q; "+
-				"config fields must be exported so callers can read "+
-				"and set them", field.Name)
+		if field.IsExported() {
+			if !permittedValues[field.Name] {
+				t.Errorf("Config value field %q is not in the scope "+
+					"contract's list of permitted value names\n"+
+					"permitted: %v\n"+
+					"adding a value field requires an ADR "+
+					"(WBS 8.1.1)", field.Name, InScopeFieldNames())
+			}
 			continue
 		}
-		if !permitted[field.Name] {
-			t.Errorf("Config field %q is not in the scope contract's "+
-				"list of permitted names\n"+
+		// Unexported: must be a permitted bookkeeping field.
+		if !permittedBookkeeping[field.Name] {
+			t.Errorf("Config bookkeeping field %q is not in the scope "+
+				"contract's list of permitted bookkeeping names\n"+
 				"permitted: %v\n"+
-				"adding a field requires an ADR (WBS 8.1.1)",
-				field.Name, InScopeFieldNames())
+				"adding a bookkeeping field requires an amendment "+
+				"to the scope contract (ADR-009)",
+				field.Name, InScopeBookkeepingFieldNames())
 		}
 	}
 }
@@ -92,10 +132,12 @@ func TestScope_FieldNamesAreInScope(t *testing.T) {
 // TestScope_NoForbiddenFieldNames verifies that no Config field's
 // name contains a substring from the forbidden list.
 //
-// The forbidden substrings are the three categories the scope
-// contract rejects: secrets and credentials, repository paths,
-// and command-specific flags (the last is not a name match; it is
-// checked by the field count and the permitted list).
+// # Applies to both kinds of field
+//
+// The forbidden-substring check applies to value fields and
+// bookkeeping fields alike. A bookkeeping field that holds
+// secrets would be an implicit widening of the configuration
+// surface, which is what the scope contract prevents.
 //
 // # What the test catches
 //
@@ -118,37 +160,88 @@ func TestScope_NoForbiddenFieldNames(t *testing.T) {
 }
 
 // =============================================================================
-// The field types
+// The value-field types
 // =============================================================================
 
-// TestScope_AllFieldsAreStrings verifies that every Config field
-// is a string.
+// TestScope_AllValueFieldsAreStrings verifies that every Config
+// value field is a string.
 //
-// The scope contract's three fields are all strings. A future
-// field with a different type (for example, a struct or a slice)
-// would be a change to the contract's shape and would require an
-// ADR. The test pins the shape.
+// # Why only value fields
+//
+// The scope contract's value fields are all strings. Bookkeeping
+// fields (per ADR-009) may have other types; the sources field is
+// a map. The test checks only exported fields, which are the
+// value fields.
+//
+// A future contributor who gives a value field a non-string type
+// sees the failure. A contributor who adds a bookkeeping field
+// with a map or slice type does not, because the check does not
+// reach unexported fields.
 //
 // # Why string
 //
-// The three fields (log level, output format, config path) are
-// all values that come from a text-based config file. A string is
-// the natural type: the value is what the file contains, and the
-// consumer interprets it. A more specific type (for example, an
-// enum) would require a parse step at the file boundary; the
-// parse is the loader's job, not the type's.
-func TestScope_AllFieldsAreStrings(t *testing.T) {
+// The three value fields (log level, output format, config path)
+// are all values that come from a text-based config file. A
+// string is the natural type: the value is what the file
+// contains, and the consumer interprets it. A more specific type
+// (for example, an enum) would require a parse step at the file
+// boundary; the parse is the loader's job, not the type's.
+func TestScope_AllValueFieldsAreStrings(t *testing.T) {
 	t.Parallel()
 
 	typ := reflect.TypeOf(Config{})
 	for i := 0; i < typ.NumField(); i++ {
 		field := typ.Field(i)
-		if field.Type.Kind() != reflect.String {
-			t.Errorf("Config field %q has type %s; want string\n"+
-				"the scope contract's fields are all strings "+
-				"(WBS 8.1.1)",
-				field.Name, field.Type)
+		if !field.IsExported() {
+			continue
 		}
+		if field.Type.Kind() != reflect.String {
+			t.Errorf("Config value field %q has type %s; want string\n"+
+				"the scope contract's value fields are all strings "+
+				"(WBS 8.1.1)", field.Name, field.Type)
+		}
+	}
+}
+
+// =============================================================================
+// Bookkeeping fields
+// =============================================================================
+
+// TestScope_SourceForIsBookkeeping verifies that the bookkeeping
+// field `sources` is not part of the configuration surface: it is
+// unexported, and its purpose is source attribution (WBS 9.2.2).
+//
+// # What the test asserts
+//
+//   - `sources` is unexported (already covered by
+//     TestScope_FieldNamesAreInScope; this test asserts the
+//     narrower claim that the field's existence does not leak
+//     into the value surface).
+//
+//   - SourceFor on a zero Config returns SourceDefault for the
+//     value-field names. This is the observable behavior the
+//     bookkeeping field supports, and it is the reason the field
+//     exists.
+//
+// The test goes through the public API (SourceFor) rather than
+// reflecting on the field directly, so it pins the behavior the
+// bookkeeping field is there to provide.
+func TestScope_SourceForIsBookkeeping(t *testing.T) {
+	t.Parallel()
+
+	// The zero Config's bookkeeping field is nil. SourceFor must
+	// handle the nil case by returning the default for every
+	// field, including unknown ones.
+	var c Config
+	for _, field := range InScopeFieldNames() {
+		if got := c.SourceFor(field); got != SourceDefault {
+			t.Errorf("zero Config SourceFor(%q) = %v; want %v",
+				field, got, SourceDefault)
+		}
+	}
+	if got := c.SourceFor("UnknownField"); got != SourceDefault {
+		t.Errorf("zero Config SourceFor(UnknownField) = %v; want %v",
+			got, SourceDefault)
 	}
 }
 

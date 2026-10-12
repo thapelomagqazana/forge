@@ -136,65 +136,51 @@ func TestStreamBoundary_VersionHelp(t *testing.T) {
 }
 
 // TestStreamBoundary_Config verifies that `forge config` writes its
-// diagnostic to stderr and nothing to stdout.
+// output to stdout and nothing to stderr.
 //
-// The config command is a hidden placeholder. Its RunE handler
-// returns an error rather than producing output, so the boundary
-// rule applies in the "failing command" direction: the diagnostic
-// goes to stderr, and stdout is empty.
+// # History
 //
-// # Why the command is in the registry
+// At WBS 9.1.1, the config command was a hidden placeholder whose
+// RunE returned a sentinel error. The boundary rule applied in the
+// "failing command" direction: the diagnostic went to stderr, and
+// stdout was empty.
 //
-// The config command is registered (registry.go) so that the
-// command tree's shape is visible and so that future WBS items
-// have a placeholder to replace. Its presence in the registry is
-// what makes this test necessary: the self-referential check
-// requires every registered command to have a boundary test.
+// At WBS 9.2.1, the command renders the resolved configuration to
+// stdout and returns nil. The boundary rule now applies in the
+// "successful command" direction: the output goes to stdout, and
+// stderr is empty.
 //
-// # What the test asserts
+// # The output stream boundary
 //
-// The command's RunE returns a plain error. Cobra dispatches to
-// the root's error path; executeWithOptions writes the rendered
-// error to stderr. The test asserts the boundary using
-// assertOnlyStderr, which checks that stderr is non-empty and
-// stdout is empty.
+// The decision rule for authors (documented in stream_boundary.go
+// and docs/cli-ux-spec.md) is:
 //
-// # The exit code
+//	If the user pipes this command's output to another program,
+//	should that program receive this line?
 //
-// The error is a plain error with no category. exitCodeFromError
-// maps uncategorised errors to ExitUsage (2), the same code the
-// pre-parse validator's errors and Cobra's own dispatch errors
-// receive. The test asserts that exit code.
+// For `forge config`, the answer is yes: the rendered configuration
+// is the command's requested result, not a diagnostic. It belongs
+// on stdout. Diagnostics (if any) belong on stderr; the current
+// command produces none.
 //
-// # Why ExitUsage, not ExitFailure
+// # Exit code
 //
-// The exit codes and their meanings are defined in
-// docs/cli-ux-spec.md § 7. ExitUsage (2) is the code for any
-// error that does not carry a category: the user's invocation
-// could not be interpreted, or the command that would interpret
-// it is not available. The config command's "not yet implemented"
-// error fits the second case.
+// The command succeeds. The exit code is ExitSuccess (0).
 //
-// ExitFailure (1) is the code for a general failure that does not
-// fit a more specific category. It is the fallback for a future
-// error category the mapping does not yet recognise. The config
-// placeholder does not use it.
-//
-// When WBS 8.x implements the config command, its errors will
-// carry categories (for example, "config" for a malformed
-// forge.yaml) and map to ExitConfig (3). This test's assertion
-// is updated at that point; the boundary (stderr only, stdout
-// empty) is unchanged.
+// When WBS 9.3.1 (--path) and 9.4.1 (--format json) land, the
+// boundary is unchanged: output to stdout, stderr empty. Those
+// tasks may add categories to the error path, but the success path
+// does not change.
 func TestStreamBoundary_Config(t *testing.T) {
 	t.Parallel()
 
 	got := runCLI(t, []string{"config"}, nil)
 
-	if got.exitCode != ExitUsage {
+	if got.exitCode != ExitSuccess {
 		t.Fatalf("exit code: got %d, want %d\nstderr: %s",
-			got.exitCode, ExitUsage, got.stderr)
+			got.exitCode, ExitSuccess, got.stderr)
 	}
-	assertOnlyStderr(t, got)
+	assertOnlyStdout(t, got)
 }
 
 // =============================================================================

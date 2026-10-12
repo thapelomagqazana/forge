@@ -14,6 +14,15 @@
 // returned Config and any error. The tests do not read the real
 // environment; a test that used os.Getenv would depend on the
 // process's state, which is not reproducible.
+//
+// # Non-comparability of Config
+//
+// WBS 9.2.2 added an unexported `sources map[string]Source`
+// field to Config. A map is not comparable, so Config is no
+// longer comparable with ==. Tests that compare two Config
+// values use the configEqual helper (defined in flags_test.go,
+// same package), which compares fields field-by-field and then
+// compares the recorded sources via SourceFor.
 package config
 
 import (
@@ -218,8 +227,23 @@ func TestEnv_ConfigPathEnvVarIsReserved(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// Resolution (WBS 8.4.3)
+// =============================================================================
+//
+// The resolution tests use configEqual (defined in flags_test.go,
+// same package) instead of ==, because WBS 9.2.2 made Config
+// non-comparable.
+// =============================================================================
+
 // TestOverrideFromEnv_NoVariables verifies that a Config is
 // returned unchanged when no FORGE_* variables are set.
+//
+// # Why configEqual and not ==
+//
+// WBS 9.2.2 added an unexported sources map to Config, making
+// the struct non-comparable. The comparison is field-by-field
+// via configEqual, including the sources map.
 func TestOverrideFromEnv_NoVariables(t *testing.T) {
 	t.Parallel()
 
@@ -228,7 +252,7 @@ func TestOverrideFromEnv_NoVariables(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OverrideFromEnv: %v", err)
 	}
-	if got != cfg {
+	if !configEqual(got, cfg) {
 		t.Errorf("Config changed: got %+v; want %+v", got, cfg)
 	}
 }
@@ -247,7 +271,7 @@ func TestOverrideFromEnv_NilEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OverrideFromEnv: %v", err)
 	}
-	if got != cfg {
+	if !configEqual(got, cfg) {
 		t.Errorf("Config changed: got %+v; want %+v", got, cfg)
 	}
 }
@@ -346,7 +370,7 @@ func TestOverrideFromEnv_EmptyValueIsUnset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OverrideFromEnv: %v", err)
 	}
-	if got != cfg {
+	if !configEqual(got, cfg) {
 		t.Errorf("Config changed: got %+v; want %+v", got, cfg)
 	}
 }
@@ -484,7 +508,7 @@ func TestOverrideFromEnv_UnknownForgeVarsIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OverrideFromEnv: %v", err)
 	}
-	if got != cfg {
+	if !configEqual(got, cfg) {
 		t.Errorf("Config changed: got %+v; want %+v", got, cfg)
 	}
 	if calls["FORGE_UNKNOWN"] != 0 {
@@ -511,7 +535,7 @@ func TestOverrideFromEnv_ConfigVarIsReserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OverrideFromEnv: %v", err)
 	}
-	if got != cfg {
+	if !configEqual(got, cfg) {
 		t.Errorf("Config changed by FORGE_CONFIG: got %+v; want %+v",
 			got, cfg)
 	}
@@ -526,6 +550,13 @@ func TestOverrideFromEnv_ConfigVarIsReserved(t *testing.T) {
 //
 // The rule is the value-type contract: the function reads cfg
 // and returns a new value. The test pins the contract.
+//
+// # Why configEqual and not ==
+//
+// Config is non-comparable (WBS 9.2.2). The comparison is
+// field-by-field via configEqual, including the sources map.
+// A mutation of the sources map would be caught by the
+// comparison.
 func TestOverrideFromEnv_DoesNotMutateInput(t *testing.T) {
 	t.Parallel()
 
@@ -541,7 +572,7 @@ func TestOverrideFromEnv_DoesNotMutateInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OverrideFromEnv: %v", err)
 	}
-	if cfg != original {
+	if !configEqual(cfg, original) {
 		t.Errorf("input Config was mutated: got %+v; want %+v",
 			cfg, original)
 	}
@@ -592,6 +623,11 @@ func TestOverrideFromEnv_EnvFuncIsNotCalledForUnknownFields(t *testing.T) {
 
 // TestOverrideFromEnv_IsDeterministic verifies that two calls
 // with the same arguments produce equal results.
+//
+// # Why configEqual and not ==
+//
+// Config is non-comparable (WBS 9.2.2). Determinism is asserted
+// on both fields and recorded sources.
 func TestOverrideFromEnv_IsDeterministic(t *testing.T) {
 	t.Parallel()
 
@@ -607,7 +643,7 @@ func TestOverrideFromEnv_IsDeterministic(t *testing.T) {
 	if err1 != nil || err2 != nil {
 		t.Fatalf("errors: first=%v second=%v", err1, err2)
 	}
-	if first != second {
+	if !configEqual(first, second) {
 		t.Errorf("not deterministic: first=%+v second=%+v",
 			first, second)
 	}

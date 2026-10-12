@@ -1,0 +1,6 @@
+Forge CLI Configuration
+───────────────────────
+
+  Source:       /home/user/.config/forge/config.yaml
+  Log level:          (source: default)
+  Output:             (source: default)

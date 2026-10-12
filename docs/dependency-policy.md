@@ -2,11 +2,11 @@
 
 - **Document type:** Policy
 - **Status:** Draft
-- **Version:** 0.3.0
+- **Version:** 0.4.0
 - **Author:** @thapelomagqazana
 - **Created:** 2026-10-09
-- **Last Updated:** 2026-10-11
-- **Supersedes:** 0.2.0
+- **Last Updated:** 2026-10-12
+- **Supersedes:** 0.3.0
 - **Superseded by:** —
 
 ---
@@ -480,6 +480,85 @@ denial-of-service vulnerability in the decoder. The pinned version
 `v3.0.1` includes the fix. The registry's "Last reviewed" field is
 updated when the library's security advisories are re-checked.
 
+### github.com/stretchr/testify
+
+| Attribute           | Value                                                |
+|---------------------|------------------------------------------------------|
+| Module path         | `github.com/stretchr/testify`                        |
+| Pinned version      | `v1.9.0`                                             |
+| License             | MIT                                                  |
+| Maintainer          | Stretchr, Inc. and contributors                      |
+| First introduced    | WBS 9.5.1                                            |
+| ADR                 | [ADR-011](decisions/ADR-011-testify-testing-library.md) |
+| Purpose             | Test assertions (`assert`, `require`)                |
+| Last reviewed       | 2026-10-12                                           |
+
+**Why testify:** Forge's tests use testify's `assert` and `require`
+packages for their assertions. The alternatives are to use the
+standard library's `testing` package alone (which produces verbose,
+repetitive assertion code) or to adopt a different testing library
+(for example, `gotest.tools` or `is`). testify is the de facto
+assertion library in the Go ecosystem, used by Kubernetes, Docker,
+Hugo, Helm, and the majority of large Go projects. It provides two
+assertion styles — `assert` (records a failure, continues) and
+`require` (records a failure, stops) — and a `Suite` type for
+class-based tests, of which Forge uses the first two.
+
+The library is used exclusively in `_test.go` files. It is not
+imported by any non-test code, and it is not linked into the
+production binary. This is a property of the Go build: packages
+imported only by test files do not appear in the binary.
+
+**Transitive dependencies:**
+
+- `github.com/davecgh/go-spew v1.1.1` — deep equality printing
+  for assertion failure messages. License: ISC.
+- `github.com/pmezard/go-difflib v1.0.0` — unified diff generation
+  for assertion failure messages. License: BSD-3-Clause.
+- `gopkg.in/yaml.v3 v3.0.0` — used by testify's `ObjectsAreEqual`
+  helper for YAML-aware comparison. Testify's version constraint
+  (`v3.0.0`) is satisfied by Forge's pinned `v3.0.1`, so no
+  second version of yaml.v3 is added to the module graph.
+- `github.com/stretchr/objx v0.5.2` — helper types for `mock` and
+  `http` sub-packages. Forge does not use those sub-packages, but
+  the module is part of testify's `go.mod` and is pinned by
+  `go.sum`.
+
+All four transitive dependencies are pinned automatically via
+`go.sum` and require no manual maintenance.
+
+**Upgrade criteria:**
+
+- **Patch upgrades** (e.g., `v1.9.0` → `v1.9.1`): permitted if the
+  release notes contain only bug fixes and no API changes. A short
+  note in the pull request description suffices; no ADR required.
+- **Minor upgrades** (e.g., `v1.9.0` → `v1.10.0`): permitted if the
+  release notes do not indicate breaking changes. A brief ADR is
+  required, documenting what changed and why the upgrade is safe.
+- **Major upgrades** (e.g., `v1.x` → `v2.x`): require a full ADR
+  describing the migration plan, the code changes required, and the
+  rollback strategy.
+
+testify has not released a major version beyond v1.x. When v2.0 is
+released, its upgrade will be treated as a Phase 4-or-later concern.
+
+**Upgrade cadence:** Reviewed quarterly, aligned with the general
+dependency review cycle described in § 4.5.
+
+**Why the dependency is acceptable despite its transitive closure:**
+testify is the only Forge dependency whose transitive closure is more
+than one module (cobra brings two, yaml.v3 brings none, testify
+brings four). The additional closure is the accepted cost of using
+the assertion library. The alternatives were evaluated and rejected:
+the standard library's `testing` package produces assertion code
+that is roughly three times longer for the same coverage, and the
+smaller alternatives (`gotest.tools`, `is`) are used by an order of
+magnitude fewer projects, which weakens the maintenance argument.
+The transitive dependencies are all permissively licensed (ISC,
+BSD-3-Clause, MIT), all maintained, and none is a security concern.
+The dependency is test-only, so it does not affect the production
+binary's size, attack surface, or startup time.
+
 ---
 
 ## 8. Module resolution policy
@@ -544,6 +623,7 @@ in sync with `go.mod`.
 | 0.1.0   | 2026-10-09 | @thapelomagqazana  | Initial policy. Standard library first, minimal footprint, exact pinning, auditable provenance, automatic transitive pinning, reversibility. V1–V5 checks. Cobra registry entry. Module resolution policy. |
 | 0.2.0   | 2026-10-10 | @thapelomagqazana  | Corrected V2's scope from "every `require` directive" to "every direct `require` directive". Indirect dependencies are selected by the Go toolchain and are out of scope for version pinning. The correction was motivated by `github.com/inconshreveable/mousetrap v1.1.0 // indirect`, a transitive dependency of Cobra, which the V2 check flagged as a false positive. The `scripts/deps/check-pr-deps.sh` script was updated to exclude `// indirect` lines, and a regression test was added to `internal/cli/structure_test.go`. V3 and V4 already scoped to direct dependencies; V2 now matches. |
 | 0.3.0   | 2026-10-11 | @thapelomagqazana  | Added the `gopkg.in/yaml.v3` registry entry (§ 7). The dependency was introduced by WBS 8.4.2 (the config file loader); ADR-007 documents its rationale. The entry records the module path, pinned version (`v3.0.1`), dual MIT/Apache-2.0 license, Canonical's maintenance, no transitive dependencies, and the upgrade criteria. The registry's addition closes the `verify:deps:documented` failure that reported the dependency as undocumented. |
+| 0.4.0   | 2026-10-12 | @thapelomagqazana  | Added the `github.com/stretchr/testify` registry entry (§ 7). The dependency was introduced by WBS 9.5.1 (the acceptance tests) and is used throughout `internal/cli`'s test files. The entry records the module path, pinned version (`v1.9.0`), MIT license, Stretchr, Inc.'s maintenance, the four transitive dependencies (all permissively licensed), and the upgrade criteria. The registry's addition closes the `verify:deps:documented` failure that reported the dependency as undocumented. The section also records why a test-only dependency with a larger transitive closure than Forge's other dependencies is acceptable: the closure is permissively licensed, actively maintained, and does not affect the production binary. |
 
 ---
 
@@ -608,3 +688,4 @@ A reviewer who evaluates the pull request:
 - The policy has been reviewed for consistency with
   [`docs/architecture.md`](./architecture.md) § 5 (dependency
   direction) and § 13.2 (import rules).
+  

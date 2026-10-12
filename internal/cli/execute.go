@@ -69,6 +69,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/thapelomagqazana/forge/internal/config"
 )
 
 // options captures the injectable environment of a CLI invocation.
@@ -143,6 +145,46 @@ type options struct {
 	// 13.0 has a single place to read the root from. buildDependencies
 	// passes it to filesystem.NewOSFS.
 	rootPath string
+
+	// config is a pre-built configuration to inject into the
+	// command tree, bypassing the config loader.
+	//
+	// # When to use this field
+	//
+	// In production, this field is nil. The config loader (WBS
+	// 8.4.x) resolves the effective configuration from the
+	// discovered file, the environment, and the flags, and
+	// buildDependencies constructs the Dependencies.Config from
+	// the loader's output. defaultOptions does not set this
+	// field, so a production invocation follows the loader path.
+	//
+	// In tests, this field may be set to a *config.Config value
+	// that the test has constructed directly. buildDependencies
+	// uses the injected value as Dependencies.Config, so the
+	// command tree sees the test's configuration instead of the
+	// loader's. This is how golden-file tests exercise the
+	// renderers with specific configurations (with a file, with
+	// non-default sources, and so on) without needing the loader
+	// to run.
+	//
+	// # Why a test-injection seam is in options
+	//
+	// options is the process boundary: the struct through which
+	// every input to the CLI flows. A test-injected Config is an
+	// input in the same sense — it is the value the command tree
+	// reads — even though production does not set it. Putting
+	// the field here (rather than, say, in a parallel struct or
+	// a global) keeps the injection seam on the same boundary as
+	// every other input, so a reader who wants to know what the
+	// CLI reads has one struct to read.
+	//
+	// # The nil case
+	//
+	// A nil config field is the normal production state.
+	// buildDependencies treats nil as "no injection; construct
+	// the default Config", so a nil field does not require a
+	// branch at the call site.
+	config *config.Config
 }
 
 // defaultOptions returns an options value bound to the current

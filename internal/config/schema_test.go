@@ -3,8 +3,19 @@
 //
 // This file pins the CLI configuration schema (WBS 8.2.1) and the
 // field name mapping (WBS 8.2.2). The schema names the Config
-// type's fields and their representations; the mapping derives the
-// non-Go representations from the Go field name.
+// type's value fields and their representations; the mapping
+// derives the non-Go representations from the Go field name.
+//
+// # Value fields and bookkeeping fields
+//
+// ADR-009 (extended for the schema contract) distinguishes value
+// fields from bookkeeping fields. Only value fields participate
+// in the schema: they have YAML keys, environment variables, and
+// flag names. Bookkeeping fields (such as `sources`) have no
+// external representation and are excluded from every schema
+// check. The tests iterate exported fields (the value fields)
+// when checking schema properties; unexported fields are not
+// schema participants.
 //
 // # How the tests work
 //
@@ -27,34 +38,54 @@ import (
 // =============================================================================
 
 // TestSchema_ConfigFieldsHaveYAMLTags verifies that every Config
-// field carries a `yaml` struct tag.
+// value field carries a `yaml` struct tag.
+//
+// # Why only value fields
+//
+// ADR-009 (extended for the schema contract) distinguishes value
+// fields from bookkeeping fields. Only value fields participate
+// in the schema; bookkeeping fields (such as `sources`) have no
+// YAML representation and are not tagged. The test iterates
+// exported fields, which are exactly the value fields.
 //
 // The YAML tags are the schema's machine-readable form. A future
-// loader uses them to map YAML keys to fields. A field without a
-// tag would be silently omitted from the mapping; the check
-// ensures every field is mapped.
+// loader uses them to map YAML keys to fields. A value field
+// without a tag would be silently omitted from the mapping; the
+// check ensures every value field is mapped.
 func TestSchema_ConfigFieldsHaveYAMLTags(t *testing.T) {
 	t.Parallel()
 
 	typ := reflect.TypeOf(Config{})
 	for i := 0; i < typ.NumField(); i++ {
 		field := typ.Field(i)
+		if !field.IsExported() {
+			continue
+		}
 		if _, ok := field.Tag.Lookup("yaml"); !ok {
-			t.Errorf("Config field %q has no yaml struct tag; "+
-				"every field must declare its mapping (WBS 8.2.1)",
+			t.Errorf("Config value field %q has no yaml struct tag; "+
+				"every value field must declare its mapping (WBS 8.2.1)",
 				field.Name)
 		}
 	}
 }
 
 // TestSchema_YAMLTagsAreSnakeCase verifies that every Config
-// field's YAML tag is either "-" (excluded) or a snake_case key.
+// value field's YAML tag is either "-" (excluded) or a snake_case
+// key.
+//
+// # Why only value fields
+//
+// Bookkeeping fields (ADR-009) have no YAML tag; they are not
+// part of the schema. The test iterates exported fields.
 func TestSchema_YAMLTagsAreSnakeCase(t *testing.T) {
 	t.Parallel()
 
 	typ := reflect.TypeOf(Config{})
 	for i := 0; i < typ.NumField(); i++ {
 		field := typ.Field(i)
+		if !field.IsExported() {
+			continue
+		}
 		tag := field.Tag.Get("yaml")
 
 		if tag == "-" {
@@ -64,7 +95,7 @@ func TestSchema_YAMLTagsAreSnakeCase(t *testing.T) {
 		key, _, _ := strings.Cut(tag, ",")
 
 		if !IsSnakeCase(key) {
-			t.Errorf("Config field %q has YAML tag %q; "+
+			t.Errorf("Config value field %q has YAML tag %q; "+
 				"the key %q is not snake_case (WBS 8.2.1)",
 				field.Name, tag, key)
 		}
@@ -73,6 +104,14 @@ func TestSchema_YAMLTagsAreSnakeCase(t *testing.T) {
 
 // TestSchema_SourcePathIsNotReadFromYAML verifies that the
 // SourcePath field carries the `yaml:"-"` tag.
+//
+// SourcePath is a value field (it is exported and carries
+// configuration-related metadata), so it participates in the
+// schema. Its tag declares that it is not read from the YAML
+// document; the field is a resolution result, not a config value.
+//
+// The test does not need to skip bookkeeping fields: it looks up
+// a specific field by name, and that field is a value field.
 func TestSchema_SourcePathIsNotReadFromYAML(t *testing.T) {
 	t.Parallel()
 
@@ -94,20 +133,17 @@ func TestSchema_SourcePathIsNotReadFromYAML(t *testing.T) {
 // The field-name mapping
 // =============================================================================
 
-// TestSchema_FieldNameMapping verifies that each Config field's
-// YAML key in the type's tag matches the schema's derivation.
+// TestSchema_FieldNameMapping verifies that each Config value
+// field's YAML key in the type's tag matches the schema's
+// derivation, and that SchemaFields() declares no bookkeeping
+// fields.
 //
-// The test uses SchemaFields() as the source of truth and
-// cross-checks it against the type's tags. A future contributor
-// who renames a field or changes a tag without updating
-// SchemaFields() fails the test.
+// # Why only value fields
 //
-// # The derivation
-//
-// WBS 8.2.2 introduced the three derivation functions
-// (GoFieldToYAML, GoFieldToEnv, GoFieldToFlag). The schema's
-// mappings are derived from the Go field names; the test asserts
-// the derivation is what the type's tags declare.
+// ADR-009 (extended) excludes bookkeeping fields from the
+// schema. SchemaFields() describes only the value fields; the
+// test iterates only exported fields when cross-checking tags,
+// and asserts that no unexported field appears in the mappings.
 //
 // # The metadata field's tag
 //
@@ -128,10 +164,13 @@ func TestSchema_FieldNameMapping(t *testing.T) {
 	typ := reflect.TypeOf(Config{})
 	for i := 0; i < typ.NumField(); i++ {
 		field := typ.Field(i)
+		if !field.IsExported() {
+			continue
+		}
 
 		m, ok := byGoName[field.Name]
 		if !ok {
-			t.Errorf("Config field %q is not in SchemaFields(); "+
+			t.Errorf("Config value field %q is not in SchemaFields(); "+
 				"add the field's mapping and update the schema test",
 				field.Name)
 			continue
@@ -146,22 +185,41 @@ func TestSchema_FieldNameMapping(t *testing.T) {
 			tagKey = ""
 		}
 		if tagKey != m.YAMLKey {
-			t.Errorf("Config field %q has yaml tag %q; "+
+			t.Errorf("Config value field %q has yaml tag %q; "+
 				"SchemaFields() says %q",
 				field.Name, tagKey, m.YAMLKey)
 		}
 	}
 
+	// Every declared mapping must name a value field, not a
+	// bookkeeping field. A bookkeeping field in SchemaFields()
+	// would be a contract violation: the schema describes only
+	// the external representations, and bookkeeping fields have
+	// none.
 	for _, m := range mappings {
-		if _, ok := typ.FieldByName(m.GoName); !ok {
+		field, ok := typ.FieldByName(m.GoName)
+		if !ok {
 			t.Errorf("SchemaFields() declares a mapping for %q, "+
 				"but Config has no such field", m.GoName)
+			continue
+		}
+		if !field.IsExported() {
+			t.Errorf("SchemaFields() declares a mapping for %q, "+
+				"but the field is unexported (a bookkeeping "+
+				"field); the schema describes only value fields "+
+				"(ADR-009)", m.GoName)
 		}
 	}
 }
 
-// TestSchema_NoUnexpectedFields verifies that Config has no field
-// that is not in SchemaFields().
+// TestSchema_NoUnexpectedFields verifies that Config has no
+// value field that is not in SchemaFields().
+//
+// # Why only value fields
+//
+// A bookkeeping field is not expected to be in SchemaFields();
+// its existence is recorded by InScopeBookkeepingFieldNames in
+// scope.go. The test iterates only exported fields.
 func TestSchema_NoUnexpectedFields(t *testing.T) {
 	t.Parallel()
 
@@ -174,10 +232,13 @@ func TestSchema_NoUnexpectedFields(t *testing.T) {
 	typ := reflect.TypeOf(Config{})
 	for i := 0; i < typ.NumField(); i++ {
 		field := typ.Field(i)
+		if !field.IsExported() {
+			continue
+		}
 		if !expected[field.Name] {
-			t.Errorf("Config field %q is not declared in "+
+			t.Errorf("Config value field %q is not declared in "+
 				"SchemaFields()\n"+
-				"adding a field requires an ADR (WBS 8.2.1)",
+				"adding a value field requires an ADR (WBS 8.2.1)",
 				field.Name)
 		}
 	}
@@ -190,6 +251,10 @@ func TestSchema_NoUnexpectedFields(t *testing.T) {
 // TestSchema_RepresentationsAreDerived verifies that each mapping's
 // YAML key, env var name, and flag name are derived from the Go
 // field name by the corresponding function.
+//
+// The test iterates SchemaFields(), which by contract contains
+// only value fields (see TestSchema_FieldNameMapping). No
+// bookkeeping field appears, so no skip is needed here.
 //
 // The test is the schema's contract for the derivation: a future
 // contributor who hand-codes a representation (for example, sets
@@ -225,6 +290,9 @@ func TestSchema_RepresentationsAreDerived(t *testing.T) {
 //
 // The field is not part of the YAML document, has no environment
 // variable, and has no flag. The test pins the emptiness.
+//
+// The test looks up SourcePath explicitly; it does not iterate
+// all fields. It is unaffected by ADR-009.
 func TestSchema_MetadataFieldHasNoRepresentations(t *testing.T) {
 	t.Parallel()
 
@@ -360,6 +428,9 @@ func TestSchema_IsSnakeCase(t *testing.T) {
 // TestSchema_SchemaFieldCountMatches verifies that
 // SchemaFieldCount() returns the number of mappings
 // SchemaFields() produces.
+//
+// The test is not affected by ADR-009: SchemaFields() describes
+// only value fields, and SchemaFieldCount() returns its length.
 func TestSchema_SchemaFieldCountMatches(t *testing.T) {
 	t.Parallel()
 

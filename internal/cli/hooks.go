@@ -93,6 +93,28 @@
 // through the hook (for example, if a future logger needs to
 // be stored on deps.Logger and read by a caller).
 //
+// # Test injection
+//
+// When deps.Config already carries a non-zero value, the hook
+// treats it as pre-resolved and skips the loader. This is how
+// tests inject a specific Config:
+//
+//  1. The test calls runCLIWithConfig(cfg), which sets
+//     options.config = cfg.
+//  2. buildDependencies copies options.config to deps.Config.
+//  3. newRootCmd calls initializeCommandEnvironment(deps),
+//     capturing the injected deps.Config.
+//  4. Cobra calls the hook. The hook sees a non-zero
+//     deps.Config and skips the loader.
+//  5. RunE reads the injected Config from the command's
+//     context and renders it.
+//
+// The check is the hook's idempotence condition: if the value
+// the hook produces is already present, the hook does nothing.
+// Without the check, the hook would overwrite the injected
+// value with the loader's output, and no test could inject a
+// Config.
+//
 // # Errors
 //
 // An error from any layer is returned from the hook. Cobra
@@ -190,6 +212,48 @@ func contextWithConfig(ctx context.Context, cfg config.Config) context.Context {
 	return context.WithValue(ctx, configContextKey{}, cfg)
 }
 
+// configIsZero reports whether every exported field of c is the
+// zero value for its type.
+//
+// The check is used by initializeCommandEnvironment to
+// distinguish an injected Config (some field is non-empty) from
+// the placeholder zero value that buildDependencies supplies in
+// production.
+//
+// # Why a helper
+//
+// The concept "is this Config the placeholder value?" is used in
+// one place today. Naming it documents the intent and centralizes
+// the definition so that a future addition to Config (a fourth
+// field) updates this function, not the call site.
+//
+// # What "zero" means
+//
+// Config has three exported string fields (LogLevel,
+// OutputFormat, SourcePath). A zero Config has all three as
+// empty strings. The check is a conjunction of == against "".
+//
+// # Why not a nil check on deps.Config
+//
+// buildDependencies always supplies a non-nil pointer (it falls
+// back to &config.Config{} when options.config is nil). A nil
+// check on deps.Config would always be false and would not
+// distinguish injection from production. The field-by-field
+// check is the correct test.
+//
+// # Why the check is here and not in config.go
+//
+// The concept is about the hook's contract, not about the
+// Config type. The Config type has no notion of "is this the
+// placeholder"; that notion is specific to how the hook uses
+// the value. Placing the helper next to the hook keeps the two
+// together.
+func configIsZero(c config.Config) bool {
+	return c.LogLevel == "" &&
+		c.OutputFormat == "" &&
+		c.SourcePath == ""
+}
+
 // initializeCommandEnvironment returns the root command's
 // PersistentPreRunE hook, with deps captured in the closure.
 //
@@ -201,49 +265,49 @@ func contextWithConfig(ctx context.Context, cfg config.Config) context.Context {
 //
 // # What the hook does
 //
-// The hook applies the four configuration layers in order:
+// The hook has two paths, distinguished by whether the Config is
+// already present on the closure's captured deps:
 //
-//  1. Defaults. config.Defaults produces a Config with the
-//     schema's default values.
+//   - Injection path: deps.Config is non-nil and non-zero. The
+//     hook stores the injected value in the command's context
+//     and returns. The loader does not run.
 //
-//  2. Config file. config.Discover finds the file (using the
-//     --config flag's value, deps.Env, and deps.RootPath);
-//     config.Load reads it. If no file is found, the defaults
-//     are used.
+//   - Production path: deps.Config is nil or the zero value. The
+//     hook applies the four configuration layers in order
+//     (defaults, file, env, flags) and stores the resolved Config
+//     in the command's context.
 //
-//  3. Environment variables. config.OverrideFromEnv applies
-//     the variables the schema declares.
+// # The context is the sole transport
 //
-//  4. CLI flags. config.OverrideFromFlags applies the flags
-//     the schema declares.
+// Both paths store the resolved (or injected) Config in the
+// command's context via contextWithConfig. The dispatched
+// command reads it with ConfigFromContext(cmd.Context()).
 //
-// The resolved Config is stored in the command's context and
-// in the closure's captured deps value.
+// The hook does *not* write through deps.Config. An earlier
+// version assigned the resolved cfg to *deps.Config, keeping the
+// closure's deps pointer in sync with the context. That write is
+// unsafe when two invocations share a Dependencies value: the
+// parallel tests, for example, reuse the same *config.Config
+// across subtests, and the write-through races on it. The race
+// detector catches the write; the fix is to remove it. The
+// context is per-invocation (each Execute() call constructs its
+// own), so it is the only transport that is safe under
+// concurrency.
+//
+// A future caller that wants to observe the resolved Config reads
+// it from the command's context, not from a deps pointer it
+// supplied. This is the documented contract.
 //
 // # Signature
 //
 // The hook's signature is fixed by Cobra. The args parameter is
-// unused; the hook's behaviour does not depend on the
-// positional arguments.
+// unused.
 //
 // # Error behaviour
 //
-// The hook returns the first error from any layer. Errors from
-// config.Discover, config.Load, config.OverrideFromEnv, and
-// config.OverrideFromFlags are returned unchanged. The CLI's
-// error path renders them and maps them to exit codes; the
-// config package's errors map to ExitConfig (3).
-//
-// # The captured Dependencies value
-//
-// The deps argument is captured by the returned closure. The
-// capture is what lets the hook read deps.Env and deps.RootPath
-// and write deps.Config for code inside the closure.
-//
-// The Dependencies struct is passed by value; the closure's
-// copy is independent of the caller's. A caller that wants to
-// see the resolved Config reads it from the command's context,
-// not from its own deps value.
+// In the production path, the hook returns the first error from
+// any layer. In the injection path, no error can occur: the value
+// is already resolved.
 func initializeCommandEnvironment(deps Dependencies) func(cmd *cobra.Command, args []string) error {
 	return func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
@@ -251,10 +315,18 @@ func initializeCommandEnvironment(deps Dependencies) func(cmd *cobra.Command, ar
 			ctx = context.Background()
 		}
 
-		// Layer 4: defaults.
+		// Injection path: if deps.Config carries a non-zero
+		// value, honor it. Skip the loader and store the
+		// injected value in the command's context.
+		if deps.Config != nil && !configIsZero(*deps.Config) {
+			cmd.SetContext(contextWithConfig(ctx, *deps.Config))
+			return nil
+		}
+
+		// Production path: apply the four layers.
+
 		cfg := config.Defaults()
 
-		// Layer 3: the config file.
 		explicitPath := configPath(cmd)
 		cfgPath, err := config.Discover(explicitPath, deps.Env, deps.RootPath)
 		if err != nil {
@@ -268,33 +340,17 @@ func initializeCommandEnvironment(deps Dependencies) func(cmd *cobra.Command, ar
 			cfg.SourcePath = cfgPath
 		}
 
-		// Layer 2: environment variables.
 		cfg, err = config.OverrideFromEnv(cfg, deps.Env)
 		if err != nil {
 			return err
 		}
 
-		// Layer 1: CLI flags. The reader adapts the command to
-		// the config package's FlagReader interface; see
-		// flags_adapter.go.
 		cfg, err = config.OverrideFromFlags(cfg, newFlagReader(cmd))
 		if err != nil {
 			return err
 		}
 
-		// Store the resolved config in the command's context
-		// and in the closure's captured deps value. The two are
-		// kept in sync; a command reads whichever is convenient
-		// for its call site.
-		//
-		// The context store is the programmatic transport; the
-		// deps store is visible only inside the closure (see the
-		// function's docstring).
 		cmd.SetContext(contextWithConfig(ctx, cfg))
-		if deps.Config != nil {
-			*deps.Config = cfg
-		}
-
 		return nil
 	}
 }

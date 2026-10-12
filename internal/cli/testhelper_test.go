@@ -45,9 +45,13 @@ package cli
 
 import (
 	"bytes"
+	"flag"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"github.com/thapelomagqazana/forge/internal/config"
 	"github.com/thapelomagqazana/forge/internal/filesystem"
 )
@@ -80,6 +84,46 @@ type testRun struct {
 	// stderr is the content written to the injected stderr writer.
 	stderr string
 }
+
+// updateGolden is the flag that turns on golden-file rewriting for
+// the package's golden tests. It is declared once here so that
+// every golden test file shares the same flag.
+//
+// # Usage
+//
+//	go test ./internal/cli -run TestConfigGolden -update
+//
+// The flag is intentionally not the default. A test run without
+// -update compares against the committed golden files; a run with
+// -update rewrites them. A contributor who runs -update without
+// inspecting the diff has turned the golden files into a rubber
+// stamp; the flag's docstring says "rewrite" because that is what
+// it does — the review is the contributor's responsibility, not
+// the test's.
+var updateGolden = flag.Bool("update", false,
+	"rewrite golden files with the current output")
+
+// testConfigPath is the resolved config file path used by the
+// tests that assert on the `with-file` golden files.
+//
+// # Why a shared constant
+//
+// Two test files compare against the with-file golden files:
+//
+//   - config_golden_test.go: TestConfigGolden_TextWithFile and
+//     TestConfigGolden_JSONWithFile
+//   - config_interaction_test.go: the `--config <path>` row of
+//     TestConfigInteraction_FullOutput
+//
+// The three tests inject a Config whose SourcePath is this
+// constant; the golden files contain it verbatim. If two tests
+// injected different paths and shared a golden file, one would
+// fail. The constant makes the two tests agree by construction.
+//
+// The value is deliberately distinctive so that a mismatch
+// produces an obvious diff. It is not a path the tests expect to
+// exist on disk; the Config is injected, not loaded.
+const testConfigPath = "/home/user/.config/forge/config.yaml"
 
 // runCLI invokes the CLI with the given arguments and environment and
 // returns the captured observable result.
@@ -185,6 +229,184 @@ func runCLIWithRoot(t *testing.T, args []string, env map[string]string, rootPath
 		stdout:   stdout.String(),
 		stderr:   stderr.String(),
 	}
+}
+
+// runCLIWithConfig is a variant of runCLI that injects a pre-built
+// Config into the dispatcher. It exists so that tests can exercise
+// the config command with a Config whose fields have been set to
+// specific values.
+//
+// # How it works
+//
+// The function constructs an options value with the injected
+// Config, then calls executeWithOptions. The mechanics mirror
+// runCLI; the only difference is the Config field.
+//
+// # Threading the Config
+//
+// The options struct must carry a Config field (or a similar
+// mechanism) that buildDependencies threads into the Dependencies
+// value it constructs. If the options struct does not have such a
+// field, one must be added, and buildDependencies must be updated
+// to use it when non-nil. Without this plumbing, the injected
+// Config is discarded and the command runs with the default
+// (zero-value) Config.
+//
+// # Why not extend runCLI
+//
+// runCLI's signature (args, env) is used by dozens of tests.
+// Adding a config parameter would require touching every call
+// site. A sibling function with a distinct name is the idiomatic
+// Go choice: the common case stays terse, and the new case is
+// explicit at the call site.
+//
+// # Concurrency
+//
+// runCLIWithConfig is safe for concurrent use. Every call
+// allocates its own buffers and its own options value. No
+// package-level state is touched.
+func runCLIWithConfig(
+	t *testing.T,
+	args []string,
+	env map[string]string,
+	cfg *config.Config,
+) testRun {
+	t.Helper()
+
+	var stdout, stderr bytes.Buffer
+
+	opts := options{
+		args:     args,
+		stdin:    strings.NewReader(""),
+		stdout:   &stdout,
+		stderr:   &stderr,
+		env:      func(k string) string { return env[k] },
+		rootPath: "",
+		config:   cfg,
+	}
+
+	code := executeWithOptions(opts)
+
+	return testRun{
+		exitCode: code,
+		stdout:   stdout.String(),
+		stderr:   stderr.String(),
+	}
+}
+
+// runCLIWithFiles invokes the CLI with a synthetic configuration
+// derived from a fixtures map (file path → content) and an env map.
+//
+// It is the helper the acceptance tests use to express a scenario
+// as inputs (fixtures, env) rather than as a pre-built Config. The
+// helper writes the fixtures to a temporary directory, loads the
+// configuration with config.Load, applies the env layer with
+// config.OverrideFromEnv, and delegates to runCLIWithConfig.
+//
+// # Why the loader is used rather than a synthesized Config
+//
+// The config package deliberately hides its source-tracking writer
+// (setSource) so that callers cannot construct a Config whose
+// sources disagree with its fields. The exported read path is
+// SourceFor; the exported write path is the loader. The helper
+// uses the loader — the same entry point production uses — so that
+// the Config the command sees is one the loader produced, with the
+// correct source attribution for every field.
+//
+// # Fixture format
+//
+// Each fixture is a config file's content, in the schema's YAML
+// subset (`<key>: <value>` per line). The fixture named
+// "config.yaml" is treated as the resolved configuration file; its
+// content is written to a temp file whose path becomes the
+// Config's SourcePath.
+//
+// A fixture with any other name is currently ignored; the loader
+// does not discover arbitrary files, so the helper does not either.
+//
+// # Env format
+//
+// The env map's keys are the environment variable names from
+// internal/config's schema: FORGE_LOG_LEVEL and
+// FORGE_OUTPUT_FORMAT. The helper reads those keys (via
+// config.EnvVarNameFor) and applies their values via
+// config.OverrideFromEnv.
+//
+// # Precedence
+//
+// The helper applies layers in the schema's order: file first,
+// then env. CLI flags are not represented by this helper; flag
+// interaction is exercised separately by the interaction tests
+// (WBS 9.4.2).
+//
+// # Concurrency
+//
+// runCLIWithFiles is safe for concurrent use. Every call writes to
+// its own t.TempDir() and constructs its own Config.
+func runCLIWithFiles(
+	t *testing.T,
+	args []string,
+	env map[string]string,
+	fixtures map[string]string,
+) testRun {
+	t.Helper()
+
+	cfg := loadFixtureConfig(t, fixtures)
+
+	// Env layer: apply the environment variables the schema
+	// declares. OverrideFromEnv is the exported function the
+	// loader calls; it records SourceEnv on the fields it sets.
+	lookup := func(k string) string {
+		if env == nil {
+			return ""
+		}
+		return env[k]
+	}
+	var err error
+	cfg, err = config.OverrideFromEnv(cfg, lookup)
+	require.NoError(t, err, "OverrideFromEnv: %v", err)
+
+	return runCLIWithConfig(t, args, env, &cfg)
+}
+
+// loadFixtureConfig writes the fixture named "config.yaml" to a
+// temp file and loads it with config.Load. If no such fixture is
+// present, it returns config.Defaults().
+//
+// The temp file lives under t.TempDir(), which Go removes when the
+// test ends. The path passed to config.Load is the temp file's
+// absolute path, so the resulting Config's SourcePath is that path.
+//
+// # Why config.Defaults
+//
+// When there is no fixture, the loader's semantics are "no file
+// found; use the defaults." config.Defaults() produces exactly
+// that: a Config with the schema's default values. The helper
+// calls it rather than constructing the Config by hand, so that
+// the defaults come from the schema's single source of truth.
+func loadFixtureConfig(t *testing.T, fixtures map[string]string) config.Config {
+	t.Helper()
+
+	if fixtures == nil {
+		return config.Defaults()
+	}
+	content, ok := fixtures["config.yaml"]
+	if !ok {
+		return config.Defaults()
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write fixture %s: %v", path, err)
+	}
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("load fixture %s: %v", path, err)
+	}
+	return cfg
 }
 
 // testDependencies returns a Dependencies value with non-nil writers,

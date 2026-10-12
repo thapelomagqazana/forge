@@ -1,0 +1,6 @@
+Forge CLI Configuration
+───────────────────────
+
+  Source:       <none>
+  Log level:    info  (source: default)
+  Output:       text  (source: default)

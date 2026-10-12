@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forge.dev/schemas/config.schema.json",
+  "title": "forge config --format json",
+  "description": "The resolved CLI configuration for the current invocation, with the source of each value.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "config_path",
+    "log_level",
+    "log_level_source",
+    "output_format",
+    "output_format_source"
+  ],
+  "properties": {
+    "config_path": {
+      "description": "The resolved configuration file path, or null when no file was found.",
+      "type": ["string", "null"]
+    },
+    "log_level": {
+      "description": "The effective log level.",
+      "type": "string",
+      "enum": ["debug", "info", "warn", "error"]
+    },
+    "log_level_source": {
+      "description": "The precedence layer that provided log_level.",
+      "type": "string",
+      "enum": ["default", "file", "env", "flag"]
+    },
+    "output_format": {
+      "description": "The effective output format.",
+      "type": "string",
+      "enum": ["text", "json"]
+    },
+    "output_format_source": {
+      "description": "The precedence layer that provided output_format.",
+      "type": "string",
+      "enum": ["default", "file", "env", "flag"]
+    }
+  }
+}

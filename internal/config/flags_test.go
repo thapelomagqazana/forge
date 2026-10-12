@@ -36,6 +36,15 @@
 // its tests should not either. A future change to the CLI
 // framework touches the adapter and its test, not the
 // resolution and its tests.
+//
+// # Non-comparability of Config
+//
+// WBS 9.2.2 added an unexported `sources map[string]Source`
+// field to Config. A map is not comparable, so Config is no
+// longer comparable with ==. Tests that compare two Config
+// values use the configEqual helper below, which compares
+// fields field-by-field and then compares the recorded sources
+// via SourceFor.
 package config
 
 import (
@@ -45,8 +54,62 @@ import (
 )
 
 // =============================================================================
-// Test helper
+// Test helpers
 // =============================================================================
+
+// configEqual reports whether two Config values are equal in
+// both their field values and their recorded sources.
+//
+// # Why a helper exists
+//
+// WBS 9.2.2 added an unexported sources map to Config, making
+// the struct non-comparable with ==. Tests that previously
+// wrote `got != want` must instead compare the fields and the
+// sources. The helper centralizes that comparison so that a
+// future field addition touches this function, not every test
+// site.
+//
+// # What it compares
+//
+//   - LogLevel, OutputFormat, SourcePath, field by field.
+//   - The sources map, by iterating the union of both maps'
+//     keys and comparing SourceFor results. The iteration is
+//     order-independent: two maps with the same key-value
+//     pairs compare equal regardless of insertion order.
+//
+// # Why not reflect.DeepEqual
+//
+// reflect.DeepEqual works on Config, but it treats a nil map
+// and an empty map as unequal, and it compares unexported
+// fields without going through SourceFor. The helper's
+// semantics are exactly the test-visible ones: a Config with
+// no recorded sources equals a Config with no recorded
+// sources, whether the map is nil or empty. reflect.DeepEqual
+// would fail that case.
+func configEqual(a, b Config) bool {
+	if a.LogLevel != b.LogLevel ||
+		a.OutputFormat != b.OutputFormat ||
+		a.SourcePath != b.SourcePath {
+		return false
+	}
+
+	// Collect the union of keys from both sources maps. A key
+	// present in only one map is compared against SourceFor's
+	// default for the other, which is the correct semantics.
+	keys := make(map[string]struct{}, len(a.sources)+len(b.sources))
+	for k := range a.sources {
+		keys[k] = struct{}{}
+	}
+	for k := range b.sources {
+		keys[k] = struct{}{}
+	}
+	for k := range keys {
+		if a.SourceFor(k) != b.SourceFor(k) {
+			return false
+		}
+	}
+	return true
+}
 
 // fakeFlagReader is an in-memory implementation of the
 // FlagReader interface.
@@ -112,6 +175,13 @@ func (f *fakeFlagReader) String(name string) string {
 
 // TestOverrideFromFlags_NoFlags verifies that a Config is
 // returned unchanged when no flags were explicitly set.
+//
+// # Why configEqual and not ==
+//
+// WBS 9.2.2 made Config non-comparable by adding a sources
+// map. The comparison is field-by-field via configEqual; the
+// sources maps of both values are empty, so they compare
+// equal.
 func TestOverrideFromFlags_NoFlags(t *testing.T) {
 	t.Parallel()
 
@@ -122,7 +192,7 @@ func TestOverrideFromFlags_NoFlags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OverrideFromFlags: %v", err)
 	}
-	if got != cfg {
+	if !configEqual(got, cfg) {
 		t.Errorf("Config changed: got %+v; want %+v", got, cfg)
 	}
 }
@@ -137,7 +207,7 @@ func TestOverrideFromFlags_NilReader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OverrideFromFlags: %v", err)
 	}
-	if got != cfg {
+	if !configEqual(got, cfg) {
 		t.Errorf("Config changed: got %+v; want %+v", got, cfg)
 	}
 }
@@ -253,7 +323,7 @@ func TestOverrideFromFlags_UnsetFlagsDoNotOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OverrideFromFlags: %v", err)
 	}
-	if got != cfg {
+	if !configEqual(got, cfg) {
 		t.Errorf("unset flags overrode Config: got %+v; want %+v",
 			got, cfg)
 	}
@@ -317,7 +387,7 @@ func TestOverrideFromFlags_EmptyValueIsUnset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OverrideFromFlags: %v", err)
 	}
-	if got != cfg {
+	if !configEqual(got, cfg) {
 		t.Errorf("Config changed: got %+v; want %+v", got, cfg)
 	}
 }
@@ -447,6 +517,13 @@ func TestOverrideFromFlags_InvalidOutputFormatErrors(t *testing.T) {
 
 // TestOverrideFromFlags_DoesNotMutateInput verifies that the
 // function does not mutate the Config value passed to it.
+//
+// # Why configEqual and not ==
+//
+// Config is non-comparable (WBS 9.2.2). The comparison is
+// field-by-field via configEqual, including the sources map.
+// A mutation of the sources map would be caught by the
+// comparison.
 func TestOverrideFromFlags_DoesNotMutateInput(t *testing.T) {
 	t.Parallel()
 
@@ -468,7 +545,7 @@ func TestOverrideFromFlags_DoesNotMutateInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OverrideFromFlags: %v", err)
 	}
-	if cfg != original {
+	if !configEqual(cfg, original) {
 		t.Errorf("input Config was mutated: got %+v; want %+v",
 			cfg, original)
 	}
@@ -476,6 +553,11 @@ func TestOverrideFromFlags_DoesNotMutateInput(t *testing.T) {
 
 // TestOverrideFromFlags_IsDeterministic verifies that two calls
 // with the same arguments produce equal results.
+//
+// # Why configEqual and not ==
+//
+// Config is non-comparable (WBS 9.2.2). Determinism is asserted
+// on both fields and recorded sources.
 func TestOverrideFromFlags_IsDeterministic(t *testing.T) {
 	t.Parallel()
 
@@ -508,7 +590,7 @@ func TestOverrideFromFlags_IsDeterministic(t *testing.T) {
 	if err1 != nil || err2 != nil {
 		t.Fatalf("errors: first=%v second=%v", err1, err2)
 	}
-	if first != second {
+	if !configEqual(first, second) {
 		t.Errorf("not deterministic: first=%+v second=%+v",
 			first, second)
 	}
