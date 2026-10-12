@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -32,7 +33,7 @@ func TestZZDiagnostic_IsolateBreak(t *testing.T) {
 	})
 
 	// Path 2: bypass runCLIWithConfig and construct options
-	// manually, then call executeWithOptions. This isolates the
+	// manually, then call runWithOptions. This isolates the
 	// hook from the helper.
 	t.Run("manual", func(t *testing.T) {
 		opts := options{
@@ -47,8 +48,8 @@ func TestZZDiagnostic_IsolateBreak(t *testing.T) {
 		opts.stderr = &stderr
 		opts.stdin = strings.NewReader("")
 
-		code := executeWithOptions(opts)
-		t.Logf("executeWithOptions: exit=%d stdout=%q stderr=%q",
+		code, _ := runWithOptions(context.Background(), opts)
+		t.Logf("runWithOptions: exit=%d stdout=%q stderr=%q",
 			code, stdout.String(), stderr.String())
 
 		if stdout.String() == marker+"\n" {
@@ -58,7 +59,7 @@ func TestZZDiagnostic_IsolateBreak(t *testing.T) {
 		} else {
 			t.Logf("MANUAL FAILED: the injection is lost even " +
 				"with options constructed manually. The break " +
-				"is in executeWithOptions or the command tree " +
+				"is in runWithOptions or the command tree " +
 				"(most likely the PersistentPreRunE hook).")
 		}
 	})

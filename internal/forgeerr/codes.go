@@ -30,6 +30,56 @@
 // constructors.go reject any code not listed here. This is what
 // makes the stability policy enforceable rather than aspirational.
 //
+// # The three-layer mapping
+//
+// This file sits between two taxonomies, and it is important to
+// understand which layer owns which property:
+//
+//  1. The code registry (this file, WBS 10.3.1) owns the set of
+//     codes and their string values. A code is registered or it
+//     is not; the registry does not assign an exit code.
+//
+//  2. The category taxonomy (category.go, WBS 10.2.1) owns the
+//     mapping from a code's prefix to a Category. The prefix is
+//     the first segment of the code's string value: FORGE_CLI_*
+//     is in CategoryCLI, FORGE_CONFIG_* is in CategoryConfig, and
+//     so on.
+//
+//  3. The exit-code taxonomy (internal/cli/exitcodes.go, WBS
+//     11.1.1) owns the mapping from a Category to a numeric exit
+//     code, and groups those codes into documented ranges. The
+//     mapping is Category.ExitCode(); the ranges are the
+//     ExitCodeRange values published in
+//     docs/reference/exit-code-ranges.md and decided in ADR-018.
+//
+// The three layers are strictly separated. A change to the
+// exit-code ranges does not touch this file. A change to the
+// category taxonomy does not touch this file either: it touches
+// category.go and the prefix rules, and the registry's codes are
+// re-interpreted by the new taxonomy because their prefixes are
+// unchanged. Only a change to the set of codes touches this file.
+//
+// # Worked example
+//
+// The chain for CodeSecurityPathTraversal is:
+//
+//  1. CodeSecurityPathTraversal = "FORGE_SECURITY_PATH_TRAVERSAL"
+//     (this file, WBS 10.3.1).
+//  2. The prefix "FORGE_SECURITY_" selects CategorySecurity
+//     (category.go, WBS 10.2.1).
+//  3. CategorySecurity.ExitCode() returns ExitSecurity
+//     (internal/cli/exitcodes.go, WBS 11.1.1). Under the WBS
+//     11.1.1 taxonomy, ExitSecurity is 13, in the execution-
+//     failure range (10–19). Before the taxonomy, the same
+//     category returned 6, in the flat range that no longer
+//     exists.
+//
+// The registry's code string did not change when the exit code
+// moved from 6 to 13. This is the property the three-layer
+// separation buys: a taxonomy change is absorbed at the layer
+// that owns the affected property, and the layers above it are
+// untouched.
+//
 // Only the Go standard library is used (see docs/dependency-policy.md).
 package forgeerr
 
@@ -47,6 +97,19 @@ import "sort"
 // rather than as bare strings, which makes accidental interchange
 // with messages or context values a compile error rather than a
 // runtime bug.
+//
+// # Where the exit code lives
+//
+// A Code does not carry an exit code. The exit code is a property
+// of the Category, not of the Code (see Category.ExitCode). Two
+// codes in the same category share an exit code by construction;
+// the design is deliberate, because the exit code is a
+// caller-facing classification (what kind of failure was this?)
+// while the code is a developer-facing identifier (which specific
+// failure was it?). The two questions have different stability
+// policies and different change cadences, and separating them is
+// what lets the exit-code ranges change without touching the
+// registry.
 type Code string
 
 // The frozen registry of error codes.
@@ -66,6 +129,25 @@ type Code string
 // Code<Category><Specific>, with the category in CamelCase. The
 // string values follow FORGE_<CATEGORY>_<SPECIFIC> in
 // UPPER_SNAKE_CASE.
+//
+// # The category is derived from the prefix
+//
+// The string value's prefix determines the Category. The prefix
+// is the FORGE_<CATEGORY>_ segment; the specific segment follows.
+// A code is well-formed if and only if exactly one category's
+// prefix matches the code's start, and the code is registered in
+// codeSpecs. Both properties are checked by the test suite
+// (TestAC3_PrefixesAreUnique, TestCodes_HaveValidCategory).
+//
+// # The exit code is not in this file
+//
+// No constant below carries an exit code, and no docstring below
+// names one. The exit code is Category.ExitCode() (category.go),
+// and the numeric values are grouped into ranges in
+// internal/cli/exitcodes.go (WBS 11.1.1). A reader who wants to
+// know the exit code for a code should follow the prefix to the
+// category and the category to the exit code. The three-layer
+// separation is documented in the package docstring above.
 
 const (
 	// --- CLI errors ----------------------------------------------------
@@ -73,6 +155,13 @@ const (
 	// Invocation-level failures: the user asked for something that
 	// does not exist, or supplied a value in the wrong shape. These
 	// are the errors a help system is designed to prevent.
+	//
+	// Category: CategoryCLI.
+	// Exit code: ExitUsage (64, BSD EX_USAGE), per the WBS 11.1.1
+	// taxonomy. Usage errors are a singleton range; the CLI
+	// category maps to that singleton. Before the taxonomy, the
+	// same category returned 2, in the flat range that no longer
+	// exists.
 
 	// CodeCLIUnknownCommand indicates an unknown subcommand.
 	CodeCLIUnknownCommand Code = "FORGE_CLI_UNKNOWN_COMMAND"
@@ -94,6 +183,13 @@ const (
 	// distinction between NOT_FOUND, PERMISSION, and MALFORMED is
 	// intentional: it lets the CLI suggest the right remediation
 	// (create the file, fix permissions, fix the syntax).
+	//
+	// Category: CategoryConfig.
+	// Exit code: ExitConfig (10), in the execution-failure range
+	// (10–19), per the WBS 11.1.1 taxonomy. A config error means
+	// the command could not run; the caller should fix the config
+	// and retry. Before the taxonomy, the same category returned
+	// 3, in the flat range that no longer exists.
 
 	// CodeConfigNotFound indicates the config file does not exist
 	// at the expected path.
@@ -131,6 +227,22 @@ const (
 	//
 	// Failures reading or writing files that are not the config
 	// file: blueprints, templates, output paths.
+	//
+	// Category: CategoryFilesystem.
+	// Exit code: ExitFilesystem (12), in the execution-failure
+	// range (10–19), per the WBS 11.1.1 taxonomy. A filesystem
+	// error means the command could not read or write a path it
+	// needed; the caller should fix the path or the permissions
+	// and retry. Before the taxonomy, the same category returned
+	// 4, in the flat range that no longer exists.
+	//
+	// Note the deliberate distinction between this category and
+	// CategorySecurity, below. A filesystem error is a computed
+	// path that happened to be unreachable; a security error is a
+	// path supplied by an attacker that was refused. The two
+	// categories have different exit codes (ExitFilesystem vs
+	// ExitSecurity) so that a script can abort on a security
+	// violation without aborting on an ordinary I/O error.
 
 	// CodeFilesystemNotFound indicates a referenced path does not
 	// exist.
@@ -150,7 +262,14 @@ const (
 	//
 	// Deliberate boundary violations. Kept distinct from
 	// FILESYSTEM so that scripts can abort on security violations
-	// (ExitSecurity = 6) without aborting on ordinary I/O errors.
+	// (ExitSecurity, 13) without aborting on ordinary I/O errors
+	// (ExitFilesystem, 12).
+	//
+	// Category: CategorySecurity.
+	// Exit code: ExitSecurity (13), in the execution-failure range
+	// (10–19), per the WBS 11.1.1 taxonomy. Before the taxonomy,
+	// the same category returned 6, in the flat range that no
+	// longer exists.
 
 	// CodeSecurityPathTraversal indicates a user-supplied path
 	// attempts to traverse outside the project root.
@@ -165,6 +284,14 @@ const (
 	// Bugs in Forge itself. Every error that does not fit another
 	// category is INTERNAL; the taxonomy deliberately has no
 	// "OTHER" member.
+	//
+	// Category: CategoryInternal.
+	// Exit code: ExitInternal (70, BSD EX_SOFTWARE), in the
+	// internal-error range (70–78), per the WBS 11.1.1 taxonomy.
+	// An internal error means Forge has a bug; the caller should
+	// report it with --verbose output. Before the taxonomy, the
+	// same category returned 1, in the flat range that no longer
+	// exists.
 
 	// CodeInternalPanic indicates a recovered panic at the process
 	// boundary.
@@ -185,6 +312,16 @@ const (
 // (see Category), so they are not duplicated here. This is the
 // same single-source-of-truth discipline as Category.Prefix and
 // Category.ExitCode.
+//
+// # Why introduced and deprecated are the only metadata
+//
+// The two fields are the metadata that is genuinely per-code and
+// cannot be derived. Everything else — the category, the exit
+// code, the range the exit code falls in — is a property of the
+// code's prefix, and is therefore owned by the category taxonomy
+// and the exit-code taxonomy. Adding a third per-code field is a
+// signal that a property which should be per-category is being
+// pushed down to the code, and should be questioned.
 type codeSpec struct {
 	// code is the string value. It is redundant with the key in
 	// codeSpecs, but keeping it on the struct makes it trivial to
@@ -212,6 +349,30 @@ type codeSpec struct {
 // returning them, so the iteration order is deterministic. The map
 // is unexported so that callers cannot mutate the registry; they
 // use AllCodes for the sorted list and Lookup for a single entry.
+//
+// # Why the registry does not carry exit codes
+//
+// The exit code is a property of the category (Category.ExitCode),
+// not of the code. Storing it on codeSpec would duplicate the
+// category's mapping and create a drift hazard: a change to the
+// exit-code taxonomy would require editing every codeSpec row, and
+// a missed row would produce an inconsistency that the tests would
+// have to catch. The three-layer separation (registry → category
+// → exit-code range) avoids the duplication: the registry says
+// what the code is, the category says what kind of failure it is,
+// and the exit-code taxonomy says how the failure is communicated
+// to the shell.
+//
+// # Why the registry is keyed by Code and not by a struct
+//
+// A map keyed by the code makes IsRegistered O(1) and gives the
+// Go compiler a single expression (codeSpecs[c]) for every lookup.
+// An alternative design — a slice of codeSpec with a linear scan —
+// would be simpler to read but would make the constructor's
+// validation O(n) and would risk accidental duplicates (two rows
+// with the same code), which the map prevents by construction. The
+// registry is small (19 codes in Phase 2) and the map is the right
+// data structure for the access pattern.
 var codeSpecs = map[Code]codeSpec{
 	// CLI
 	CodeCLIUnknownCommand: {code: CodeCLIUnknownCommand, introduced: "Phase 2"},
@@ -254,6 +415,16 @@ var codeSpecs = map[Code]codeSpec{
 // file and by the reference documentation; a change to the sort
 // order is a change to the docs, and must be accompanied by a
 // regenerated golden file in the same commit.
+//
+// # The sort order is lexicographic, not categorical
+//
+// Lexicographic order groups the codes by category by accident:
+// every FORGE_CLI_* sorts together, every FORGE_CONFIG_* sorts
+// together, and so on. The grouping is a consequence of the string
+// format, not a separate sort key. A reader who wants the codes
+// grouped by category should iterate the categories (AllCategories)
+// and filter (CategoryOf). A reader who wants the registry's
+// canonical order should call AllCodes.
 func AllCodes() []Code {
 	out := make([]Code, 0, len(codeSpecs))
 	for c := range codeSpecs {
@@ -273,6 +444,17 @@ func AllCodes() []Code {
 // diagnostics that must describe an unknown code without failing.
 // The constructors use IsRegistered, which also does not panic,
 // and then panic on their own terms with a specific message.
+//
+// # Why Lookup returns three values and not a codeSpec
+//
+// codeSpec is unexported. Returning it would expose an internal
+// type through the public API, which would couple callers to the
+// registry's internal shape and would make a future change to the
+// struct a breaking change. The three return values are the
+// registry's public surface: the phase and the deprecation flag.
+// A future change that adds a fourth field to codeSpec would
+// require a fourth return value and would be a deliberate breaking
+// change, not an accidental one.
 func Lookup(c Code) (introduced string, deprecated bool, ok bool) {
 	spec, ok := codeSpecs[c]
 	if !ok {
@@ -287,6 +469,15 @@ func Lookup(c Code) (introduced string, deprecated bool, ok bool) {
 // call sites that only need the boolean read more clearly, and the
 // constructors want a single, well-named check to call. The
 // implementation does not allocate.
+//
+// # Why the implementation does not call Lookup
+//
+// The implementation reads codeSpecs directly rather than calling
+// Lookup. The two are equivalent in behaviour, but the direct read
+// is a single map lookup rather than a function call that performs
+// a map lookup. The compiler may inline both; the direct form
+// removes the question. The docstring above says "thin wrapper";
+// the reader should not assume a function call.
 func IsRegistered(c Code) bool {
 	_, ok := codeSpecs[c]
 	return ok
@@ -306,6 +497,30 @@ func IsRegistered(c Code) bool {
 // CategoryOf does not panic: it is used by diagnostics, and a
 // diagnostic that panics on an unknown code is worse than a
 // diagnostic that reports the unknown code as such.
+//
+// # The mapping is the registry's category layer
+//
+// This method is the middle layer of the three-layer mapping
+// documented in the package docstring: the registry (this file)
+// supplies the codes; CategoryOf supplies the category; and the
+// exit-code taxonomy (internal/cli/exitcodes.go) supplies the
+// numeric code. CategoryOf does not look at the exit-code
+// taxonomy, and does not need to: the mapping from a code to its
+// category is a property of the code's string, not of the numeric
+// value that the category happens to produce.
+//
+// # Why the method is on Code and not on Category
+//
+// The question "what is the category of this code?" is naturally
+// asked of the code. The question "what is the exit code of this
+// category?" is naturally asked of the category
+// (Category.ExitCode). Both methods exist; neither is derived from
+// the other. A reader who wants the full chain follows the two
+// calls:
+//
+//	cat, ok := code.Category()
+//	if !ok { /* not registered */ }
+//	exit := cat.ExitCode()
 func (c Code) Category() (Category, bool) {
 	if !IsRegistered(c) {
 		return "", false
@@ -329,6 +544,15 @@ func (c Code) Category() (Category, bool) {
 // imports strings in forgeerr.go and constructors.go, but a small
 // duplicate here keeps codes.go's dependency surface minimal and
 // makes the intent obvious at the call site.
+//
+// # Why a local alias and not strings.HasPrefix
+//
+// The alias is one line. Importing strings would add an import to
+// this file that is not otherwise needed, and would obscure the
+// fact that the file's only string operation is a prefix check.
+// The alias is not a micro-optimisation: the compiler emits the
+// same code either way. It is a readability choice: the call site
+// reads hasPrefix(code, cat.Prefix()), which names the operation.
 func hasPrefix(s, prefix string) bool {
 	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
 }

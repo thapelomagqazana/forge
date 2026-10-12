@@ -19,11 +19,13 @@
 // Each flag has a documented consumer in a specific WBS item:
 //
 //   - --verbose is consumed by WBS 12.0 (logging).
-//   - --quiet is consumed by WBS 12.0 (logging).
+//   - --quiet is consumed by WBS 12.0 (logging) and by the error
+//     path (WBS 11.3.2), which suppresses the human diagnostic on
+//     stderr when the flag is set.
 //   - --config is consumed by WBS 8.0 (configuration loading).
 //   - --format is consumed by WBS 9.2.1 and WBS 9.4.1 (config
-//     command output), and by every future command that renders
-//     JSON.
+//     command output), by the error path (WBS 11.3.2), and by
+//     every future command that renders JSON.
 //
 // No flag is added speculatively. A future contributor who wants a
 // new global flag must first write an ADR explaining which consumer
@@ -64,6 +66,22 @@
 // --quiet and --format json gets a JSON rendering with the
 // logger's verbosity lowered; the two flags compose without
 // conflict.
+//
+// # The --format reader and the --quiet reader (WBS 11.3.2)
+//
+// The error path (runWithOptions, execute.go) reads two of the
+// four flags: --format and --quiet. The reads are performed by
+// formatRequested and quietRequested. The two functions live in
+// this file because the file is the single source of truth for
+// the flags' names, types, and defaults.
+//
+// formatRequested returns an OutputFormat, not the raw string.
+// The conversion is the reason a second format reader exists
+// alongside formatValue (which returns the raw string for the
+// config command's dispatch). The two readers share the same
+// underlying flag and the same default; a future change to the
+// flag's name or default is a change in one place (the constant),
+// and both readers see it.
 package cli
 
 import (
@@ -253,9 +271,42 @@ func verboseRequested(cmd *cobra.Command) bool {
 // quietRequested reports whether --quiet was set on the command or
 // on any of its ancestors.
 //
-// See verboseRequested for the rationale of the ignored error.
+// The flag is a persistent flag registered by registerGlobalFlags.
+// It is inherited by every subcommand, so reading it from the
+// root command returns the value the user passed regardless of
+// where the flag appeared on the command line.
+//
+// # The nil-command case
+//
+// A nil cmd is a programming error. The helper panics rather than
+// returning a default, because a caller that passes nil has a bug
+// that a default would hide. The panic message is the same shape
+// as verboseRequested's.
+//
+// # The unregistered-flag case
+//
+// The current implementation tolerates an unregistered --quiet
+// flag by returning false. The tolerance is deliberate: a test
+// that constructs a command without calling registerGlobalFlags
+// (for example, a unit test of a subcommand constructor in
+// isolation) sees the flag's default value, which is false. The
+// alternative — panicking like verboseRequested — would force
+// every such test to register the flags, which would couple the
+// test to the registration's presence.
+//
+// The tolerance is safe because the flag's absence is
+// indistinguishable from the flag's default: a command that has
+// not registered --quiet behaves as if --quiet were not set.
 func quietRequested(cmd *cobra.Command) bool {
-	v, _ := cmd.Flags().GetBool(FlagQuiet)
+	if cmd == nil {
+		panic("cli: quietRequested called with nil command")
+	}
+	v, err := cmd.Flags().GetBool(FlagQuiet)
+	if err != nil {
+		// The flag was not registered. The default is false;
+		// see the docstring.
+		return false
+	}
 	return v
 }
 
@@ -299,6 +350,72 @@ func formatValue(cmd *cobra.Command) string {
 		return FlagFormatText
 	}
 	return s
+}
+
+// formatRequested returns the --format flag's value as an
+// OutputFormat.
+//
+// The function is the error path's reader (WBS 11.3.2). It
+// returns the typed OutputFormat rather than the raw string that
+// formatValue returns, so that runWithOptions can dispatch on the
+// typed value without a conversion at the call site.
+//
+// # Relationship to formatValue
+//
+// The two readers share the same underlying flag and the same
+// default. formatValue returns the raw string for the config
+// command's dispatch (which compares against FlagFormatText and
+// FlagFormatJSON as strings). formatRequested returns the typed
+// value for the error path (which passes it to writeFailure, whose
+// parameter is an OutputFormat).
+//
+// The two readers exist because the two consumers want different
+// types. A single reader that returned one type and forced the
+// other consumer to convert would blur the boundary between the
+// flag's representation (a string) and the two interpretations
+// (a string for string comparison, a typed value for type
+// dispatch).
+//
+// # The nil-command case
+//
+// A nil cmd is a programming error. The helper panics rather than
+// returning a default, because a caller that passes nil has a bug
+// that a default would hide.
+//
+// # The unregistered-flag case
+//
+// The function tolerates an unregistered --format flag by returning
+// FormatText. The tolerance is the same as quietRequested's: a
+// test that constructs a command without calling
+// registerGlobalFlags sees the flag's default, which is text.
+//
+// # The empty-value case
+//
+// The function also handles an empty flag value (the case where
+// the flag exists but its value is the empty string). This case
+// arises when a test sets the flag to "" explicitly, or when a
+// future Cobra version changes the default. The function returns
+// FormatText in the empty case, matching the flag's declared
+// default.
+//
+// # The unknown-value case
+//
+// The function does not validate the value. A value other than
+// "text" or "json" is returned as-is (wrapped in OutputFormat).
+// The validation is the consumer's job: runWithOptions passes the
+// value to writeFailure, which treats any value other than
+// FormatJSON as text mode. A future command that dispatches on
+// the value performs its own validation and produces its own
+// error.
+func formatRequested(cmd *cobra.Command) OutputFormat {
+	if cmd == nil {
+		panic("cli: formatRequested called with nil command")
+	}
+	s, err := cmd.Flags().GetString(FlagFormat)
+	if err != nil || s == "" {
+		return FormatText
+	}
+	return OutputFormat(s)
 }
 
 // resolveLogLevel returns the effective log level implied by the

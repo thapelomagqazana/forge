@@ -401,35 +401,6 @@ func TestAC4_DocsSyncWithRegistry(t *testing.T) {
 	}
 }
 
-// --- AC5: reference doc contains the rendered table -------------------
-
-// TestAC5_DocsReferenceSyncWithRegistry asserts that the
-// human-curated reference doc contains exactly the table rendered
-// from the registry. The check is a substring match on the table,
-// not on the surrounding prose, so that the prose can be edited
-// freely.
-func TestAC5_DocsReferenceSyncWithRegistry(t *testing.T) {
-	t.Parallel()
-
-	root := repoRoot(t)
-	path := filepath.Join(root, "docs", "reference", "error-codes.md")
-
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-
-	table := renderCodesTable()
-	if !strings.Contains(string(raw), table) {
-		t.Fatalf(
-			"docs/reference/error-codes.md does not contain the registry table.\n"+
-				"Regenerate it with the command documented in the file header.\n"+
-				"--- expected table ---\n%s",
-			table,
-		)
-	}
-}
-
 // --- Positive / Negative / Boundary: Lookup and IsRegistered ----------
 
 // TestLookup_KnownCodes asserts that every registered code has

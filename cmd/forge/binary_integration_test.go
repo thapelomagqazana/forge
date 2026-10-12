@@ -26,7 +26,7 @@
 //
 //   - In-process tests are fast and precise. They catch logic errors.
 //   - Integration tests are slow and end-to-end. They catch wiring
-//     errors: a mismatch between what cli.Execute() returns and what
+//     errors: a mismatch between what cli.Run() returns and what
 //     os.Exit() receives, a missing build tag, a stale binary, a
 //     subprocess behaviour that differs from the in-process behaviour.
 //
@@ -45,7 +45,7 @@
 // Every test in this file follows the pattern:
 //
 //  1. Build the binary once per test binary invocation (via a cached
-//     helper, see binaryPath below).
+//     helper, see buildBinary below).
 //  2. Invoke the binary with specific arguments.
 //  3. Capture stdout, stderr, and exit code.
 //  4. Assert on the captured values.
@@ -60,6 +60,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -285,17 +286,28 @@ func TestBinary_GivenHelpFlag_ThenExitsZeroAndPrintsHelp(t *testing.T) {
 //
 //	Given a compiled forge binary
 //	When  the binary is invoked with an unknown command
-//	Then  the process exits with code 2
+//	Then  the process exits with ExitUsage (64, BSD EX_USAGE)
 //	And   stderr contains the error message
 //	And   stdout is empty
+//
+// # The exit code changed in WBS 11.1.1
+//
+// Before the WBS 11.1.1 taxonomy, an unknown command exited with 2
+// (the flat assignment's CLI category code). The taxonomy moved the
+// CLI category's code to 64 (BSD sysexits.h EX_USAGE) so that the
+// flat range 1–9 could be reserved for Forge findings and so that
+// usage errors could align with the sysexits convention. The
+// assertion below uses the new value; the cross-layer test
+// (TestBinary_GivenUnknownCommand_ExitCodeMatchesInProcessContract)
+// checks that the binary and the in-process code agree.
 func TestBinary_GivenUnknownCommand_ThenExitsUsage(t *testing.T) {
 	t.Parallel()
 
 	binary := buildBinary(t)
 	got := runBinary(t, binary, "unknown-command")
 
-	if got.exitCode != 2 {
-		t.Errorf("exit code: got %d, want 2", got.exitCode)
+	if got.exitCode != 64 {
+		t.Errorf("exit code: got %d, want 64 (ExitUsage)", got.exitCode)
 	}
 	if !strings.Contains(got.stderr, "unknown-command") {
 		t.Errorf("stderr does not mention the unknown command; got: %q",
@@ -331,7 +343,7 @@ func TestBinary_GivenNoArgs_ExitCodeMatchesInProcessContract(t *testing.T) {
 
 	if got.exitCode != inProcessExpected {
 		t.Errorf("binary exit code %d does not match in-process "+
-			"contract %d", got.exitCode, inProcessExpected)
+			"contract %d (ExitSuccess)", got.exitCode, inProcessExpected)
 	}
 }
 
@@ -340,6 +352,14 @@ func TestBinary_GivenNoArgs_ExitCodeMatchesInProcessContract(t *testing.T) {
 // matches the value the in-process tests assert.
 //
 // This is the negative-side counterpart of the previous test.
+//
+// # The exit code changed in WBS 11.1.1
+//
+// The in-process contract (internal/cli/root_test.go) asserts
+// ExitUsage for an unknown command. Under the WBS 11.1.1 taxonomy,
+// ExitUsage is 64 (BSD EX_USAGE). The literal below mirrors the
+// in-process constant; a future change to either requires a change
+// to both in the same commit, and the test fails if they diverge.
 func TestBinary_GivenUnknownCommand_ExitCodeMatchesInProcessContract(t *testing.T) {
 	t.Parallel()
 
@@ -347,12 +367,12 @@ func TestBinary_GivenUnknownCommand_ExitCodeMatchesInProcessContract(t *testing.
 	got := runBinary(t, binary, "unknown-command")
 
 	// The in-process contract (internal/cli/root_test.go) is that
-	// an unknown command exits with ExitUsage (2).
-	const inProcessExpected = 2
+	// an unknown command exits with ExitUsage (64, BSD EX_USAGE).
+	const inProcessExpected = 64
 
 	if got.exitCode != inProcessExpected {
 		t.Errorf("binary exit code %d does not match in-process "+
-			"contract %d", got.exitCode, inProcessExpected)
+			"contract %d (ExitUsage)", got.exitCode, inProcessExpected)
 	}
 }
 
@@ -533,6 +553,69 @@ func TestBinary_HelpContainsRootDescription(t *testing.T) {
 		t.Errorf("help output does not contain the root description; "+
 			"expected substring: %q", expectedSubstring)
 	}
+}
+
+// =============================================================================
+// Exit boundary — signal handling (WBS 11.3.1, ADR-020)
+// =============================================================================
+
+// TestBinary_GivenSIGINT_ThenExitsSIGINT is the process-boundary
+// test for the WBS 11.3.1 signal-handling contract: when the binary
+// receives SIGINT (Ctrl-C), it exits with ExitSIGINT (130, the
+// 128 + 2 convention).
+//
+// # How the test works
+//
+// The test spawns the binary with a long-running argument that
+// blocks (for example, a hypothetical future long-running command,
+// or — in the current Phase 2 tree — the help output which is too
+// fast to catch). Since Phase 2 has no long-running command, the
+// test cannot reliably deliver a signal before the process exits.
+//
+// The test is therefore skipped unless a future WBS adds a command
+// that blocks. The skip is documented here so that a reader sees
+// the test is intentional, not forgotten. When a blocking command
+// exists, this test's body is the reference implementation for
+// delivering SIGINT and asserting the exit code.
+//
+// # Cross-platform note
+//
+// The test uses syscall.SIGINT, which is available on Unix. On
+// Windows, the signal model differs; the test skips on Windows.
+func TestBinary_GivenSIGINT_ThenExitsSIGINT(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("signal delivery semantics differ on Windows")
+	}
+
+	// Phase 2 has no long-running command, so a SIGINT cannot be
+	// delivered before the process exits. The test skips.
+	//
+	// A future WBS that adds a blocking command will remove the
+	// skip and use the following pattern:
+	//
+	//	cmd := exec.Command(binary, "some-blocking-command")
+	//	var stdout, stderr bytes.Buffer
+	//	cmd.Stdout = &stdout
+	//	cmd.Stderr = &stderr
+	//	if err := cmd.Start(); err != nil {
+	//	    t.Fatalf("start: %v", err)
+	//	}
+	//	// Give the process time to install its signal handler.
+	//	time.Sleep(100 * time.Millisecond)
+	//	if err := cmd.Process.Signal(syscall.SIGINT); err != nil {
+	//	    t.Fatalf("signal: %v", err)
+	//	}
+	//	err := cmd.Wait()
+	//	var exitErr *exec.ExitError
+	//	if !errors.As(err, &exitErr) {
+	//	    t.Fatalf("expected exit error, got: %v", err)
+	//	}
+	//	if got := exitErr.ExitCode(); got != 130 {
+	//	    t.Errorf("exit code: got %d, want 130 (ExitSIGINT)", got)
+	//	}
+	t.Skip("Phase 2 has no long-running command to signal")
 }
 
 // =============================================================================

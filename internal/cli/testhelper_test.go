@@ -2,7 +2,7 @@
 //
 // This file defines the shared test helper used by every command test
 // in the package. The helper exercises the CLI through the same
-// boundary production code uses (executeWithOptions) with synthetic
+// boundary production code uses (runWithOptions) with synthetic
 // inputs, and captures the observable outputs (exit code, stdout,
 // stderr).
 //
@@ -10,14 +10,14 @@
 //
 // Before WBS 4.3.2, each test file defined its own helper or
 // constructed a Cobra command directly. The two patterns produced
-// subtly different tests: helpers that went through executeWithOptions
+// subtly different tests: helpers that went through runWithOptions
 // exercised the full transformation (options → Dependencies → command
 // tree); helpers that constructed a Cobra command exercised only the
 // command. Both are valid, but having two patterns in the same package
 // is confusing and produces tests that cannot be compared.
 //
 // The shared helper resolves the ambiguity: every command test in the
-// package goes through executeWithOptions.
+// package goes through runWithOptions.
 //
 // # Why no subprocess
 //
@@ -34,7 +34,7 @@
 //
 // The helper returns a testRun value with three fields:
 //
-//   - exitCode — the value returned by executeWithOptions. The
+//   - exitCode — the value returned by runWithOptions. The
 //     value is derived from the error's category, via
 //     Category.ExitCode (WBS 10.2.1) and the boundary's
 //     exitCodeOf helper (WBS 10.5.1).
@@ -47,12 +47,21 @@
 //
 // # The error boundary (WBS 10.5.1)
 //
-// The helpers exercise the CLI through executeWithOptions, which
+// The helpers exercise the CLI through runWithOptions, which
 // renders errors via forgeerr.Format, wraps non-*forgeerr.Error
 // errors via wrappedUnexpectedError, and derives exit codes via
 // Category.ExitCode. The Execute function (the process's error
 // boundary) is not exercised by the helpers; its panic recovery
 // is tested directly through recoveredPanicError in execute_test.go.
+//
+// # The exit boundary (WBS 11.3.1)
+//
+// The helpers call runWithOptions with a background context. They
+// do not install a signal handler; signal handling is tested by
+// the context-cancellation tests in execute_test.go, which
+// construct their own contexts and call runWithOptions directly.
+//
+// # The test-only registry hook
 //
 // The only test-only hook in this file is
 // testOnlyRegisterPlainErrorCommand, which is used by the
@@ -61,6 +70,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"flag"
 	"os"
 	"path/filepath"
@@ -91,7 +101,7 @@ import (
 // The fields are not part of the package's public API; the struct is
 // unexported, and no test outside `package cli` can name it.
 type testRun struct {
-	// exitCode is the value returned by executeWithOptions. It is
+	// exitCode is the value returned by runWithOptions. It is
 	// the same value main.go passes to os.Exit. The value is the
 	// error's Category().ExitCode(), or ExitSuccess for a nil
 	// error; see WBS 10.5.1.
@@ -152,7 +162,8 @@ const testConfigPath = "/home/user/.config/forge/config.yaml"
 //  1. Constructs an options value with synthetic inputs. stdout and
 //     stderr are fresh bytes.Buffers; stdin is an empty reader; env
 //     is a lookup function over the caller-supplied map.
-//  2. Calls executeWithOptions with the options value.
+//  2. Calls runWithOptions with a background context and the
+//     options value.
 //  3. Returns a testRun containing the exit code and the captured
 //     writers.
 //
@@ -218,7 +229,7 @@ func runCLI(t *testing.T, args []string, env map[string]string) testRun {
 		rootPath: "",
 	}
 
-	code := executeWithOptions(opts)
+	code, _ := runWithOptions(context.Background(), opts)
 
 	return testRun{
 		exitCode: code,
@@ -248,7 +259,7 @@ func runCLIWithRoot(t *testing.T, args []string, env map[string]string, rootPath
 		rootPath: rootPath,
 	}
 
-	code := executeWithOptions(opts)
+	code, _ := runWithOptions(context.Background(), opts)
 
 	return testRun{
 		exitCode: code,
@@ -265,7 +276,7 @@ func runCLIWithRoot(t *testing.T, args []string, env map[string]string, rootPath
 // # How it works
 //
 // The function constructs an options value with the injected
-// Config, then calls executeWithOptions. The mechanics mirror
+// Config, then calls runWithOptions. The mechanics mirror
 // runCLI; the only difference is the Config field.
 //
 // # Threading the Config
@@ -311,7 +322,7 @@ func runCLIWithConfig(
 		config:   cfg,
 	}
 
-	code := executeWithOptions(opts)
+	code, _ := runWithOptions(context.Background(), opts)
 
 	return testRun{
 		exitCode: code,

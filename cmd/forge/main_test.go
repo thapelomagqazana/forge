@@ -3,10 +3,36 @@
 //
 // These are not behavioural tests of the binary. They are structural
 // tests of the source code, ensuring the entry point remains minimal
-// and correctly wired as required by WBS 2.2.1.
+// and correctly wired as required by WBS 2.2.1 and extended by WBS
+// 11.3.1.
 //
 // Behavioural tests of the binary live in binary_integration_test.go
 // and are gated behind the `integration` build tag.
+//
+// # The two WBS items
+//
+//   - WBS 2.2.1 froze the entry point's minimality: one function,
+//     one os.Exit, two imports, no logic.
+//
+//   - WBS 11.3.1 (ADR-020) added signal handling. The entry point
+//     installs a signal-aware context and passes it to cli.Run.
+//     The addition is documented in the file's own docstring and
+//     in docs/architecture/exit-boundary.md.
+//
+// The tests below enforce both invariants. The three tests that
+// needed updating for WBS 11.3.1 are:
+//
+//   - TestMainGo_ImportsAtMostTwoPackages, which now permits four
+//     imports (os, os/signal, syscall, internal/cli).
+//
+//   - TestMainGoNoForbiddenPatterns, whose "defer statement" check
+//     is relaxed to permit the one deferred stop() call that
+//     unregisters the signal handler.
+//
+//   - TestMainGo_ContainsExactlyOneDeferredCall, which is a new
+//     test that pins the deferred call's shape so that a future
+//     change cannot add a second defer without an explicit edit to
+//     this test.
 package main_test
 
 import (
@@ -197,9 +223,36 @@ func TestMainGo_ContainsExactlyOneOsExit(t *testing.T) {
 	}
 }
 
-// TestMainGo_ImportsAtMostTwoPackages verifies AC4: the file imports
-// exactly "os" and the internal/cli package, and nothing else.
-func TestMainGo_ImportsAtMostTwoPackages(t *testing.T) {
+// TestMainGo_ImportsTheApprovedPackages verifies AC4 (as extended by
+// WBS 11.3.1): the file imports exactly the four packages the entry
+// point's contract permits.
+//
+// # The approved imports
+//
+//   - "context":            for context.Background(), the parent of
+//     the signal-aware context.
+//   - "os":                 for os.Exit and os.Interrupt.
+//   - "os/signal":          for signal.NotifyContext.
+//   - "syscall":            for syscall.SIGTERM.
+//   - internal/cli:         for cli.Run.
+//
+// That is five entries (four standard-library packages plus the
+// internal one), but the test's name reads "ApprovedPackages"
+// rather than "AtMostN" because the number grew: WBS 2.2.1's
+// "at most two" is superseded by WBS 11.3.1's set of five. The
+// test asserts set membership, not count; a future WBS that adds
+// a sixth package updates this test in the same commit.
+//
+// # Why a set, not a count
+//
+// The count-based assertion ("at most two") was a useful proxy for
+// the invariant when the set was small and the invariant was
+// "minimality". The set-based assertion ("exactly these") is a
+// stronger statement: it names the packages the entry point may
+// import, so a future contributor who adds `fmt` is rejected at
+// the membership check, not just at the count. The set-based form
+// is the one the invariant deserves.
+func TestMainGo_ImportsTheApprovedPackages(t *testing.T) {
 	t.Parallel()
 
 	fset := token.NewFileSet()
@@ -208,32 +261,62 @@ func TestMainGo_ImportsAtMostTwoPackages(t *testing.T) {
 		t.Fatalf("parse %s: %v", mainGoPath, err)
 	}
 
-	const (
-		expectedOs  = `"os"`
-		expectedCli = `"github.com/thapelomagqazana/forge/internal/cli"`
-	)
-
-	allowed := map[string]bool{
-		expectedOs:  true,
-		expectedCli: true,
+	allowed := map[string]string{
+		`"context"`:   "WBS 11.3.1 — context.Background for the signal-aware context",
+		`"os"`:        "WBS 2.2.1 — os.Exit; WBS 11.3.1 — os.Interrupt",
+		`"os/signal"`: "WBS 11.3.1 — signal.NotifyContext for SIGINT/SIGTERM",
+		`"syscall"`:   "WBS 11.3.1 — syscall.SIGTERM",
+		`"github.com/thapelomagqazana/forge/internal/cli"`: "WBS 2.2.1 — cli.Run",
 	}
 
+	// Every import must be in the allowlist.
 	for _, imp := range file.Imports {
 		path := imp.Path.Value
-		if !allowed[path] {
-			t.Errorf("AC4 FAIL: forbidden import %s", path)
+		if _, ok := allowed[path]; !ok {
+			t.Errorf("forbidden import %s\n"+
+				"The entry point may import only the packages named in "+
+				"the allowed map. Adding a new import requires an ADR "+
+				"and an update to this test.", path)
 		}
 	}
 
-	if len(file.Imports) > 2 {
-		t.Fatalf("AC4 FAIL: expected at most 2 imports, found %d",
-			len(file.Imports))
+	// Every allowed import must be present. A missing import means
+	// the entry point no longer performs the action the import
+	// enables; the test reports the missing package so the
+	// contributor can decide whether the action should be removed.
+	present := make(map[string]bool, len(file.Imports))
+	for _, imp := range file.Imports {
+		present[imp.Path.Value] = true
+	}
+	for path, reason := range allowed {
+		if !present[path] {
+			t.Errorf("expected import %s is missing (%s)", path, reason)
+		}
 	}
 }
 
 // TestMainGo_LineBudget verifies AC5: the total line count of main.go
 // is within budget. The budget is 20 lines of *code*; comments and
 // blank lines are excluded from the count.
+//
+// # The budget grew in WBS 11.3.1
+//
+// The WBS 2.2.1 budget was 20 lines, chosen to leave headroom over
+// the canonical implementation's six lines. WBS 11.3.1 added the
+// signal-aware context installation, which costs about ten lines
+// of code (the signal.NotifyContext call and the os.Exit call).
+// The new canonical implementation is around 12 lines; the budget
+// stays at 20 to preserve the invariant's intent: the entry point
+// must remain small enough that a reader can hold it in their
+// head.
+//
+// # Why the budget did not grow
+//
+// A budget that grows whenever the code grows is not a budget. The
+// WBS 11.3.1 addition fits inside the existing budget; a future
+// WBS that does not fit must either simplify the entry point or
+// argue for a larger budget in an ADR. The default is to keep the
+// budget fixed.
 func TestMainGo_LineBudget(t *testing.T) {
 	t.Parallel()
 
@@ -255,15 +338,6 @@ func TestMainGo_LineBudget(t *testing.T) {
 		codeLines++
 	}
 
-	// The canonical implementation has around 6 lines of code:
-	//   1: package main
-	//   2: import (
-	//   3: "os"
-	//   4: internal/cli import
-	//   5: )
-	//   6: func main() { os.Exit(cli.Execute()) }
-	//
-	// A budget of 20 gives headroom without permitting logic.
 	const budget = 20
 	if codeLines > budget {
 		t.Fatalf("AC5 FAIL: %d lines of code exceed budget %d",
@@ -313,6 +387,52 @@ func TestMainGoSyntaxIsValid(t *testing.T) {
 	}
 }
 
+// TestMainGo_ContainsExactlyOneDeferredCall verifies the WBS 11.3.1
+// invariant that the entry point contains exactly one deferred
+// call: the `defer stop()` that unregisters the signal handler.
+//
+// # Why the deferred call is permitted
+//
+// WBS 2.2.1's structural tests forbade defer statements. The
+// prohibition was correct when the entry point did nothing but
+// call cli.Execute and os.Exit: a defer in that code would be
+// either dead or a sign that logic had leaked into main. WBS
+// 11.3.1 adds the signal.NotifyContext install, whose stop
+// function must be deferred so that the handler is unregistered
+// before the process exits. The defer is not logic; it is the
+// resource-cleanup half of the signal registration.
+//
+// # Why exactly one
+//
+// A second defer would be a sign that a second resource is being
+// acquired. The entry point's approved resources are the signal
+// handler (whose release is deferred) and the CLI's own state
+// (released inside cli.Run, not here). A future WBS that adds a
+// second resource requiring deferred cleanup must add a test for
+// it in the same commit; this test's strictness is what forces
+// the addition to be deliberate.
+func TestMainGo_ContainsExactlyOneDeferredCall(t *testing.T) {
+	t.Parallel()
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, mainGoPath, nil, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", mainGoPath, err)
+	}
+
+	var deferCount int
+	ast.Inspect(file, func(n ast.Node) bool {
+		if _, ok := n.(*ast.DeferStmt); ok {
+			deferCount++
+		}
+		return true
+	})
+
+	if deferCount != 1 {
+		t.Fatalf("expected exactly 1 deferred call, found %d", deferCount)
+	}
+}
+
 // =============================================================================
 // Forbidden constructs (AST-based)
 // =============================================================================
@@ -330,6 +450,15 @@ func TestMainGoSyntaxIsValid(t *testing.T) {
 // Each check below looks for a specific syntax tree node type. Adding a
 // new forbidden pattern is a matter of adding one entry to the checks
 // slice.
+//
+// # The defer prohibition was relaxed in WBS 11.3.1
+//
+// The list no longer includes "defer statement" as a forbidden
+// pattern. WBS 11.3.1 added the `defer stop()` call that
+// unregisters the signal handler; the defer is the correct
+// mechanism for that cleanup. The dedicated test
+// TestMainGo_ContainsExactlyOneDeferredCall pins the count at one;
+// this test no longer needs to forbid the construct entirely.
 func TestMainGoNoForbiddenPatterns(t *testing.T) {
 	t.Parallel()
 
@@ -350,13 +479,6 @@ func TestMainGoNoForbiddenPatterns(t *testing.T) {
 	}
 
 	checks := []astCheck{
-		{
-			name: "defer statement",
-			match: func(n ast.Node) bool {
-				_, ok := n.(*ast.DeferStmt)
-				return ok
-			},
-		},
 		{
 			name: "go statement (goroutine)",
 			match: func(n ast.Node) bool {
@@ -456,6 +578,19 @@ func TestMainGoNoForbiddenPatterns(t *testing.T) {
 
 // TestMainGo_DocCommentExists verifies that main.go includes the package
 // documentation comment describing the invariant.
+//
+// # The phrases checked
+//
+// Three phrases from the file's docstring are load-bearing:
+//
+//   - "Command forge is the Forge CLI" — the package's identity.
+//   - "This file must remain minimal" — the invariant's headline.
+//   - "All logic belongs in internal/cli" — the invariant's substance.
+//
+// WBS 11.3.1 added a fourth phrase, "The exit boundary (WBS 11.3.1,
+// ADR-020)", which this test checks as well. A future change that
+// removes the section would fail the test and force the removal to
+// be deliberate.
 func TestMainGo_DocCommentExists(t *testing.T) {
 	t.Parallel()
 
@@ -469,6 +604,10 @@ func TestMainGo_DocCommentExists(t *testing.T) {
 		"Command forge is the Forge CLI",
 		"This file must remain minimal",
 		"All logic belongs in internal/cli",
+		// WBS 11.3.1 added the exit-boundary section. The section
+		// documents the single-os.Exit rule and the signal
+		// handling; its presence is part of the file's contract.
+		"The exit boundary (WBS 11.3.1, ADR-020)",
 	}
 
 	for _, phrase := range requiredPhrases {

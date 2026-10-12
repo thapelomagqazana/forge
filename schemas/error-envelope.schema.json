@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forge-cli.dev/schemas/error-envelope.schema.json",
+  "title": "Forge JSON Error Envelope",
+  "description": "The JSON document Forge writes to stdout when a command fails with --format json. Every field is additive: a future release may add new fields, but never removes or renames an existing one. The schemaVersion field is a stability marker for the envelope's shape. Authoritative for tooling that parses Forge's JSON output. Human-readable counterpart: docs/reference/output-streams.md. Decision records: ADR-018 (exit code taxonomy), ADR-019 (exit code semantics).",
+  "type": "object",
+  "required": ["schemaVersion", "exitCode", "error"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "description": "Stability marker for the envelope's shape. Incremented on a breaking change (a field's meaning or type changes). A new field does not increment the version.",
+      "enum": ["1"]
+    },
+    "exitCode": {
+      "type": "integer",
+      "description": "The process exit code. Always in [0, 255]. Mirrors the value the process returns to the operating system.",
+      "minimum": 0,
+      "maximum": 255
+    },
+    "error": {
+      "type": "object",
+      "description": "The error's structured data. Mirrors the *forgeerr.Error type's observable API.",
+      "required": ["code", "message", "category"],
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "The registered error code. Always a member of the error code registry (see docs/reference/error-codes.md).",
+          "pattern": "^FORGE_[A-Z][A-Z0-9_]*$"
+        },
+        "message": {
+          "type": "string",
+          "description": "A short, user-facing description of the error. Single line, no trailing period, at most 80 bytes.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "category": {
+          "type": "string",
+          "description": "The error's category. Always one of the closed taxonomy's members.",
+          "enum": [
+            "CLI",
+            "CONFIG",
+            "FILESYSTEM",
+            "VALIDATION",
+            "TEMPLATE",
+            "SECURITY",
+            "INTERNAL"
+          ]
+        },
+        "context": {
+          "type": "object",
+          "description": "Error-specific key-value pairs. Every code documents its own context keys in docs/reference/error-codes.md. Consumers must not depend on specific keys unless the code's documentation names them.",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "remediation": {
+          "type": "string",
+          "description": "User-facing guidance for resolving the error. Absent when the error has no remediation.",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}
