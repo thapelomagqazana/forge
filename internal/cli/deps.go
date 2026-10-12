@@ -96,6 +96,15 @@ type Dependencies struct {
 	// config.Config, which is an empty struct. WBS 8.2.1 populates
 	// the struct with fields; commands that read those fields will
 	// see the resolved values.
+	//
+	// The value comes from one of two sources, decided by
+	// buildDependencies:
+	//
+	//   - opts.config, when the caller set it (the test-injection
+	//     path).
+	//   - The zero value of config.Config, when opts.config is
+	//     nil (the production placeholder path, until WBS 8.4
+	//     replaces it with the loader).
 	Config *config.Config
 
 	// Logger is the diagnostic logger.
@@ -325,18 +334,48 @@ func newLogger(w io.Writer) Logger {
 // the transformation next to the value it transforms makes the
 // boundary explicit.
 //
+// # Config field resolution
+//
+// The Config field has two sources, decided here:
+//
+//   - If opts.config is non-nil, it is used directly. This is the
+//     test-injection path: a test sets opts.config to a pre-built
+//     *config.Config, and the command tree sees that value.
+//
+//   - If opts.config is nil, the zero value of config.Config is
+//     used. This is the production placeholder: the loader has
+//     not been wired in yet (WBS 8.4.x), and the zero value is
+//     the correct value. When the loader lands, this branch is
+//     replaced with a call to the loader.
+//
+// The nil-check is the only place in buildDependencies where a
+// field's value depends on whether the caller set it. Every other
+// field either has a default that is unconditionally used (Logger,
+// FS) or is passed through unchanged (Stdout, Stderr, Env,
+// RootPath).
+//
 // # Phase 2 placeholders
 //
-// Config is the zero value of config.Config. WBS 8.4 replaces this
-// with a call to the configuration loader. FS is an OS-backed
-// implementation bound to rootPath; WBS 13.0 completes boundary
-// enforcement. Logger is a slog-backed implementation; WBS 12.0
-// wires levels to flags. None of these changes alter the interface.
+// FS is an OS-backed implementation bound to rootPath; WBS 13.0
+// completes boundary enforcement. Logger is a slog-backed
+// implementation; WBS 12.0 wires levels to flags. Neither change
+// alters the interface commands use.
 func buildDependencies(opts options) Dependencies {
+	// Config: prefer the injected value; fall back to the zero
+	// value. See the docstring's "Config field resolution"
+	// section.
+	//
+	// The local variable is used rather than an inline
+	// conditional so that the fallback is a single, reviewable
+	// statement. A reader who wants to know where Config comes
+	// from reads these four lines.
+	cfg := opts.config
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+
 	return Dependencies{
-		// Config is the zero value in Phase 2. WBS 8.4 replaces
-		// this with a call to the configuration loader.
-		Config: &config.Config{},
+		Config: cfg,
 
 		// Logger writes to stderr, so that stdout remains clean
 		// for command output.

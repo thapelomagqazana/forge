@@ -721,6 +721,16 @@ var expectedConstants = map[string]string{
 	"FlagVerbose": "WBS 5.3.1 — name of the --verbose global flag",
 	"FlagQuiet":   "WBS 5.3.1 — name of the --quiet global flag",
 	"FlagConfig":  "WBS 5.3.1 — name of the --config global flag",
+
+	// WBS 9.4.1 adds three exported constants for the --format
+	// flag's name and value set. They are exported because the
+	// flag's registration (flags.go), its reader (formatValue),
+	// and the per-command dispatch (config.go) reference them by
+	// name; the values themselves are part of the CLI's public
+	// surface (text, json).
+	"FlagFormat":     "WBS 9.4.1 — name of the --format global flag",
+	"FlagFormatText": "WBS 9.4.1 — value \"text\" for the --format flag",
+	"FlagFormatJSON": "WBS 9.4.1 — value \"json\" for the --format flag",
 }
 
 // TestOnlyExpectedConstantsAreExported verifies that the package

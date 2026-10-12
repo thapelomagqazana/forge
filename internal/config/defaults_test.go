@@ -12,6 +12,15 @@
 // values. The tests do not construct a Config value or read a
 // source; the function is pure and its contract is the return
 // value.
+//
+// # Non-comparability of Config
+//
+// WBS 9.2.2 added an unexported `sources map[string]Source`
+// field to Config. A map is not comparable, so Config is no
+// longer comparable with ==. Tests that compare two Config
+// values use the configEqual helper (defined in flags_test.go,
+// same package), which compares fields field-by-field and then
+// compares the recorded sources via SourceFor.
 package config
 
 import (
@@ -79,12 +88,19 @@ func TestDefaults_SourcePathIsEmpty(t *testing.T) {
 // The property is a consequence of the function being pure: it
 // reads no global state and writes nothing. The test pins the
 // property in case a future change introduces a global.
+//
+// # Why configEqual and not ==
+//
+// WBS 9.2.2 added an unexported sources map to Config, making
+// the struct non-comparable. The comparison is field-by-field
+// via configEqual, which also compares the sources maps via
+// SourceFor.
 func TestDefaults_IsPure(t *testing.T) {
 	t.Parallel()
 
 	first := Defaults()
 	second := Defaults()
-	if first != second {
+	if !configEqual(first, second) {
 		t.Errorf("Defaults is not pure:\nfirst:  %+v\nsecond: %+v",
 			first, second)
 	}
@@ -102,7 +118,7 @@ func TestDefaults_IsDeterministic(t *testing.T) {
 	want := Defaults()
 	for i := 0; i < 10; i++ {
 		got := Defaults()
-		if got != want {
+		if !configEqual(got, want) {
 			t.Errorf("call %d returned %+v; want %+v", i, got, want)
 		}
 	}
@@ -122,12 +138,20 @@ func TestDefaults_IsDeterministic(t *testing.T) {
 // consider whether "use the default" and "use the zero value" are
 // the same concept (they are not: the zero value means "no
 // preference", the default means "info" and "text").
+//
+// # Why configEqual and not ==
+//
+// Config is non-comparable (WBS 9.2.2). The comparison is
+// field-by-field via configEqual. The test's intent is "the
+// defaults are not indistinguishable from the zero value", which
+// configEqual expresses directly: it returns true only when both
+// the fields and the recorded sources agree.
 func TestDefaults_ZeroValueWouldBeRejected(t *testing.T) {
 	t.Parallel()
 
 	defaults := Defaults()
 	var zero Config
-	if defaults == zero {
+	if configEqual(defaults, zero) {
 		t.Error("Defaults() returned the zero value; " +
 			"the defaults must set LogLevel and OutputFormat")
 	}

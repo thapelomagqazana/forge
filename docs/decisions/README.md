@@ -12,7 +12,10 @@ This index is auto-generated. Do not edit it manually.
 
 | ID | Title | Date |
 |----|-------|------|
-| [ADR-007](./ADR-007-configuration-foundation-precedence-discovery-and-error-taxonomy.md) | ADR-007: 'Configuration Foundation — Precedence, Discovery, and Error Taxonomy' | 2026-10-11 |
+| [ADR-010](./ADR-010-forge-config-interaction-with-the-global-flags.md) | ADR-010: 'forge config Interaction with the Global Flags' | 2026-10-12 |
+| [ADR-009](./ADR-009-forge-config-output-format.md) | ADR-009: 'forge config Output Format' | 2026-10-12 |
+| [ADR-008](./ADR-008-forge-config-command-scope.md) | ADR-008: 'forge config Command Scope' | 2026-10-12 |
+| [ADR-007](./ADR-007-configuration-foundation-precedence-discovery-and-error-taxonomy.md) | ADR-007: Configuration Foundation — Precedence, Discovery, and Error Taxonomy | 2026-10-11 |
 | [ADR-006](./ADR-006-help-and-cli-ux-contracts-invocation-matrix-output-formats-stream-boundary-and-phase-2-presentation-policy.md) | ADR-006: Help and CLI UX Contracts — Invocation Matrix, Output Formats, Stream Boundary, and Phase 2 Presentation Policy | 2026-10-11 |
 | [ADR-005](./ADR-005-version-command-structure-output-formats-and-stability-guarantees.md) | ADR-005: Version Command Structure, Output Formats, and Stability Guarantees | 2026-10-10 |
 | [ADR-004](./ADR-004-root-command-identity-and-behavior-contracts.md) | ADR-004: Root Command Identity and Behavior Contracts | 2026-10-10 |

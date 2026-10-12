@@ -1,0 +1,23 @@
+Display the resolved CLI configuration for the current invocation.
+
+The output reflects all precedence layers: CLI flags, environment
+variables, the config file, and built-in defaults. Each field is
+annotated with its effective source.
+
+Use --path to print only the resolved config file location.
+
+Usage:
+  forge config [flags]
+
+Examples:
+  forge config
+  forge config --path
+  forge config --format json
+
+Flags:
+  -h, --help   help for config
+
+Global Flags:
+      --config string   config file (default: ./forge.yaml)
+      --format string   output format: text|json (default "text")
+      --no-color        disable color output
