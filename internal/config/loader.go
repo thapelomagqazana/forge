@@ -9,8 +9,8 @@
 //
 //	path
 //	  -> Read file (with 1 MiB size limit)
+//	  -> Check encoding (BOM, UTF-8)
 //	  -> Parse YAML (strict mode: unknown fields rejected)
-//	  -> Unmarshal into Config
 //	  -> Validate values (enum check, case-insensitive)
 //	  -> Return Config
 //
@@ -37,34 +37,49 @@
 // # Where the errors come from
 //
 // The loader uses the constructors from errors.go (WBS 8.5.1).
-// Every failure produces an error whose sentinel is one of the
-// eight taxonomy categories:
+// Every failure produces a *forgeerr.Error with category
+// CategoryConfig (WBS 10.5.2). The taxonomy's eight codes
+// classify the failure:
 //
-//	E1  ErrConfigNotFound          missing file
-//	E2  ErrConfigPermission        read failure
-//	E3  ErrConfigMalformed         invalid YAML syntax
-//	E4  ErrConfigUnknownField      unknown YAML key
-//	E5  ErrConfigInvalidType       type mismatch
-//	E6  ErrConfigInvalid           invalid value (enum, parse)
-//	E7  ErrConfigTooLarge          file exceeds 1 MiB
-//	E8  ErrConfigInvalidEncoding   BOM or non-UTF-8
+//	E1  CodeConfigNotFound          missing file
+//	E2  CodeConfigPermission        read failure
+//	E3  CodeConfigMalformed         invalid YAML syntax
+//	E4  CodeConfigUnknownField      unknown YAML key
+//	E5  CodeConfigInvalidType       type mismatch
+//	E6  CodeConfigInvalidValue      invalid value (enum, trailing)
+//	E7  CodeConfigTooLarge          file exceeds 1 MiB
+//	E8  CodeConfigInvalidEncoding   BOM or non-UTF-8
 //
-// The loader uses the category that best describes each failure.
-// The CLI's classifier reads the error's Category() method; every
-// config error returns "config" and maps to ExitConfig (3).
+// The loader uses the code that best describes each failure. The
+// CLI's classifier reads the error's Category() method; every
+// config error returns CategoryConfig and maps to ExitConfig (3).
 //
-// The parse step's error classification is deliberately coarse:
-// yaml.v3's error types are not always distinguishable without
-// parsing the error's message, so the loader uses E6 as the
-// catch-all for parse failures. A follow-up WBS item can refine
-// the classification to E3, E4, or E5 when yaml.v3 exposes the
-// information structurally.
+// # Why E3 for syntax errors and E6 for value errors
+//
+// A YAML syntax error is a problem with the file's structure: the
+// parser cannot produce a document. It is classified as E3
+// (CodeConfigMalformed). The parser's error message names the
+// line and column; the loader extracts them into the error's
+// context.
+//
+// A value error is a problem with a field's content: the
+// document parsed, but a value is not in the field's allowed set.
+// It is classified as E6 (CodeConfigInvalidValue). The loader
+// names the field, the offending value, and the allowed set in
+// the error's context.
+//
+// The two categories are distinct because the user's remediation
+// is different: a syntax error is fixed by editing the YAML; a
+// value error is fixed by choosing an allowed value. Classifying
+// both as E6 (as an earlier version did) would hide the
+// distinction.
 //
 // # No package-level mutable state
 //
-// This file declares constants and functions. It declares no
-// package-level variables. The YAML library (yaml.v3) is imported
-// as a direct dependency; its own package-level state is the
+// This file declares constants and functions. It declares one
+// package-level variable, utf8BOM, which is read-only after
+// initialization. The YAML library (yaml.v3) is imported as a
+// direct dependency; its own package-level state is the
 // library's concern.
 package config
 
@@ -73,6 +88,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -129,7 +145,7 @@ var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
 // The function implements the loader's pipeline:
 //
 //  1. If path is empty, the function returns Defaults() with
-//     SourcePath set to "".
+//     SourcePath set to "". An empty path means "no config file".
 //
 //  2. The function opens the file at path. A missing file
 //     produces an E1 error. The file is read through an
@@ -141,9 +157,8 @@ var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
 //
 //  4. The function parses the file's content with yaml.v3's
 //     decoder, using the KnownFields(true) option to reject
-//     unknown fields. A parse error (malformed YAML, unknown
-//     field, type mismatch, duplicate key, trailing content)
-//     produces an E6 error.
+//     unknown fields. A syntax error produces an E3 error with
+//     the line and column (when available) in the context.
 //
 //  5. The function validates the parsed Config's enum values.
 //     An invalid LogLevel or OutputFormat produces an E6 error.
@@ -284,9 +299,28 @@ func readConfigFile(path string) ([]byte, error) {
 //
 // The function creates a yaml.v3 Decoder over the data, sets the
 // KnownFields(true) option, and decodes the data into a Config
-// value. A decode error (malformed YAML, unknown field, type
-// mismatch, duplicate key, trailing content) produces an E6
-// error.
+// value.
+//
+// Error classification:
+//
+//   - A syntax error (malformed YAML, duplicate key) is E3
+//     (CodeConfigMalformed). The parser's error message names
+//     the line and column; the loader extracts them into the
+//     error's context under the keys "line" and "column".
+//
+//   - An unknown field is E4 (CodeConfigUnknownField). The
+//     strict decoder rejects the field before unmarshalling;
+//     the field's name is in the parser's error message and is
+//     extracted into the error's context under the key "field".
+//
+//   - A type mismatch is E5 (CodeConfigInvalidType). The
+//     decoder's error names the field and the expected type;
+//     the field's name is extracted into the error's context.
+//
+//   - Trailing content after the first document is E6
+//     (CodeConfigInvalidValue). The content is not part of the
+//     schema, and the error names the fact that the file has
+//     more than one document.
 //
 // # Why KnownFields(true)
 //
@@ -310,17 +344,14 @@ func readConfigFile(path string) ([]byte, error) {
 // Config. The caller (Load) applies the defaults' semantics at
 // a higher layer.
 //
-// # Error classification
+// # Error classification stability
 //
-// The function classifies every parse error as E6. The
-// alternative — distinguishing yaml.v3's error types and using
-// E3, E4, or E5 — requires parsing the error's message or its
-// concrete type, both of which vary by yaml.v3 version. The
-// classification the taxonomy promises is "a config error"; the
-// specific code is an internal detail the CLI does not surface
-// (the CLI's exit code is ExitConfig (3) for all eight codes).
-// A follow-up WBS item can refine the classification without
-// changing the CLI's behaviour.
+// The classification of yaml.v3's errors is textual (the
+// library does not export a structured error type for parse
+// failures). The recognized prefixes are documented on
+// classifyYAMLError; a yaml.v3 upgrade that changes a message
+// fails the test TestLoad_MalformedYAMLIncludesLineNumber, which
+// asserts that a syntax error is classified as E3.
 //
 // # The path parameter
 //
@@ -338,22 +369,192 @@ func parseConfig(path string, data []byte) (Config, error) {
 		if errors.Is(err, io.EOF) {
 			return Config{}, nil
 		}
-		return Config{}, NewConfigInvalid("yaml", err.Error(), nil, path)
+		return Config{}, classifyYAMLError(path, err)
 	}
 
 	// Check for trailing content. A second Decode call that
 	// returns a non-EOF result means the file has a second
 	// YAML document (or trailing garbage), which the loader
 	// rejects.
+	//
+	// The trailing-content error is E6 because the file's
+	// structure is valid; the problem is that the file has
+	// more than the schema expects. This is closer to a
+	// "value" problem (the file's content is not what the
+	// schema permits) than a syntax problem.
 	var trailing any
 	if err := dec.Decode(&trailing); err == nil {
 		return Config{}, NewConfigInvalid(
 			"yaml", "trailing content after YAML document", nil, path)
 	} else if !errors.Is(err, io.EOF) {
-		return Config{}, NewConfigInvalid("yaml", err.Error(), nil, path)
+		// The trailing decode failed with a syntax error;
+		// classify it as such.
+		return Config{}, classifyYAMLError(path, err)
 	}
 
 	return cfg, nil
+}
+
+// classifyYAMLError classifies a yaml.v3 decode error as one of
+// the config taxonomy's codes.
+//
+// # The classification
+//
+// The function recognizes three shapes of yaml.v3 errors:
+//
+//  1. Unknown field: the error message contains "field <name>
+//     not found in type". The function extracts the field name
+//     and constructs an E4 error.
+//
+//  2. Type mismatch: the error message contains "cannot
+//     unmarshal" or "cannot decode". The function extracts the
+//     field name (when present) and constructs an E5 error.
+//
+//  3. Syntax error: everything else. The function extracts the
+//     line and column (when present in the message) and
+//     constructs an E3 error.
+//
+// # Why textual classification
+//
+// yaml.v3 does not export structured error types for the three
+// shapes. The shapes are distinguished by the error message's
+// content. The classification is therefore textual and is
+// documented on each recognized prefix.
+//
+// # Stability
+//
+// A yaml.v3 upgrade that changes a message shape fails the tests
+// that exercise the affected classification. The failure points
+// at the classification function, and the fix is localized to
+// the prefix list below.
+func classifyYAMLError(path string, err error) error {
+	msg := err.Error()
+
+	// Unknown field: yaml.v3's message is
+	// "line N: field <name> not found in type config.Config".
+	if strings.Contains(msg, "not found in type") {
+		field := extractQuotedOrWord(msg, "field ", " not found")
+		return NewConfigUnknownField(path, field, err)
+	}
+
+	// Type mismatch: yaml.v3's message is
+	// "line N: cannot unmarshal !!str `...` into int".
+	if strings.Contains(msg, "cannot unmarshal") ||
+		strings.Contains(msg, "cannot decode") {
+		field := extractYAMLFieldName(msg)
+		return NewConfigInvalidType(path, field, err)
+	}
+
+	// Syntax error: everything else. Extract the line and
+	// column when the message names them.
+	line, col := parseYAMLErrorLocation(err)
+	return NewConfigMalformed(path, line, col, err)
+}
+
+// extractQuotedOrWord extracts the word between the given prefix
+// and suffix in msg.
+//
+// The helper is used by classifyYAMLError to pull a field name
+// out of a yaml.v3 message. The extraction is textual; it is not
+// intended to be a general-purpose parser. When the prefix or
+// suffix is not present, the function returns the empty string.
+func extractQuotedOrWord(msg, prefix, suffix string) string {
+	i := strings.Index(msg, prefix)
+	if i < 0 {
+		return ""
+	}
+	rest := msg[i+len(prefix):]
+	j := strings.Index(rest, suffix)
+	if j < 0 {
+		return ""
+	}
+	return strings.TrimSpace(rest[:j])
+}
+
+// extractYAMLFieldName extracts a field name from a yaml.v3 type
+// mismatch message.
+//
+// yaml.v3's type mismatch messages do not always name the
+// offending field. When the field name is present (as a quoted
+// string or as a struct field name), the helper returns it. When
+// it is not, the helper returns "yaml" as a placeholder; the
+// error's message still names the type mismatch, and the CLI's
+// exit code is unaffected by the placeholder.
+func extractYAMLFieldName(msg string) string {
+	// The message often contains "into <type>" at the end; the
+	// field name, when present, precedes it. The heuristic
+	// looks for "field " followed by a name.
+	if name := extractQuotedOrWord(msg, "field ", " "); name != "" {
+		return name
+	}
+	return "yaml"
+}
+
+// parseYAMLErrorLocation extracts the line and column from a
+// yaml.v3 parse error's message.
+//
+// yaml.v3's error messages have one of two forms:
+//
+//	yaml: line N: <description>
+//	yaml: line N, column M: <description>
+//
+// The function returns (0, 0) when the message does not match
+// either form. A zero line or column is treated by
+// NewConfigMalformed as "unknown"; the constructor then omits
+// the corresponding context key.
+//
+// # Why the extraction is textual
+//
+// yaml.v3 does not export a structured error type for parse
+// failures; the error is a *yaml.TypeError or a plain
+// errors.errorString depending on the failure. The line and
+// column are embedded in the message. The textual extraction
+// is the only way to recover them without vendoring the
+// library's internal types.
+//
+// # Stability
+//
+// The two message forms are stable across yaml.v3's minor
+// releases. A major release that changes them would fail the
+// test TestLoad_MalformedYAMLIncludesLineNumber, which asserts
+// that a syntax error's context includes a "line" key.
+func parseYAMLErrorLocation(err error) (line, col int) {
+	msg := err.Error()
+
+	// Find "line N" in the message.
+	const linePrefix = "line "
+	i := strings.Index(msg, linePrefix)
+	if i < 0 {
+		return 0, 0
+	}
+	rest := msg[i+len(linePrefix):]
+
+	// Read the digits.
+	j := 0
+	for j < len(rest) && rest[j] >= '0' && rest[j] <= '9' {
+		j++
+	}
+	if j == 0 {
+		return 0, 0
+	}
+	line, _ = strconv.Atoi(rest[:j])
+
+	// Look for ", column M" immediately after the line number.
+	rest = rest[j:]
+	const colSep = ", column "
+	if !strings.HasPrefix(rest, colSep) {
+		return line, 0
+	}
+	rest = rest[len(colSep):]
+	j = 0
+	for j < len(rest) && rest[j] >= '0' && rest[j] <= '9' {
+		j++
+	}
+	if j == 0 {
+		return line, 0
+	}
+	col, _ = strconv.Atoi(rest[:j])
+	return line, col
 }
 
 // validateConfig validates the parsed Config's enum values and

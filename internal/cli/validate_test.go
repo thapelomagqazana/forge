@@ -26,6 +26,16 @@
 // contract tests might indicate a defect in validateArgs, in
 // executeWithOptions, or in Cobra's dispatch. The two layers together
 // make the failure diagnosable.
+//
+// # The error shape
+//
+// The validator returns *forgeerr.Error values (WBS 10.5.1). The
+// error's Error() method returns "<code>: <message>", so the
+// substring assertions below match the message portion, not the
+// code. A test that wants to assert on the code reads it via
+// errors.As with a *forgeerr.Error target; the tests here assert
+// the message's semantic content, which is what makes them
+// independent of the exact wording the validator chooses.
 package cli
 
 import (
@@ -85,6 +95,25 @@ func TestValidateArgs_AcceptsWellFormedInvocations(t *testing.T) {
 //
 // The cases below name the contract section each rejection
 // implements.
+//
+// # The expected substrings
+//
+// The expected substrings are the semantic phrases from the
+// validator's current messages, not the full messages. Each
+// phrase is stable across flag names (long or short) and is
+// short enough to be robust to small wording changes. The
+// specific flag name is not asserted; the test's own `args`
+// field already names it, and asserting it again would only
+// duplicate the test's input.
+//
+// The phrases:
+//
+//	"flag takes no argument" — the rule for a no-argument flag
+//	                           followed by a positional argument.
+//	"flag requires a value"  — the rule for a flag that requires
+//	                           a value but is not given one.
+//	"unknown help topic"     — the rule for a help topic that is
+//	                           not a known command name.
 func TestValidateArgs_RejectsMalformedInvocations(t *testing.T) {
 	t.Parallel()
 
@@ -97,24 +126,24 @@ func TestValidateArgs_RejectsMalformedInvocations(t *testing.T) {
 		{
 			name:       "help-flag-with-arg",
 			args:       []string{"--help", "version"},
-			wantSubstr: "--help takes no arguments",
+			wantSubstr: "flag takes no argument",
 		},
 		{
 			name:       "help-flag-short-with-arg",
 			args:       []string{"-h", "version"},
-			wantSubstr: "-h takes no arguments",
+			wantSubstr: "flag takes no argument",
 		},
 
 		// Version flag with arg (contract § 4.11, rule 6).
 		{
 			name:       "version-flag-with-arg",
 			args:       []string{"--version", "extra"},
-			wantSubstr: "--version takes no arguments",
+			wantSubstr: "flag takes no argument",
 		},
 		{
 			name:       "version-flag-short-with-arg",
 			args:       []string{"-v", "extra"},
-			wantSubstr: "-v takes no arguments",
+			wantSubstr: "flag takes no argument",
 		},
 
 		// Help topic unknown (contract § 4.10, rule 8).
@@ -127,7 +156,7 @@ func TestValidateArgs_RejectsMalformedInvocations(t *testing.T) {
 		{
 			name:       "config-flag-with-no-value",
 			args:       []string{"--config"},
-			wantSubstr: "--config requires a value",
+			wantSubstr: "flag requires a value",
 		},
 	}
 

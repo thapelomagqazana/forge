@@ -2,11 +2,11 @@
 
 - **Document type:** Model
 - **Status:** Draft
-- **Version:** 0.6.0
+- **Version:** 0.8.0
 - **Author:** @thapelomagqazana
 - **Created:** 2026-10-09
-- **Last Updated:** 2026-10-10
-- **Supersedes:** 0.5.0
+- **Last Updated:** 2026-10-12
+- **Supersedes:** 0.7.0
 - **Superseded by:** —
 
 ---
@@ -31,6 +31,12 @@ This document exists to answer:
 - How are global flags managed?
 - How are malformed invocations rejected before the command tree runs?
 - How are errors structured?
+- How is the ForgeError type structured, categorised, and wrapped?
+- How is the user-facing error format frozen and tested?
+- How is the programmer-facing log format produced?
+- How are secrets redacted from errors?
+- How do verbose and non-verbose modes differ?
+- How is the error boundary integrated with the process exit code?
 - How is logging structured?
 - What does the architecture look like as a diagram?
 - How does this document stay accurate as the code changes?
@@ -147,6 +153,7 @@ Forge is organised into the following top-level modules.
 | **Template** | Domain | Represent and resolve templates | WBS 4.2.1 |
 | **Component** | Domain | Represent and resolve components | WBS 4.2.1 |
 | **Policy** | Domain | Represent and evaluate policies | WBS 4.2.1 |
+| **ForgeErr** | Domain | Canonical error type, taxonomy, registry, wrapping, user format, log format, redaction, verbose modes, boundary integration | WBS 10.1.1, 10.1.2, 10.2.1, 10.3.1, 10.3.2, 10.4.1, 10.4.2, 10.4.3, 10.4.4, 10.5.1, 10.5.2 |
 | **Renderer** | Application | Transform template content into rendered content | WBS 4.2.1 |
 | **Validator** | Application | Evaluate rules against repository state | WBS 4.2.1 |
 | **Update Engine** | Application | Compute and apply safe updates | WBS 4.2.1 |
@@ -172,7 +179,7 @@ results, map to exit codes.
 **Introduced by:** WBS 4.1.1 (single-symbol public surface),
 WBS 4.2.2 (two-boundary execution model), WBS 4.4.1 (command
 registry), WBS 5.2.2 / WBS 5.2.3 (pre-parse validation),
-WBS 5.3.1 (global flags).
+WBS 5.3.1 (global flags), WBS 10.5.1 (error boundary integration).
 
 The CLI module is composed of the files listed in § 13.1.
 
@@ -227,6 +234,7 @@ pure logic.
 - `Template`
 - `Component`
 - `Policy`
+- `ForgeErr`
 
 #### 4.2.4 Configuration
 
@@ -336,6 +344,60 @@ import it without creating a cycle. See § 11.12.
 **Introduced by:** WBS 6.1.1. Relocated from `internal/cli` by
 WBS 4.3.1 to break the import cycle.
 
+#### 4.2.18 ForgeErr
+
+**Responsibility:** Define the canonical error type for Forge, the
+closed category taxonomy, the frozen code registry, the wrapping
+contract, the user-facing format, the programmer-facing log format,
+the redaction policy, the verbose/non-verbose modes, and the
+boundary integration with the process exit code.
+
+**Does not:** Perform I/O. Read configuration. Know about the CLI,
+the application services, or the infrastructure. Import anything
+outside the Go standard library.
+
+**Depends on:** Nothing. It is a **domain-layer leaf** package. It
+sits inside the Domain layer because every other module produces
+errors of its type; it is a leaf because nothing it does requires
+another Forge package.
+
+**Introduced by:**
+
+- WBS 10.1.1 — the `Error` type, its unexported fields, its
+  accessors, and the pure invariant helpers (`validateMessage`,
+  `validateRemediation`, `validateCategory`).
+- WBS 10.1.2 — the frozen constructor API: `New`, `Wrap`,
+  `WithCause`, `WithContext`, `WithRemediation`.
+- WBS 10.2.1 — the closed category taxonomy: seven categories,
+  each with a Code prefix and a process exit code.
+- WBS 10.3.1 — the frozen code registry: 19 Phase 2 codes, each
+  with a category (derived from its prefix), an exit code (derived
+  from its category), an introduced-phase marker, and a deprecation
+  flag.
+- WBS 10.3.2 — the wrapping contract: `Unwrap`, `Is`, and `As`
+  semantics, and the interaction with `errors.Is`, `errors.As`,
+  `fmt.Errorf("%w", ...)`, and `errors.Join`.
+- WBS 10.4.1 — the user-facing format: `Format`, the byte-level
+  rules F1–F12, and the golden-file tests in
+  `testdata/format/`.
+- WBS 10.4.2 — the programmer-facing log format: `LogValue` and the
+  `slog.LogValuer` interface.
+- WBS 10.4.3 — the redaction policy: `redact`, `redactPath`, the
+  frozen secret-keys list, and `AllSecretKeys`.
+- WBS 10.4.4 — the verbose mode: `Options.Verbose`, `Options.Stack`,
+  and the verbose extensions (cause block, stack block, internal
+  context keys, full home paths).
+- WBS 10.5.1 — the boundary integration: the CLI's `Execute` and
+  `executeWithOptions` render through `forgeerr.Format` and derive
+  the exit code from `Category.ExitCode()`; `formatError` and
+  `exitCodeFromError` are deleted.
+- WBS 10.5.2 — the migration of the config package's errors to
+  `*forgeerr.Error` values, and the deletion of the parallel
+  `configError` type.
+
+The package's files are listed in § 13.2. Its public surface is
+listed in § 6.13. Its architectural rules are in § 8.
+
 ---
 
 ## 5. Dependency Direction
@@ -353,7 +415,7 @@ WBS 4.3.1 to break the import cycle.
 │  │  │  Domain Layer                             │  │      │
 │  │  │                                           │  │      │
 │  │  │  Configuration  Blueprint  Template       │  │      │
-│  │  │  Component      Policy                    │  │      │
+│  │  │  Component      Policy      ForgeErr      │  │      │
 │  │  │                                           │  │      │
 │  │  └───────────────────────────────────────────┘  │      │
 │  │                                                 │      │
@@ -378,15 +440,20 @@ WBS 4.3.1 to break the import cycle.
 | CLI | Application | Yes |
 | CLI | Infrastructure (Output, Logging) | Yes |
 | CLI | Version Model | Yes (leaf) |
+| CLI | ForgeErr | Yes |
 | Application | Domain | Yes |
 | Application | Infrastructure | Yes |
 | Application | Version Model | Yes (leaf) |
+| Application | ForgeErr | Yes |
 | Domain | Domain (same layer) | Yes, within submodules |
 | Infrastructure | Domain | Yes (for shared types) |
+| Infrastructure | ForgeErr | Yes |
+| Any Forge package | ForgeErr | Yes |
 | Any | CLI | **No** |
 | Domain | Application | **No** |
 | Domain | Infrastructure (I/O) | **No** |
 | Domain | Version Model | **No** |
+| ForgeErr | Any Forge package | **No** (leaf) |
 | Infrastructure | CLI | **No** |
 | Infrastructure | Version Model | **No** |
 | Version Model | Any Forge package | **No** (leaf) |
@@ -409,6 +476,13 @@ The following are explicitly forbidden:
 - **Any Forge package importing the Version Model.** The Version
   Model is a leaf. Nothing in Forge may import it except the two
   consumers named in § 5.2. See § 11.12.
+- **Constructing a `*forgeerr.Error` outside the `forgeerr`
+  package.** The type's fields are unexported, and the only
+  public ways to create a value are `forgeerr.New`,
+  `forgeerr.Wrap`, and the `WithX` methods. A caller that
+  constructs the struct literally — even if it could — would
+  bypass the invariant checks and produce a malformed error.
+  Every error in Forge must flow through the constructor API.
 
 ### 5.4 Rationale
 
@@ -674,6 +748,147 @@ func Raw() string
 The service is documented in § 11.12 as the reference implementation
 of the handler / service pattern.
 
+### 6.13 ForgeErr
+
+The `ForgeErr` package does not define an interface. It defines a
+concrete type and a fixed set of functions and methods that
+operate on it.
+
+#### The type
+
+```go
+// internal/forgeerr/forgeerr.go
+type Error struct {
+    code        string
+    message     string
+    category    Category
+    cause       error
+    context     map[string]string
+    remediation string
+}
+```
+
+All fields are unexported. The type is immutable after
+construction and safe for concurrent use. `*Error` implements
+`error`, `Unwrap`, `Is`, and `As`.
+
+#### The constructors
+
+```go
+// internal/forgeerr/constructors.go
+func New(category Category, code, message string) *Error
+func Wrap(category Category, code, message string, cause error) *Error
+
+// Fluent builders; each returns a copy of the receiver.
+func (e *Error) WithCause(cause error) *Error
+func (e *Error) WithContext(key, value string) *Error
+func (e *Error) WithRemediation(remediation string) *Error
+```
+
+#### The accessors
+
+```go
+func (e *Error) Code() string
+func (e *Error) Message() string
+func (e *Error) Category() Category
+func (e *Error) Context() map[string]string
+func (e *Error) Remediation() string
+```
+
+#### The taxonomy
+
+```go
+// internal/forgeerr/category.go
+type Category string
+
+const (
+    CategoryCLI        Category = "CLI"
+    CategoryConfig     Category = "CONFIG"
+    CategoryFilesystem Category = "FILESYSTEM"
+    CategoryValidation Category = "VALIDATION"
+    CategoryTemplate   Category = "TEMPLATE"
+    CategorySecurity   Category = "SECURITY"
+    CategoryInternal   Category = "INTERNAL"
+)
+
+func AllCategories() []Category
+func (c Category) Prefix() string
+func (c Category) ExitCode() int
+func (c Category) String() string
+```
+
+#### The code registry
+
+```go
+// internal/forgeerr/codes.go
+type Code string
+
+const (
+    CodeCLIUnknownCommand Code = "FORGE_CLI_UNKNOWN_COMMAND"
+    // ... 18 more constants
+)
+
+func AllCodes() []Code
+func Lookup(c Code) (introduced string, deprecated, ok bool)
+func IsRegistered(c Code) bool
+func (c Code) Category() (Category, bool)
+```
+
+#### The wrapping contract
+
+```go
+func (e *Error) Unwrap() error
+func (e *Error) Is(target error) bool
+func (e *Error) As(target any) bool
+```
+
+The semantics of these three methods are frozen in WBS 10.3.2 and
+documented in § 8.5.
+
+#### The user-facing format
+
+```go
+// internal/forgeerr/format.go
+type Options struct {
+    NoColor bool
+    Redact  bool
+    Verbose bool
+    Stack   []string
+}
+
+func Format(err error, opts Options) string
+```
+
+`Format` renders a `*Error` (or an error that wraps one) into the
+frozen user-facing format. Its rules (F1–F12) are documented in
+§ 8.7. The verbose mode is documented in § 8.13. The redaction
+policy is documented in § 8.12.
+
+#### The log format
+
+```go
+// internal/forgeerr/log.go
+func (e *Error) LogValue() slog.Value
+```
+
+`LogValue` implements `slog.LogValuer`, making
+`slog.Any("error", err)` produce a structured entry. Its shape is
+documented in § 8.11.
+
+#### The redaction policy
+
+```go
+// internal/forgeerr/redact.go
+func redact(key, value string) string
+func redactPath(path string) string
+func redactPathFor(path string, verbose bool) string
+func AllSecretKeys() []string
+```
+
+`redact` and `redactPath` implement the frozen policy; `AllSecretKeys`
+returns a copy of the secret-keys list. The policy is documented in
+§ 8.12.
+
 ---
 
 ## 7. Data Flow
@@ -734,6 +949,25 @@ Every Forge command follows the same high-level flow:
 The pre-parse validation stage is described in § 11.15. It is a
 prerequisite for every other stage: an invocation that fails the
 validation never reaches the command tree.
+
+Every stage in the pipeline produces errors through the
+`forgeerr` package. A stage that detects a failure returns a
+`*forgeerr.Error` constructed with `forgeerr.New` (for errors the
+stage itself produced) or `forgeerr.Wrap` (for errors that wrap a
+cause). The error flows up the pipeline to the CLI's boundary,
+where it is:
+
+1. Recognized (or wrapped, if it is a Cobra error) by
+   `wrapCobraError` in `executeWithOptions`.
+2. Rendered by `forgeerr.Format`.
+3. Written to the injected stderr.
+4. Mapped to a process exit code by `exitCodeOf`, which reads
+   `Category.ExitCode()`.
+
+No stage constructs a `*forgeerr.Error` literally, and no stage
+returns a bare `errors.New`. See § 8 for the error architecture,
+§ 11.7 for the boundary's error path, and § 11.16 for the CLI's
+error contract.
 
 ### 7.2 Flow Variations by Command
 
@@ -850,144 +1084,363 @@ the injected stdout.
 
 Errors in Forge are:
 
-- **Structured:** Every error has a code, message, cause, and context
-- **Actionable:** Every error includes a suggestion
-- **Traceable:** Every error includes enough context to reproduce
-- **Safe:** Errors do not leak secrets
+- **Structured.** Every error is a `*forgeerr.Error` with a
+  stable code, a category, a message, an optional cause, optional
+  structured context, and an optional remediation.
+- **Categorised.** Every error belongs to exactly one of seven
+  categories (CLI, CONFIG, FILESYSTEM, VALIDATION, TEMPLATE,
+  SECURITY, INTERNAL).
+- **Registered.** Every code is a member of a closed registry.
+  The registry is the single source of truth for the set of codes
+  Forge emits.
+- **Stable.** Codes and categories are frozen once shipped.
+  Adding a code requires an ADR (per ADR-014). Adding a category
+  requires an ADR (per ADR-013).
+- **Actionable.** The error carries an optional remediation: a
+  suggested action that the user can take.
+- **Traceable.** The error carries an optional cause, reachable
+  through `errors.Is` and `errors.As`.
+- **Safe.** The error's context never contains secrets. The
+  secret pattern list is defined in
+  [`docs/security-model.md`](./security-model.md) § "Secret
+  patterns" and applied by the redaction layer (§ 8.12).
 
-### 8.2 Error Type
+### 8.2 The Type
 
-Every Forge error conforms to:
+The canonical error type lives in
+`internal/forgeerr/forgeerr.go`. Its fields are unexported; its
+constructors and accessors are documented in § 6.13. The type is
+immutable, safe for concurrent use, and compatible with the
+standard library's chain protocols.
 
-```go
-type ForgeError struct {
-    Code        ErrorCode  // Stable identifier (e.g., "FORGE_CONFIG_INVALID")
-    Message     string     // Human-readable description
-    Cause       error      // Underlying error (may be nil)
-    Context     ErrorContext // Additional structured context
-    Suggestion  string     // What the user can do
-    ExitCode    int        // Process exit code
-}
-```
+The type's design is deliberately narrow. It knows nothing about
+the CLI, the application services, or the infrastructure. It
+depends only on the Go standard library.
 
-### 8.3 Error Codes
+### 8.3 The Category Taxonomy
 
-Error codes follow the pattern:
+The closed set of categories is defined in
+`internal/forgeerr/category.go`. Each category carries:
+
+- **A Code prefix**, exposed as `Category.Prefix()`. A code's
+  category is derivable from its prefix; the constructor verifies
+  the derivation at construction time.
+- **A process exit code**, exposed as `Category.ExitCode()`. The
+  values are frozen in WBS 4.1.2.
+
+| Category | Prefix | Exit code | Scope |
+|---|---|---|---|
+| `CLI` | `FORGE_CLI_` | 2 | CLI usage, flags, commands |
+| `CONFIG` | `FORGE_CONFIG_` | 3 | Configuration loading and validation |
+| `FILESYSTEM` | `FORGE_FILESYSTEM_` | 4 | File I/O, paths, permissions |
+| `VALIDATION` | `FORGE_VALIDATION_` | 5 | Schema, blueprint, check validation |
+| `TEMPLATE` | `FORGE_TEMPLATE_` | 1 | Template resolution and rendering |
+| `SECURITY` | `FORGE_SECURITY_` | 6 | Path traversal, secrets, boundaries |
+| `INTERNAL` | `FORGE_INTERNAL_` | 1 | Bugs, unexpected panics |
+
+The taxonomy is **closed**: adding a category requires an ADR
+(ADR-013). `VALIDATION` and `TEMPLATE` are declared as categories
+but have no registered codes in Phase 2; the pending list is
+tracked in `internal/forgeerr/codes_test.go` as
+`pendingCategories`, and the reference doc duplicates it as
+"Pending categories" in
+`docs/reference/error-categories.md`.
+
+### 8.4 The Code Registry
+
+The closed set of codes is defined in
+`internal/forgeerr/codes.go`. Each code is a member of exactly one
+category, derivable from its prefix. The registry is the single
+source of truth for the set of codes Forge emits; the constructors
+reject any code that is not registered.
+
+The registry's contents are frozen in WBS 10.3.1. Adding a code
+requires:
+
+1. A PR that touches `internal/forgeerr/codes.go`.
+2. A regenerated `internal/forgeerr/testdata/codes/codes.golden.txt`.
+3. An updated `docs/reference/error-codes.md`.
+4. An ADR (per ADR-014).
+
+Codes are never renamed, never reused for different meanings, and
+never removed. A code that has been superseded is marked
+deprecated and remains in the registry. As of Phase 2, no code is
+deprecated.
+
+### 8.5 The Wrapping Contract
+
+The semantics of `Unwrap`, `Is`, and `As` on `*Error` are frozen
+in WBS 10.3.2 (ADR-015).
+
+| Method | Semantics |
+|---|---|
+| `Unwrap() error` | Returns the immediate cause, or nil if none. Does not traverse the chain. |
+| `Is(target error) bool` | Returns true if `target` is a `*Error` with the same `Code`. Does not compare messages, categories, or causes. Does not traverse the target's chain. |
+| `As(target any) bool` | Assigns the receiver to a `**Error` target and returns true; returns false for any other target type. Does not traverse the chain. |
+
+The standard library's `errors.Is` and `errors.As` are the
+traversal engines: they walk the chain by calling `Unwrap`
+repeatedly and invoking the receiver's `Is` or `As` method at each
+level. The methods themselves are per-link operations.
+
+Rules:
+
+1. **`Is` matches by Code, not by pointer identity and not by
+   message.** Two `*Error` values with the same Code match; two
+   values with different Codes do not.
+2. **`Is` does not match by message.** Messages may change;
+   codes are stable.
+3. **`As` assigns the entire `*Error`.** Callers can inspect the
+   `Category`, `Context`, and `Remediation` of the error.
+4. **No sentinels.** Forge does not export sentinel values.
+   Callers use `errors.As` to extract the `*Error` and compare
+   its `Code`.
+5. **`errors.Join` is supported.** A `*Error` participates in a
+   joined error as an ordinary operand.
+6. **`fmt.Errorf("%w", ...)` preserves the code.** The wrapper is
+   traversed by `errors.Is` and `errors.As` via the wrapper's own
+   `Unwrap` method.
+7. **Double-wrapping is impossible.** `forgeerr.Wrap` returns
+   the existing `*Error` unchanged if the cause is already a
+   `*Error`.
+
+### 8.6 Error Construction
+
+Every error is constructed through the frozen constructor API
+(§ 6.13). The constructors validate the category, the code shape,
+the code's registry membership, the code's prefix, the message,
+and (where applicable) the remediation. A violation is a
+programming error and panics.
+
+Two constructors exist:
+
+- `New(category, code, message)` creates an error without a
+  cause. Use it for errors the program itself produced.
+- `Wrap(category, code, message, cause)` creates an error with a
+  cause, or returns the cause unchanged if it is already a
+  `*Error`. Use it when wrapping a library error, an `os` error,
+  or any error whose original type or value a caller might want
+  to inspect via `errors.Is` or `errors.As`.
+
+Three fluent builders extend a `*Error`:
+
+- `WithCause(cause)` attaches a cause.
+- `WithContext(key, value)` adds a structured key-value pair.
+- `WithRemediation(remediation)` attaches a suggested action.
+
+Each builder returns a copy; the receiver is never mutated.
+
+### 8.7 The User-Facing Format
+
+The user-facing format is frozen in WBS 10.4.1 and implemented by
+`forgeerr.Format` in `internal/forgeerr/format.go`. The format is
+byte-exact and enforced by the golden files in
+`internal/forgeerr/testdata/format/`.
+
+The non-verbose format is:
 
 ```text
-FORGE_<CATEGORY>_<SPECIFIC>
-```
-
-Categories:
-
-| Category | Meaning |
-|----------|---------|
-| `USAGE` | Invalid command or flags |
-| `INPUT` | Invalid user input |
-| `CONFIG` | Configuration file issue |
-| `BLUEPRINT` | Blueprint issue |
-| `TEMPLATE` | Template issue |
-| `COMPONENT` | Component issue |
-| `VALIDATION` | Validation failure |
-| `FILESYSTEM` | Filesystem failure |
-| `SECURITY` | Security violation |
-| `UPDATE` | Update failure or conflict |
-| `NETWORK` | Network failure |
-| `INTERNAL` | Internal error |
-
-### 8.4 Error Construction
-
-Every error is constructed with:
-
-- The specific code
-- A message in the developer's language
-- The cause (for wrapping)
-- Context (structured data)
-- A suggestion (what to do)
-
-### 8.5 Error Wrapping
-
-Forge uses Go's error wrapping:
-
-```go
-if err := fs.Write(path, content); err != nil {
-    return NewForgeError(
-        CodeFilesystemWriteFailed,
-        "Failed to write file",
-        err, // wrapped cause
-        Context{"path": path},
-        "Check that the path is writable.",
-    )
-}
-```
-
-The underlying error is preserved for debugging (`--verbose`).
-
-### 8.6 Error Presentation
-
-Errors are presented differently depending on context:
-
-**Human output:**
-
-```text
-✗ Failed to write file
-
-File: src/main.py
-Reason: permission denied
+Error: <message>
+Code:  <code>
+       <context-key-1>: <value-1>
+       <context-key-2>: <value-2>
 
 Suggestion:
-  Check that you have write permission for this directory.
+  <remediation>
 ```
 
-**JSON output:**
+The byte-level rules:
+
+| # | Rule |
+|---|---|
+| F1 | First line: `Error:` + message. |
+| F2 | Second line: `Code:` + code (two spaces after the colon). |
+| F3 | Context lines: 7 spaces + `<key>: <value>`. |
+| F4 | Blank line before the Suggestion block. |
+| F5 | `Suggestion:` label on its own line. |
+| F6 | Suggestion content: 2-space indent, ends with a period. |
+| F7 | No trailing whitespace on any line. |
+| F8 | No colour, no ANSI escapes. |
+| F9 | Every line ends with `\n`. |
+| F10 | Output ends with exactly one `\n`. |
+| F11 | Context keys are sorted alphabetically. |
+| F12 | The Code prefix identifies the category. |
+
+The `*Error.Error()` method is **programmer-facing**: it renders
+`<code>: <message>` and nothing else. It is intended for logs and
+debugging. It is not the user-facing format.
+
+**Example (non-verbose):**
+
+```text
+Error: invalid YAML
+Code:  FORGE_CONFIG_MALFORMED
+       file: config.yaml
+       line: 12
+
+Suggestion:
+  Fix the YAML syntax at line 12.
+```
+
+### 8.8 Exit Code Mapping
+
+| Category | Exit code | Constant |
+|---|---|---|
+| (success) | 0 | `ExitSuccess` |
+| `TEMPLATE` | 1 | `ExitFailure` |
+| `CLI` | 2 | `ExitUsage` |
+| `CONFIG` | 3 | `ExitConfig` |
+| `FILESYSTEM` | 4 | `ExitFilesystem` |
+| `VALIDATION` | 5 | `ExitValidation` |
+| `SECURITY` | 6 | `ExitSecurity` |
+| `INTERNAL` | 1 | `ExitFailure` |
+
+The constants are defined in `internal/cli/exitcodes.go`. The
+mapping is pinned by `TestAC4_ExitCodesMatchCLIConstants` in
+`internal/forgeerr/category_test.go`. If WBS 4.1.2 changes, the
+test fails and both the constants and the `switch` in
+`Category.ExitCode` are updated in the same commit.
+
+### 8.9 Error Presentation
+
+The user-facing presentation of an error is a concern of
+`forgeerr.Format` (§ 8.7), not of the type. The `*Error.Error()`
+method is programmer-facing.
+
+The CLI's boundary calls `forgeerr.Format` and writes the result
+to the injected stderr. The boundary is documented in § 11.7. The
+categorisation and exit-code derivation are documented in § 8.8.
+
+### 8.10 Secret Redaction
+
+Redaction is applied by `forgeerr` before any value reaches a user
+or a log consumer. The policy is frozen in WBS 10.4.3 and
+implemented in `internal/forgeerr/redact.go`. See § 8.12 for the
+details.
+
+### 8.11 ForgeError Logging
+
+The `*Error` type implements `slog.LogValuer` (WBS 10.4.2). The
+implementation is in `internal/forgeerr/log.go`. The interface is
+what makes `slog.Any("error", err)` produce a structured entry
+rather than a single formatted string.
+
+The value returned by `LogValue` is a `slog` group named
+`"error"`. The group contains:
+
+| Attribute | Source | Presence |
+|---|---|---|
+| `error.code` | `e.Code()` | Always. |
+| `error.category` | `e.Category()` | Always. |
+| `error.cause` | `e.Unwrap().Error()` | Only when a cause is attached. |
+| `error.<key>` | one per `e.Context()` entry | When the context is non-empty. |
+
+The context keys are sorted alphabetically, so that the output is
+deterministic across runs. The context values are redacted
+(§ 8.12) before they are appended.
+
+**Text rendering:**
+
+```text
+level=error msg=failed error.code=FORGE_CONFIG_MALFORMED error.category=CONFIG error.cause="yaml: line 12" error.file=config.yaml error.line=12
+```
+
+**JSON rendering:**
 
 ```json
-{
-  "status": "error",
-  "error": {
-    "code": "FORGE_FILESYSTEM_WRITE_FAILED",
-    "message": "Failed to write file",
-    "context": {
-      "path": "src/main.py"
-    },
-    "cause": "permission denied",
-    "suggestion": "Check that you have write permission for this directory."
-  }
-}
+{"level":"error","msg":"failed","error":{"code":"FORGE_CONFIG_MALFORMED","category":"CONFIG","cause":"yaml: line 12","file":"config.yaml","line":"12"}}
 ```
 
-### 8.7 Exit Code Mapping
+The log format does not include the error's message (it is the
+primary log message), the remediation, or the user-facing
+wrapper. The code, category, and cause are the log consumer's
+concerns; the message and remediation are the user's.
 
-| Error category | Exit code | Notes |
-|----------------|-----------|-------|
-| Success | 0 | |
-| Validation failure | 1 | |
-| Usage / input error | 2 | Includes pre-parse validation (§ 11.15) |
-| Filesystem failure | 3 | |
-| Security violation | 4 | |
-| Update conflict | 5 | |
-| Internal error | 1 | Default for uncategorised errors |
+### 8.12 Redaction
 
-The full exit code contract is defined in
-[`docs/cli-ux-spec.md`](./cli-ux-spec.md) § 7.
+The redaction policy is frozen in WBS 10.4.3 and implemented in
+`internal/forgeerr/redact.go`. Both `Format` (§ 8.7) and `LogValue`
+(§ 8.11) apply it, so the two outputs cannot diverge on what is
+redacted.
 
-### 8.8 Secret Redaction
+The rules:
 
-Errors never include secret values. The secret pattern list is
-defined in one place: `docs/security-model.md` § "Secret patterns".
-The list covers:
+| Input | Output |
+|---|---|
+| A context value whose key is `token`, `password`, `secret`, `key`, `credential`, or `auth` | `<redacted>` |
+| A context value that is a path beginning with the user's home directory | The same path with the home prefix replaced by `~` |
+| A context value matching neither rule | Unchanged |
 
-- AWS-style access key identifiers (`AKIA[0-9A-Z]{16}` and
-  equivalents).
-- GitHub personal access tokens (`ghp_...`, `gho_...`, `ghs_...`,
-  `ghu_...`).
-- Generic bearer tokens (`Bearer <token>` in HTTP header format).
-- PEM private key headers (`-----BEGIN * PRIVATE KEY-----`).
+The key match is case-insensitive and word-boundary-based: the key
+is split on `_`, `-`, and `.`, and each segment is compared to the
+frozen list. `api_token` and `API_TOKEN` match; `monkey`,
+`tokens`, and `author` do not.
 
-If an error's context contains a value matching one of these
-patterns, the value is replaced with `<redacted>` before the error
-is formatted. The same pattern list is used by the logging layer;
-see § 9.6.
+The redaction layer does **not** redact the message, the code, the
+category, or the remediation. The constructor authors them; it is
+responsible for not placing secrets in them. The redaction layer
+also does **not** redact the cause; the cause is a programmer
+concern, rendered only by the log format as a field.
+
+The frozen list is exposed via `AllSecretKeys`, which returns a
+defensive copy. Adding a key requires an ADR.
+
+### 8.13 Verbose and Non-Verbose Modes
+
+The verbose mode is frozen in WBS 10.4.4 and selected by
+`Options.Verbose`. The non-verbose mode is the frozen WBS 10.4.1
+format; a caller that passes the zero-value `Options` sees exactly
+the WBS 10.4.1 output.
+
+The verbose mode adds three elements the non-verbose mode omits:
+
+| Element | Non-verbose | Verbose |
+|---|---|---|
+| Error message | Shown | Shown |
+| Error code | Shown | Shown |
+| Context values (secret) | `<redacted>` | `<redacted>` |
+| Context values (home path) | `~/...` | Full path |
+| Context values (other) | Shown | Shown |
+| `internal_` context keys | Filtered out | Shown |
+| Cause chain | Not shown | Shown as a `Cause:` block |
+| Stack trace | Not shown | Shown as a `Stack:` block |
+
+The `Cause:` and `Stack:` blocks are inserted between the context
+lines and the `Suggestion:` block. The `Stack:` block is omitted
+when no stack is provided.
+
+Secret redaction is unchanged in both modes. The rule "Secrets
+are never shown" is absolute.
+
+### 8.14 Boundary Integration
+
+The CLI's error boundary is frozen in WBS 10.5.1. The boundary
+performs three jobs:
+
+1. **Panic recovery.** `Execute` recovers panics, converts them to
+   `FORGE_INTERNAL_PANIC` errors via `recoveredPanicError`, and
+   renders them through the same pipeline as any other error.
+
+2. **Non-`*forgeerr.Error` wrapping.** `executeWithOptions` calls
+   `wrapCobraError` to convert Cobra's parser and dispatcher
+   errors to `CategoryCLI` errors. It then wraps any error that is
+   still not a `*forgeerr.Error` via `wrappedUnexpectedError`.
+
+3. **Exit-code derivation.** `exitCodeOf` extracts the
+   `*forgeerr.Error` from the chain and reads
+   `Category.ExitCode()`.
+
+The boundary's design and its relationship to the two-boundary
+model are documented in § 11.7 and § 11.16.
+
+### 8.15 Reference Implementation
+
+The `forgeerr` package itself is the reference implementation of
+the error architecture. Its tests — `forgeerr_test.go`,
+`constructors_test.go`, `category_test.go`, `codes_test.go`,
+`wrap_test.go`, `format_test.go`, `log_test.go`, `redact_test.go`
+— are the specification of its behaviour. See § 11.16 for the
+CLI's use of the package and § 13.2 for the package's file list.
 
 ---
 
@@ -1043,6 +1496,9 @@ piping.
 {"level":"debug","msg":"Resolving template","template":"python-fastapi@1.0.0","time":"2026-10-09T12:00:02Z"}
 ```
 
+When the logged value is a `*forgeerr.Error`, the JSON format
+includes the structured error group documented in § 8.11.
+
 ### 9.5 Structured Fields
 
 Every log message includes structured fields:
@@ -1074,7 +1530,7 @@ If a value matches a secret pattern, it is redacted:
 
 The secret pattern list is defined once, in
 `docs/security-model.md` § "Secret patterns", and is the same list
-used by the error layer (§ 8.8). Do not maintain a second list.
+used by the error layer (§ 8.12). Do not maintain a second list.
 
 ### 9.7 Determinism
 
@@ -1153,9 +1609,9 @@ When running in CI (`CI=true` environment variable):
 │  │Blueprint │  │Template  │  │Component │  │Policy    │        │
 │  └──────────┘  └──────────┘  └──────────┘  └──────────┘        │
 │                                                                 │
-│  ┌──────────────┐                                               │
-│  │Configuration │                                               │
-│  └──────────────┘                                               │
+│  ┌──────────────┐  ┌──────────────┐                             │
+│  │Configuration │  │ ForgeErr     │                             │
+│  └──────────────┘  └──────────────┘                             │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
                          ▲
@@ -1202,6 +1658,10 @@ When running in CI (`CI=true` environment variable):
   three layers because it belongs to none of them. It is imported by
   `internal/cli` and `internal/app/version` and by nothing else. See
   § 11.12.
+- **ForgeErr is a Domain-layer leaf** — it sits inside the Domain
+  layer because every other module produces errors of its type. It
+  is a leaf: nothing it does requires another Forge package, and
+  every Forge package may import it. See § 4.2.18.
 - **Pre-parse validation is the first stage** — the CLI's pipeline
   begins with `validateArgs`, which rejects malformed invocations
   before the command tree runs. The stage is documented in § 11.15.
@@ -1232,7 +1692,9 @@ When running in CI (`CI=true` environment variable):
 │  ├── Template (parse, resolve, plan)                            │
 │  ├── Component (resolve, compose, conflict)                     │
 │  ├── Policy (parse, evaluate)                                   │
-│  └── Configuration (load, merge)                                │
+│  ├── Configuration (load, merge)                                │
+│  └── ForgeErr (type, taxonomy, registry, wrapping, format,      │
+│               log, redaction, verbose modes)                    │
 │                                                                 │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
@@ -1269,17 +1731,23 @@ The two functions live in
 structs live in `execute.go` and
 [`internal/cli/deps.go`](../internal/cli/deps.go) respectively.
 
-The public entry point is a one-line wrapper:
+The public entry point is a one-line wrapper (the named return is
+a consequence of the panic-recovery path, § 11.7):
 
 ```go
-func Execute() int {
+func Execute() (code int) {
+    defer func() {
+        if r := recover(); r != nil {
+            // recover, convert, render, write
+            code = forgeerr.CategoryInternal.ExitCode()
+        }
+    }()
     return executeWithOptions(defaultOptions())
 }
 ```
 
 Every behaviour a user can observe is implemented in
-`executeWithOptions` or below it. `Execute` exists only to establish
-the contract with the process entry point.
+`executeWithOptions` or below it.
 
 ### 11.2 The Two Structs
 
@@ -1296,6 +1764,8 @@ type options struct {
     stderr   io.Writer
     env      func(string) string
     rootPath string
+    config   *config.Config
+    verbose  bool
 }
 ```
 
@@ -1309,9 +1779,8 @@ Each field captures one class of side effect the CLI may perform.
 | `stderr` | Writer for diagnostics and errors. | `os.Stderr` |
 | `env` | Environment variable lookup. | `os.Getenv` |
 | `rootPath` | Directory for relative path resolution. | `os.Getwd` |
-
-The struct is deliberately small: six fields, each a primitive or an
-interface. No nested structs, no pointers to structs, no maps.
+| `config` | Test-injection seam for the config value. | `nil` (production) |
+| `verbose` | Verbose mode for the error rendering (WBS 10.4.4). | `false` |
 
 `options` is constructed by:
 
@@ -1355,8 +1824,8 @@ If a future phase needs to distinguish "no config file" from "empty
 config file", it adds a field (`ConfigSource string` or similar)
 rather than changing the pointer-ness of `Config`.
 
-`Dependencies` is constructed by `buildDependencies(opts)` — **exactly
-once per invocation**, from `executeWithOptions`.
+`Dependencies` is constructed by `buildDependencies(opts)` —
+**exactly once per invocation**, from `executeWithOptions`.
 
 The field list above is the **Phase 2 shape**. Future phases extend
 it as new subsystems land (blueprint, template, renderer, policy,
@@ -1388,15 +1857,11 @@ The transformation is performed in exactly one place:
 ```go
 func executeWithOptions(opts options) int {
     if err := validateArgs(opts.args); err != nil {
-        fmt.Fprintln(opts.stderr, formatError(err))
-        return exitCodeFromError(err)
+        // render and map the validation error
     }
     deps := buildDependencies(opts)   // the single transformation
     root := newRootCmd(deps)          // Dependencies, not options
     root.SetArgs(opts.args)
-    root.SetIn(opts.stdin)
-    root.SetOut(opts.stdout)
-    root.SetErr(opts.stderr)
     // ...
 }
 ```
@@ -1443,14 +1908,13 @@ Two invariants make the two-boundary model auditable:
    `os.Stdin`, `os.Stdout`, `os.Stderr`, `os.Getenv`, or `os.Getwd`.**
    Every other function receives these values through the `options`
    struct, and every command receives them through the `Dependencies`
-   struct.
+   struct. The panic-recovery path in `Execute` is a documented
+   exception: it writes to `os.Stderr` directly, because the injected
+   writers are not trustworthy during a panic. See § 11.7.
 
 2. **`buildDependencies` is called exactly once in production code,
    from `executeWithOptions`.** No other function constructs a
-   `Dependencies` value. A future refactor that constructs
-   `Dependencies` in `newRootCmd`, or in a subcommand constructor, or
-   in a test helper outside the package, would violate this
-   invariant.
+   `Dependencies` value.
 
 Both invariants are enforced by:
 
@@ -1461,8 +1925,7 @@ Both invariants are enforced by:
 - **Future:** Go structural tests in
   `internal/cli/execute_test.go` that assert the same invariants
   from the test side. The tests are not yet written; this document
-  records them as required before Phase 2 exit. Until they exist,
-  the invariants rely on the Taskfile target and review alone.
+  records them as required before Phase 2 exit.
 
 ### 11.6 What Is Not Tested In Process
 
@@ -1481,27 +1944,79 @@ in-process.
 
 ### 11.7 The Error Path
 
-When the command tree returns a non-nil error, `executeWithOptions`:
+`Execute` is the process's error boundary. Every error reaching it
+is a `*forgeerr.Error` or wraps one; every panic below it is
+recovered and converted to a `*forgeerr.Error`. The boundary
+performs three jobs:
 
-1. Formats the error via `formatError`.
-2. Writes the formatted string to `opts.stderr`, followed by a
-   newline.
-3. Returns the exit code for the error's category, via
-   `exitCodeFromError`.
+1. **Panic recovery.** A panic is recovered, converted to a
+   `FORGE_INTERNAL_PANIC` error via `recoveredPanicError`, rendered
+   with `forgeerr.Format`, written to `os.Stderr`, and mapped to
+   the INTERNAL category's exit code (1).
 
-When the command tree returns a nil error, the function returns
-`ExitSuccess` without writing anything.
+2. **Cobra-error wrapping and boundary wrapping.**
+   `executeWithOptions` first calls `wrapCobraError` to convert
+   Cobra's parser and dispatcher errors (unknown flags, unknown
+   commands) to `CategoryCLI` errors. It then wraps any error that
+   is still not a `*forgeerr.Error` via `wrappedUnexpectedError`.
 
-The pre-parse validation stage uses the same error path. A malformed
-invocation produces an error from `validateArgs`, which is formatted
-by the same `formatError`, written to the same stderr, and mapped to
-an exit code by the same `exitCodeFromError`. The result is
-indistinguishable from an error produced by a command: same stream,
-same message shape, same exit code.
+3. **Exit-code derivation.** `exitCodeOf` extracts the
+   `*forgeerr.Error` from the chain and returns
+   `Category.ExitCode()`.
 
-The two functions called here are documented in
-[`docs/development.md`](./development.md) (exit codes) and in
-[`docs/cli-ux-spec.md`](./cli-ux-spec.md) § 7 (exit code contract).
+The `Execute` shape:
+
+```go
+func Execute() (code int) {
+    defer func() {
+        if r := recover(); r != nil {
+            e := recoveredPanicError(r)
+            fmt.Fprint(os.Stderr, forgeerr.Format(e, forgeerr.Options{
+                Verbose: hasVerboseArg(os.Args),
+            }))
+            code = e.Category().ExitCode()
+        }
+    }()
+    return executeWithOptions(defaultOptions())
+}
+```
+
+The `executeWithOptions` error path:
+
+```go
+err := root.Execute()
+if err == nil {
+    return ExitSuccess
+}
+
+// Convert Cobra's parser and dispatcher errors.
+err = wrapCobraError(err)
+
+// Wrap any remaining non-*forgeerr.Error.
+var ferr *forgeerr.Error
+if !errors.As(err, &ferr) {
+    err = wrappedUnexpectedError(err)
+}
+
+verbose := verboseRequested(root)
+fmt.Fprint(opts.stderr, forgeerr.Format(err, forgeerr.Options{
+    Verbose: verbose,
+}))
+return exitCodeOf(err)
+```
+
+The pre-parse validation stage uses the same rendering and
+exit-code derivation. A malformed invocation produces a
+`*forgeerr.Error` from `validateArgs`, which is rendered by the
+same `forgeerr.Format`, written to the same stderr, and mapped to
+its category's exit code.
+
+The two helper functions (`formatError`, `exitCodeFromError`) that
+the earlier version of this document described have been **deleted**
+in WBS 10.5.1. Their replacements are `forgeerr.Format` and
+`Category.ExitCode()`; the boundary's local helpers
+(`recoveredPanicError`, `wrappedUnexpectedError`, `exitCodeOf`)
+encapsulate the boundary's specific behaviour.
 
 ### 11.8 The Output Path
 
@@ -1516,22 +2031,27 @@ to stdout, diagnostics and errors go to stderr.
 
 | File | Purpose |
 |------|---------|
-| `internal/cli/execute.go` | `Execute`, `executeWithOptions`, `options`, `defaultOptions`, `formatError`. |
+| `internal/cli/execute.go` | `Execute`, `executeWithOptions`, `options`, `defaultOptions`, `recoveredPanicError`, `wrappedUnexpectedError`, `wrapCobraError`, `parseUnknownCommandMessage`, `hasVerboseArg`, `exitCodeOf`. |
 | `internal/cli/deps.go` | `Dependencies`, `Logger`, `slogLogger`, `noopLogger`, `newLogger`, `buildDependencies`. |
 | `internal/cli/deps_test.go` | White-box tests for `Dependencies` and its construction. |
-| `internal/cli/execute_test.go` | White-box tests for the process boundary and the transformation. |
-| `internal/cli/exitcodes.go` | Exit code constants and the error-to-code mapping. |
+| `internal/cli/execute_test.go` | White-box tests for the process boundary, the transformation, the panic-recovery conversion, the non-`*Error` wrapping, and the exit-code derivation. |
+| `internal/cli/exitcodes.go` | Exit code constants. |
 | `internal/cli/root.go` | The root command constructor. Accepts a `Dependencies` value and registers subcommands. |
 | `internal/cli/registry.go` | The central command registry (§ 11.13). |
 | `internal/cli/flags.go` | The global flag registration and readers (§ 11.14). |
 | `internal/cli/validate.go` | The pre-parse argument validator (§ 11.15). |
+| `internal/cli/errors.go` | The Cobra-error constructor (`unknownCommandError`), the suggestion distance constant, and the shared `suggestionsMinimumDistance` value. |
 | `internal/cli/version.go` | The `forge version` handler. Reference implementation of the handler / service pattern (§ 11.12). |
-| `internal/cli/version_test.go` | White-box tests for the version handler, including the structural tests that enforce § 11.12. |
+| `internal/cli/version_test.go` | White-box tests for the version handler, including the structural tests that enforce § 11.12 and the service-symbol allowlist. |
 | `internal/cli/structure_test.go` | Black-box structural tests for the package's shape. |
 | `internal/cli/registry_test.go` | Tests for the command registry. |
 | `internal/cli/contract_test.go` | Structural tests for the command constructor contract. |
 | `internal/cli/validate_test.go` | Unit tests for the pre-parse argument validator. |
 | `internal/cli/flags_test.go` | Unit tests for the global flag readers and the log-level resolver. |
+| `internal/cli/errors_test.go` | The invalid-command matrix (I1–I7), the typo suggestion test, and the suggestion-distance test. |
+| `internal/cli/config_interaction_test.go` | The `--config` interaction tests. |
+| `internal/cli/flag_interaction_test.go` | The `--quiet` / `--verbose` / `--config` interaction matrix. |
+| `internal/cli/testhelper_test.go` | The shared `runCLI` helpers, the `testRun` struct, the golden-file flag, and the test-only registry hooks. |
 | `internal/app/version/service.go` | The version application service. Pure. |
 | `internal/app/version/format.go` | The version formatter. Takes an `io.Writer`. |
 | `internal/app/version/buildinfo.go` | Reads build metadata from `internal/version`. |
@@ -1546,13 +2066,14 @@ to stdout, diagnostics and errors go to stderr.
 
 ### 11.10 Rules for Extending the Model
 
-1. **`Execute` remains a one-line wrapper.** Its body must not grow.
-   Every new behaviour belongs in `executeWithOptions` or below.
+1. **`Execute` remains a wrapper.** Its body contains only the
+   panic recovery and the delegation to `executeWithOptions`.
+   Every other behaviour belongs in `executeWithOptions` or below.
 
 2. **`executeWithOptions` reads only from `opts`.** It must not read
    `os.Args`, `os.Stdin`, `os.Stdout`, `os.Stderr`, or `os.Getenv`.
    This invariant is enforced by the `verify:two-boundary` Taskfile
-   target and, once written, by
+   target and by
    `TestExecuteWithOptions_NoProcessStreamsReferenced` in
    `execute_test.go`.
 
@@ -1560,7 +2081,7 @@ to stdout, diagnostics and errors go to stderr.
    `Dependencies` value.** A struct literal of the form
    `Dependencies{...}` must not appear outside `deps.go` in
    production code. This invariant is enforced by the
-   `verify:two-boundary` Taskfile target and, once written, by
+   `verify:two-boundary` Taskfile target and by
    `TestExecuteWithOptions_DoesNotConstructDependenciesByHand` in
    `execute_test.go`.
 
@@ -1568,10 +2089,12 @@ to stdout, diagnostics and errors go to stderr.
    with the old signature must not be added: it would create a second
    construction path and violate rule 3.
 
-5. **`formatError` and `exitCodeFromError` remain separate.** The
-   first renders an error; the second classifies it. Merging them
-   would couple error presentation to error classification, which are
-   distinct concerns.
+5. **The boundary's error path uses `forgeerr.Format` and
+   `Category.ExitCode()`.** The legacy helpers `formatError` and
+   `exitCodeFromError` are deleted. The boundary's local helpers
+   (`recoveredPanicError`, `wrappedUnexpectedError`, `exitCodeOf`)
+   encapsulate the boundary's specific behaviour; they are not
+   general-purpose renderers.
 
 6. **Adding a field to `options` is a breaking change to the test
    suite.** Every test that constructs an `options` value must be
@@ -1598,7 +2121,8 @@ architectural principles:
   `os.Getenv`, or any other global. Every effect flows through
   `Dependencies`. The `options` struct exists only so that tests can
   inject the process environment; production code reads it once, in
-  `defaultOptions`.
+  `defaultOptions`, and the panic path's direct write to `os.Stderr`
+  is a documented exception.
 
 The two-boundary model does not introduce a new architectural
 principle. It refines the existing principles into a concrete,
@@ -1937,7 +2461,7 @@ consumer in a later WBS item.
 
 | Flag | Short | Type | Persistent | Consumer | Semantics |
 |------|-------|------|------------|----------|-----------|
-| `--verbose` | — | bool | yes | WBS 12.0 (logging) | Set log level to DEBUG |
+| `--verbose` | — | bool | yes | WBS 12.0 (logging), WBS 10.4.4 (error rendering) | Set log level to DEBUG; enable verbose error rendering |
 | `--quiet` | — | bool | yes | WBS 12.0 (logging) | Set log level to ERROR |
 | `--config` | — | string | yes | WBS 8.0 (config) | Path to config file |
 
@@ -1961,51 +2485,36 @@ the parsed values live in `internal/cli/flags.go`:
 
 All three flags are **persistent** flags. Cobra's persistent flags
 are inherited by every subcommand, so both `forge --verbose config`
-and `forge config --verbose` are equivalent. The persistence is the
-reason the flags appear in the root command's help output under
-"Global Flags" rather than "Flags".
-
-The persistence is the reason the flags can appear **either before or
-after** the subcommand name. Cobra's parser handles both positions;
-the CLI's behaviour is identical for both.
+and `forge config --verbose` are equivalent.
 
 #### Precedence
 
-When `--verbose` and `--quiet` are both set, `--quiet` wins. The
-effective log level is ERROR.
+When `--verbose` and `--quiet` are both set, `--quiet` wins for the
+log level. The effective log level is ERROR.
 
-The rule is implemented in `resolveLogLevel`, which reads the two
-flags from the command and returns the effective log level as a
-string. The rule is documented in
-[`docs/cli-ux-spec.md`](./cli-ux-spec.md) § 4.11 and is pinned by
-`TestResolveLogLevel` in `flags_test.go`.
+The rule is implemented in `resolveLogLevel`. The precedence is not
+accompanied by a runtime warning: a warning about conflicting flags
+is itself output, and the user who asked for quiet asked for less
+output.
 
-The precedence is not accompanied by a runtime warning. The rationale
-is that a warning about conflicting flags is itself output, and the
-user who asked for quiet asked for less output. The decision is
-documented in the specification; the code does not emit a warning.
+The `--verbose` flag's *error rendering* consumer is distinct from
+its *log level* consumer. `--quiet` suppresses diagnostic logs but
+does not suppress the error block (§ 10.4.4 of the CLI UX spec);
+the error block is always rendered.
 
 #### Why the flags are not in `Dependencies`
 
 The global flags are read from the command (`cmd.Flags()`), not from
-`Dependencies`. This is deliberate: the flags are a property of the
-invocation, and Cobra's parser is the source of truth for their
-values. The `Dependencies` struct holds resolved collaborators, not
-parsed flags. A future `config` subsystem that consumes `--config`
-will read the value from the command and use it to construct the
-resolved configuration, which is what `Dependencies.Config` will
-hold.
+`Dependencies`. The flags are a property of the invocation, and
+Cobra's parser is the source of truth for their values. The
+`Dependencies` struct holds resolved collaborators, not parsed
+flags.
 
 #### Adding a global flag
 
 Adding a global flag requires an ADR. The ADR must name the consumer
 WBS item, define the flag's semantics, and define its precedence
-relative to the existing flags. The rule is documented in
-[`docs/cli-ux-spec.md`](./cli-ux-spec.md) § 4.11.
-
-The rule exists to prevent flag creep. A CLI with fifteen global
-flags has no global flags, because users cannot remember which one
-does what.
+relative to the existing flags.
 
 #### Enforcement
 
@@ -2018,10 +2527,6 @@ The inventory is enforced by:
 - **Taskfile target** `verify:global-flags`, which counts the flag
   registrations in `flags.go`.
 - **Code review.**
-
-If the `verify:global-flags` target does not yet exist in
-`Taskfile.yml`, that is a gap that must be closed before Phase 2
-exit. This document records the target as required.
 
 ### 11.15 Pre-Parse Argument Validation
 
@@ -2048,101 +2553,127 @@ Each rejection is documented in
 The validator lives in `internal/cli/validate.go`. The file
 defines:
 
-- `validateArgs(args []string) error` — the entry point. Dispatches
-  to the three sub-validators.
+- `validateArgs(args []string) error` — the entry point.
 - `validateHelpFlagWithArgs(args)` — rejects shape 1.
 - `validateVersionFlagWithArgs(args)` — rejects shape 2.
 - `validateConfigFlagWithArgs(args)` — rejects shape 3.
 - `validateHelpTopic(args)` — rejects shape 4.
-- `isKnownCommandName(name)` — the predicate used by shape 4. Reads
-  the registry directly.
-- `commandName(use string) string` — extracts a command's name from
-  its `Use` field.
+- `isKnownCommandName(name)` — the predicate used by shape 4.
+- `commandName(use string) string` — extracts a command's name.
 - `validationDependencies()` — the `Dependencies` value used to
   construct commands during validation.
+
+The validator returns `*forgeerr.Error` values with category
+`CategoryCLI` and code `CodeCLIInvalidArg` (for the flag-shape
+rejections) or `CodeCLIUnknownCommand` (for the unknown help topic).
+The boundary renders them like any other error.
 
 #### Why the validator is at the pre-parse stage
 
 Cobra's `--help` and `--version` flags are **interception flags**:
-when either is set, Cobra short-circuits the hook chain
-(`PersistentPreRunE`, `PreRunE`, `RunE`) and runs its help or version
-path directly. A malformed `--help <cmd>` or `--version <arg>`
-invocation is therefore invisible from inside the command tree.
-
-The pre-parse stage is the only point at which the malformed
-invocations are observable. `validateArgs` runs in
-`executeWithOptions` before `root.Execute()` is called, which is
-before Cobra parses the arguments.
-
-#### How the rejection flows
-
-The validator returns a plain `error`. `executeWithOptions` formats
-it with `formatError`, writes it to `opts.stderr`, and maps it to an
-exit code with `exitCodeFromError`. The result is indistinguishable
-from an error produced by a command: same stream, same message shape,
-same exit code. The `exitCodeFromError` mapping classifies the plain
-error as `ExitUsage` because it has no category.
-
-#### The validator's data sources
-
-The validator reads two inputs:
-
-1. **The raw argument list.** The `args` parameter is the raw
-   `[]string` from `options.args`. The validator scans it with simple
-   left-to-right loops. It does not parse flags, does not resolve
-   commands, and does not construct the command tree.
-
-2. **The registry.** The `registry` package-level slice is the
-   source of truth for the set of Forge-authored commands. The
-   validator reads the slice directly rather than the constructed
-   command tree, because the tree is not available at this stage
-   (`newRootCmd` runs after `validateArgs`).
-
-#### Cobra-generated command names
-
-The validator also accepts Cobra's auto-generated `help` and
-`completion` command names as valid help topics. They are not in the
-registry; the validator handles them by name.
-
-**This is a coupling to Cobra's naming.** If a future Cobra version
-renames `completion`, or adds a new auto-generated command, the
-validator will start rejecting valid invocations.
-
-The coupling is made safe by a unit test
-(`TestValidateHelpTopic_CobraGeneratedNames` in `validate_test.go`)
-that asserts the two names exist in a constructed command tree. If
-Cobra renames them, the test fails and the contributor updates both
-the test and `validate.go`. This is the pragmatic option: the
-alternative (constructing the root command before validation) would
-add a second command-tree construction to the pipeline for the sole
-purpose of discovering two names.
+when either is set, Cobra short-circuits the hook chain and runs its
+help or version path directly. The pre-parse stage is the only
+point at which the malformed invocations are observable.
 
 #### Enforcement
 
 The validator is enforced by:
 
-- **Unit tests** in `internal/cli/validate_test.go` that exercise
-  the top-level dispatcher and each sub-validator in isolation.
-- **Contract tests** in `internal/cli/root_test.go` that assert the
-  observable behaviour of the four rejected invocations: non-zero
-  exit, empty stdout, non-empty stderr.
+- **Unit tests** in `internal/cli/validate_test.go`.
+- **Contract tests** in `internal/cli/root_test.go`.
 - **Taskfile targets** `verify:help-contract` and
-  `verify:version-contract`, which run the contract tests and grep
-  for accidental regressions.
+  `verify:version-contract`.
 - **Code review.**
 
-If the two Taskfile targets do not yet exist, they must be added
-before Phase 2 exit. This document records them as required.
+### 11.16 ForgeError in the CLI
 
-#### Why the validator is not a Cobra hook
+The CLI produces `*forgeerr.Error` values through the constructors
+in `internal/forgeerr/constructors.go`. The constructors validate
+the category, the code, and the message; a violation is a
+programming error and panics.
 
-A Cobra hook (`PersistentPreRunE` or `RunE`) cannot observe the
-malformed invocations, because Cobra's interception flags short-
-circuit the hook chain before it runs. The pre-parse stage is the
-only layer that sees the raw arguments before Cobra's parser
-processes them. This is the same reasoning that § 11.5 applies to
-the `options` struct: the earlier a stage sits in the pipeline, the
-more it can see.
+#### The error path
+
+```go
+func executeWithOptions(opts options) int {
+    if err := validateArgs(opts.args); err != nil {
+        fmt.Fprint(opts.stderr, forgeerr.Format(err, forgeerr.Options{
+            Verbose: opts.verbose,
+        }))
+        return exitCodeOf(err)
+    }
+    deps := buildDependencies(opts)
+    root := newRootCmd(deps)
+    root.SetArgs(opts.args)
+    // ...
+    err := root.Execute()
+    if err == nil {
+        return ExitSuccess
+    }
+
+    // Convert Cobra's parser and dispatcher errors.
+    err = wrapCobraError(err)
+
+    // Wrap any remaining non-*forgeerr.Error.
+    var ferr *forgeerr.Error
+    if !errors.As(err, &ferr) {
+        err = wrappedUnexpectedError(err)
+    }
+
+    verbose := verboseRequested(root)
+    fmt.Fprint(opts.stderr, forgeerr.Format(err, forgeerr.Options{
+        Verbose: verbose,
+    }))
+    return exitCodeOf(err)
+}
+```
+
+The rendering is `forgeerr.Format`; the exit-code derivation is
+`exitCodeOf`, which reads `Category.ExitCode()`. The
+`formatError` and `exitCodeFromError` helpers that earlier versions
+of this document described have been **deleted** (WBS 10.5.1).
+
+#### The boundary's helpers
+
+Three helpers encapsulate the boundary's specific behaviour:
+
+| Helper | Purpose |
+|---|---|
+| `recoveredPanicError(any) *forgeerr.Error` | Converts a recovered panic value to a `FORGE_INTERNAL_PANIC` error with the value in the context. |
+| `wrappedUnexpectedError(error) *forgeerr.Error` | Wraps a non-`*forgeerr.Error` in a `FORGE_INTERNAL_UNEXPECTED` error with the original message in the context. |
+| `wrapCobraError(error) error` | Converts a Cobra parser or dispatcher error to a `CategoryCLI` error with the appropriate code. |
+
+The helpers exist so that the boundary's behaviour can be tested
+directly, without invoking `Execute` (which reads `os.Args` and
+writes to `os.Stderr`).
+
+#### The CLI's error contract
+
+- Every error returned by a command is a `*forgeerr.Error` or
+  wraps one. A command that returns a bare `errors.New` violates
+  the contract; the boundary wraps it as
+  `FORGE_INTERNAL_UNEXPECTED`.
+- The pre-parse validator constructs `*forgeerr.Error` values.
+- Cobra's parser and dispatcher errors are converted by
+  `wrapCobraError`.
+- The CLI never constructs a `*forgeerr.Error` literal. It uses
+  `forgeerr.New` or `forgeerr.Wrap`.
+
+#### Why no sentinels in the CLI
+
+The CLI does not export sentinel values and does not match on
+`*forgeerr.Error` pointer identity. Callers that want to match on
+a specific code use `errors.As`:
+
+```go
+var target *forgeerr.Error
+if errors.As(err, &target) && target.Code() == string(forgeerr.CodeConfigMalformed) {
+    // handle FORGE_CONFIG_MALFORMED
+}
+```
+
+This is the pattern documented in ADR-015 and enforced by the
+tests in `internal/forgeerr/wrap_test.go`.
 
 ---
 
@@ -2155,12 +2686,18 @@ consistently.
 
 Every module:
 
-- Returns errors using the `ForgeError` type
-- Never panics on user input
-- Wraps errors with context
-- Includes suggestions where possible
+- Returns errors using the `*forgeerr.Error` type.
+- Never panics on user input. Panics are reserved for
+  programming errors detected at construction time (see § 8.6).
+- Wraps errors with `forgeerr.Wrap` and a cause when the
+  original error is meaningful to a caller.
+- Includes structured context where the context is useful to the
+  user (a file path, a line number, a flag name).
+- Includes a remediation where a specific action would resolve
+  the error.
 
-See § 8 for the full error architecture.
+See § 8 for the full error architecture and § 11.16 for the
+CLI's error contract.
 
 ### 12.2 Logging
 
@@ -2239,6 +2776,7 @@ forge/
 │   │   ├── component/
 │   │   ├── policy/
 │   │   └── config/
+│   ├── forgeerr/     # Canonical error type (WBS 10.1.1–10.5.2)
 │   ├── renderer/     # Rendering engine
 │   ├── validator/    # Validation engine
 │   ├── update/       # Update engine
@@ -2260,36 +2798,70 @@ forge/
 
 | Package | Contains |
 |---------|----------|
-| `internal/cli` | Command definitions, argument parsing, output wiring |
+| `internal/cli` | Command definitions, argument parsing, output wiring, the CLI's error boundary |
 | `internal/app/<command>` | Use case orchestration for each command |
 | `internal/domain/<concept>` | Pure domain logic and types |
+| `internal/forgeerr` | Canonical error type, taxonomy, registry, wrapping contract, user format, log format, redaction, verbose modes |
 | `internal/renderer` | Rendering of template content |
 | `internal/validator` | Validation rules and engine |
 | `internal/update` | Update planning, merging, application |
 | `internal/state` | Reading and writing `.forge/state.yaml` |
 | `internal/version` | Build metadata (version, commit, build date) — leaf |
 | `internal/filesystem` | Filesystem interface and OS implementation |
-| `internal/config` | Configuration type |
+| `internal/config` | Configuration type and its error taxonomy |
 | `internal/infra/process` | Process execution (future) |
 | `internal/infra/logging` | Logger interface and implementation |
 | `internal/infra/output` | Human and JSON output formatters |
 | `templates/` | Bundled templates |
 
-### 13.2 Files in `internal/cli`
+### 13.2 Files in `internal/cli` and `internal/forgeerr`
+
+The following tables list the files in the two packages that have
+a fixed, enumerated file set.
+
+#### `internal/cli`
 
 | File | Purpose |
 |------|---------|
 | `doc.go` | Package documentation and public contract |
-| `execute.go` | `Execute`, `executeWithOptions`, `options`, `defaultOptions`, `formatError` |
+| `execute.go` | `Execute`, `executeWithOptions`, `options`, `defaultOptions`, `recoveredPanicError`, `wrappedUnexpectedError`, `wrapCobraError`, `parseUnknownCommandMessage`, `hasVerboseArg`, `exitCodeOf` |
 | `deps.go` | `Dependencies`, `Logger`, `slogLogger`, `noopLogger`, `newLogger`, `buildDependencies` |
-| `exitcodes.go` | Exit code constants and the error-to-code mapping |
+| `exitcodes.go` | Exit code constants |
 | `root.go` | The root command constructor |
 | `registry.go` | The central command registry |
 | `flags.go` | The global flag registration and readers |
 | `validate.go` | The pre-parse argument validator |
+| `errors.go` | `unknownCommandError`, `suggestionsMinimumDistance` |
 | `version.go` | The `forge version` handler |
 | `config.go` | The hidden `forge config` placeholder |
 | `*_test.go` | Tests colocated with their subjects. The complete list is in § 11.9. |
+
+#### `internal/forgeerr`
+
+| File | Purpose |
+|------|---------|
+| `forgeerr.go` | The `Error` type, its fields, its accessors, its `Error()` string, its chain methods (`Unwrap`, `Is`, `As`), and the pure invariant helpers (`validateMessage`, `validateRemediation`, `validateCategory`). |
+| `constructors.go` | The frozen constructor API: `New`, `Wrap`, `WithCause`, `WithContext`, `WithRemediation`. |
+| `category.go` | The closed category taxonomy: `Category`, seven constants, `AllCategories`, `Prefix`, `ExitCode`, `String`. |
+| `codes.go` | The frozen code registry: `Code`, 19 constants, `AllCodes`, `Lookup`, `IsRegistered`, `Code.Category`. |
+| `format.go` | The user-facing format: `Format`, `Options`, and the byte-level rules F1–F12. |
+| `log.go` | The programmer-facing log format: `LogValue` (implements `slog.LogValuer`). |
+| `redact.go` | The redaction policy: `redact`, `redactPath`, `redactPathFor`, `AllSecretKeys`. |
+| `forgeerr_test.go` | Tests for the type and its invariant helpers. |
+| `constructors_test.go` | Tests for the constructor API (AC1–AC9, WBS 10.1.2). |
+| `category_test.go` | Tests for the category taxonomy (AC1–AC6, WBS 10.2.1). |
+| `codes_test.go` | Tests for the code registry (AC1–AC8, WBS 10.3.1). |
+| `codes_flags_test.go` | Registration of the `-update` flag used by the golden-file tests. |
+| `wrap_test.go` | Tests for the wrapping contract (W1–W8, AC1–AC7, WBS 10.3.2). |
+| `format_test.go` | Tests for the user-facing format (AC1–AC10, WBS 10.4.1). |
+| `log_test.go` | Tests for the log format (AC1–AC8, WBS 10.4.2). |
+| `redact_test.go` | Tests for the redaction policy (AC1–AC8, WBS 10.4.3). |
+| `testdata/codes/codes.golden.txt` | The canonical rendering of the registry. |
+| `testdata/format/` | The golden files for the user-facing format. |
+| `testdata/log/` | The golden files for the log format. |
+
+The `internal/forgeerr` package does not import any Forge package.
+It depends only on the Go standard library. See § 4.2.18.
 
 ### 13.3 Import Rules
 
@@ -2297,13 +2869,18 @@ forge/
   (except other `internal/domain/*`).
 - `internal/app/*` may import `internal/domain/*` and
   `internal/infra/*`.
-- `internal/cli` may import `internal/app/*` and `internal/infra/*`.
+- `internal/cli` may import `internal/app/*`, `internal/infra/*`,
+  and `internal/forgeerr`.
 - `internal/infra/*` may import `internal/domain/*` (for shared
   types) but not `internal/app/*` or `internal/cli`.
 - `internal/version` may not import any other `internal/*` package.
   It is a leaf.
+- `internal/forgeerr` may not import any other `internal/*`
+  package. It is a leaf.
 - `internal/filesystem` may import `internal/domain/*` (for shared
   types) but not `internal/app/*` or `internal/cli`.
+- `internal/config` may import `internal/forgeerr` (for its error
+  taxonomy).
 - No package outside `internal/cli` may import
   `github.com/spf13/cobra`. The CLI framework is a CLI-layer
   concern.
@@ -2346,6 +2923,9 @@ Some outputs are compared against golden files:
 - CLI output
 - JSON output
 - Rendered repositories
+- The error code registry (`internal/forgeerr/testdata/codes/codes.golden.txt`, WBS 10.3.1)
+- The user-facing error format (`internal/forgeerr/testdata/format/`, WBS 10.4.1)
+- The log format (`internal/forgeerr/testdata/log/`, WBS 10.4.2)
 
 Golden files are committed and version-controlled.
 
@@ -2357,6 +2937,15 @@ Fuzz tests are used for:
 - YAML parsing
 - Template rendering
 - Blueprint validation
+- Error invariant helpers (`FuzzValidateMessage`,
+  `FuzzValidateRemediation` in `forgeerr_test.go`)
+- Constructor inputs (`FuzzCodeFormat`, `FuzzMessage`,
+  `FuzzContextKey` in `constructors_test.go`)
+- Taxonomy membership (`FuzzCategoryValid` in `category_test.go`)
+- Registry membership (`FuzzRegistryMembership` in `codes_test.go`)
+- User-facing format (`FuzzFormat` in `format_test.go`)
+- Log format (`FuzzLogValue` in `log_test.go`)
+- Redaction (`FuzzRedact`, `FuzzRedactPath` in `redact_test.go`)
 
 ---
 
@@ -2367,21 +2956,7 @@ behaviour.
 
 ### 15.1 Adding a New Command
 
-See § 11.13 for the complete procedure. In summary:
-
-1. Define the handler in `internal/cli/<name>.go`. It must be thin
-   (under 20 lines of body) and follow the pattern in § 11.12.
-2. Define the use case in `internal/app/<name>/`. The service must
-   be pure (no `os.*`, no Cobra import).
-3. Append the handler's constructor to the registry slice in
-   `internal/cli/registry.go`. See § 11.13.
-4. Add the handler file to `expectedSourceFiles` in
-   `internal/cli/structure_test.go`.
-5. Add the handler file to `HANDLER_FILES` in `Taskfile.yml`.
-6. Add tests: handler tests in `internal/cli/<name>_test.go`,
-   service tests in `internal/app/<name>/`.
-7. If the command is user-facing, add its contract to
-   `docs/cli-ux-spec.md`.
+See § 11.13 for the complete procedure.
 
 ### 15.2 Adding a New Domain Concept
 
@@ -2412,8 +2987,7 @@ See § 11.13 for the complete procedure. In summary:
 
 ### 15.5 Adding a Pre-Parse Rejection
 
-1. Write the rejection's contract in `docs/cli-ux-spec.md`. Name the
-   malformed shape and the correct alternative.
+1. Write the rejection's contract in `docs/cli-ux-spec.md`.
 2. Add a sub-validator to `internal/cli/validate.go`.
 3. Add the sub-validator to the `validateArgs` dispatcher.
 4. Add unit tests in `internal/cli/validate_test.go`.
@@ -2427,8 +3001,7 @@ See § 11.13 for the complete procedure. In summary:
 1. Add the field to the `Dependencies` struct in
    `internal/cli/deps.go`.
 2. Construct the field in `buildDependencies`.
-3. Add a test to `internal/cli/deps_test.go` that asserts the field
-   is constructed.
+3. Add a test to `internal/cli/deps_test.go`.
 4. If the field is a new collaborator (not a primitive), add its
    interface to the appropriate package and its implementation to
    the appropriate infrastructure package.
@@ -2437,34 +3010,76 @@ See § 11.13 for the complete procedure. In summary:
 No command constructor signature changes. This is the property that
 makes `Dependencies` a stable boundary across phases.
 
-### 15.7 Plugin System
+### 15.7 Adding a New Error Code
 
-A plugin system is not supported in Phase 1. The architecture reserves
-space for future plugins:
+1. Write an ADR (per ADR-014) that names the new code, its
+   category, its scope, and the phase in which it is introduced.
+2. Add the constant to `internal/forgeerr/codes.go`.
+3. Add the row to `codeSpecs` in the same file.
+4. Regenerate the golden file:
+   `go test -run TestAC4 -update ./internal/forgeerr/`.
+5. Update `docs/reference/error-codes.md`.
+6. If the code belongs to a category currently listed in
+   `pendingCategories`, remove the category from that list.
+7. Run the full test suite.
 
-- Extension points at the Domain layer
-- Plugin loading in the CLI layer
-- Sandboxing in the Infrastructure layer
+### 15.8 Adding a New Error Category
 
-Plugins will be introduced in a future phase (see
-[`docs/product-discovery.md`](./product-discovery.md) § 10).
+1. Write an ADR (per ADR-013) that names the new category, its
+   code prefix, its exit code, and its scope.
+2. Add the constant to `internal/forgeerr/category.go`.
+3. Add the category to `allCategories` in the same file.
+4. Add the prefix to `Category.Prefix` and the exit code to
+   `Category.ExitCode`.
+5. Add the exit-code constant to `internal/cli/exitcodes.go`.
+6. Add the category to `pendingCategories` in
+   `internal/forgeerr/codes_test.go` unless the same commit also
+   adds at least one code for it.
+7. Update `docs/reference/error-categories.md`.
+8. Run the full test suite.
+
+### 15.9 Adding a New Verbose-Mode Element
+
+1. Write an ADR (per ADR-019) that names the new element, its
+   non-verbose treatment, and its verbose treatment.
+2. Add the element to `Format`'s verbose path in
+   `internal/forgeerr/format.go`.
+3. Add the element to the mode matrix in § 8.13.
+4. Regenerate the verbose golden file:
+   `go test -run TestGolden_VerboseFormat -update ./internal/forgeerr/`.
+5. Add tests for the element in `format_test.go`.
+6. Run the full test suite.
+
+### 15.10 Adding a New Secret-Key Pattern
+
+1. Write an ADR that names the new key and the reason it is a
+   secret.
+2. Add the key to `secretKeys` in
+   `internal/forgeerr/redact.go`.
+3. Update `docs/reference/error-codes.md` if the pattern is
+   reflected there.
+4. Add a test row in `redact_test.go`.
+5. Run the full test suite.
+
+### 15.11 Plugin System
+
+A plugin system is not supported in Phase 1. The architecture
+reserves space for future plugins. Plugins will be introduced in a
+future phase.
 
 ---
 
 ## 16. Anti-Patterns to Avoid
 
-The following are explicitly discouraged. They are organised in two
-tiers: **cardinal sins**, which are the ones reviewers should catch
-without thinking, and **additional rules**, which are documented for
-completeness.
+The following are explicitly discouraged.
 
 ### 16.1 Cardinal Sins
 
 #### 16.1.1 Business Logic in the CLI
 
-The CLI layer is for command parsing and output formatting only. Any
-business logic belongs in the Application or Domain layer. See
-§ 11.12 for the operational rule.
+The CLI layer is for command parsing and output formatting only.
+Any business logic belongs in the Application or Domain layer. See
+§ 11.12.
 
 #### 16.1.2 Direct Filesystem Access from Domain
 
@@ -2478,72 +3093,106 @@ constructors.
 
 #### 16.1.4 Circular Dependencies
 
-Packages do not import each other cyclically. The dependency
-direction is strictly enforced.
+Packages do not import each other cyclically.
 
 #### 16.1.5 Cobra Outside the CLI Layer
 
 No package outside `internal/cli` may import
-`github.com/spf13/cobra`. The CLI framework is a CLI-layer concern;
-an application service that imports Cobra has collapsed the boundary
-between the handler and the service.
+`github.com/spf13/cobra`.
 
 ### 16.2 Additional Rules
 
 #### 16.2.1 God Objects
 
-No single object orchestrates everything. Responsibilities are split
-across modules.
+No single object orchestrates everything.
 
 #### 16.2.2 Implicit Dependencies
 
-Every dependency is explicit in a constructor. No hidden globals, no
-service locators.
+Every dependency is explicit in a constructor.
 
 #### 16.2.3 Silent Failures
 
-Every error is reported. No swallowed errors, no ignored returns.
+Every error is reported.
 
 #### 16.2.4 Unstructured Errors
 
-Every error uses the `ForgeError` type. No
-`errors.New("something failed")`.
+Every error uses the `*forgeerr.Error` type, constructed through
+`forgeerr.New` or `forgeerr.Wrap`. No
+`errors.New("something failed")`, and no `fmt.Errorf` without a
+`%w` wrapping a `*forgeerr.Error`. The registry in
+`internal/forgeerr/codes.go` is the single source of truth for
+the set of codes an error may carry. See § 8.
 
 #### 16.2.5 Unstructured Logs
 
-Every log message has a level and structured fields. No
-`fmt.Println` for diagnostics.
+Every log message has a level and structured fields.
 
 #### 16.2.6 Environment-Dependent Behaviour
 
-Forge behaves the same regardless of environment. Environment
-variables do not change behaviour except through explicit,
-documented configurations.
+Forge behaves the same regardless of environment, except through
+explicit, documented configurations.
 
 #### 16.2.7 Build Metadata Outside the Leaf Package
 
-The build metadata variables (`Version`, `Commit`, `BuildDate`,
-`Dirty`) live in `internal/version` and only there. Defining them
-elsewhere would recreate the import cycle that WBS 4.3.1 broke. See
-§ 11.12.
+The build metadata variables live in `internal/version` and only
+there.
 
 #### 16.2.8 `init()`-Based Command Registration
 
-Commands are registered in the `registry` slice in `registry.go`. A
-command file must not append to the registry from an `init()`
-function. See § 11.13.
+Commands are registered in the `registry` slice in `registry.go`.
 
 #### 16.2.9 Speculative Global Flags
 
-A global flag must have a documented consumer in a later WBS item. A
-flag without a consumer is not added. See § 11.14.
+A global flag must have a documented consumer in a later WBS item.
 
 #### 16.2.10 Pre-Parse Rejection in a Cobra Hook
 
-Malformed invocations that involve interception flags (`--help`,
-`--version`) cannot be rejected in a Cobra hook, because Cobra
-short-circuits the hook chain. The rejection belongs at the
-pre-parse stage. See § 11.15.
+Malformed invocations that involve interception flags cannot be
+rejected in a Cobra hook. The rejection belongs at the pre-parse
+stage.
+
+#### 16.2.11 Error Literals Outside `forgeerr`
+
+A `*forgeerr.Error` is constructed only through `forgeerr.New`,
+`forgeerr.Wrap`, or the `WithX` methods. The struct literal
+`&forgeerr.Error{...}` must not appear in any package.
+
+#### 16.2.12 Sentinels for Error Codes
+
+Forge does not export sentinel values for error codes. Callers
+match on the code through `errors.As` and `Code()`. Exporting a
+sentinel would create a second way to identify the same error,
+and the two would drift.
+
+#### 16.2.13 Classifying a Parse Error as a Value Error
+
+A YAML syntax error, a duplicate key, an unknown field, and a
+type mismatch are distinct classifications. The loader must
+classify each by the parser's message shape (see
+`classifyYAMLError` in `internal/config/loader.go`) and produce
+the corresponding code: `CodeConfigMalformed` for syntax errors
+and duplicate keys, `CodeConfigUnknownField` for unknown fields,
+`CodeConfigInvalidType` for type mismatches, and
+`CodeConfigInvalidValue` for value errors. Collapsing the four
+into a single "invalid value" code hides the user's remediation
+and mislabels the failure. A future change to the loader must
+preserve the distinction or amend the taxonomy via an ADR.
+
+#### 16.2.14 Direct Writes to Process-Global Streams
+
+No function in the CLI or the application layer may write to
+`os.Stdout`, `os.Stderr`, or `os.Stdin` directly, except for the
+panic-recovery path in `Execute` (which is a documented
+exception, § 11.7). All other output flows through the injected
+`options` or `Dependencies` writers.
+
+#### 16.2.15 Legacy Renderers in the Boundary
+
+The boundary's error path uses `forgeerr.Format` and
+`Category.ExitCode()`. The legacy helpers `formatError` and
+`exitCodeFromError` are deleted. A future contributor must not
+reintroduce a local renderer or a parallel exit-code mapping;
+the format and the mapping each have exactly one home.
 
 ---
 
@@ -2556,26 +3205,17 @@ document changes in the same commit.
 
 > A pull request that changes a structural property described by
 > this document must update the corresponding section of this
-> document in the same commit. "Structural property" means any of:
-> module boundaries, dependency direction, interface contracts,
-> the two-boundary model, the handler / service pattern, the
-> command registry, the global flag inventory, the pre-parse
-> validation contract, error architecture, or logging architecture.
+> document in the same commit.
 
 A PR that renames `validateArgs`, or moves a file between packages,
-or adds a `Dependencies` field, or changes the exit-code mapping, is
-incomplete without a corresponding document update.
+or adds a `Dependencies` field, or changes the exit-code mapping, or
+adds a code to the registry, is incomplete without a corresponding
+document update.
 
 ### 17.2 How to Reference Sections
 
 Use section headings, not section numbers, in commit messages, PR
-descriptions, and code comments:
-
-- Good: `// See docs/architecture.md "Handler / Service Boundary".`
-- Bad: `// See docs/architecture.md § 11.12.`
-
-The heading is stable. The number changes when a section is inserted
-or removed.
+descriptions, and code comments.
 
 ### 17.3 How the Document Is Verified
 
@@ -2583,7 +3223,6 @@ This document is reviewed by human reviewers, not by a linter. The
 three mechanical claims it makes — that certain tests exist, that
 certain Taskfile targets exist, and that certain structural rules
 are enforced — are verified by running the named tests and targets.
-A reviewer who suspects a drift runs the tests.
 
 If you find a claim in this document that does not match the code,
 fix the code or fix the document, in the same commit, and note which
@@ -2592,15 +3231,11 @@ you did.
 ### 17.4 What Is Not Verified
 
 The document does not claim to be complete. It describes the
-structure that Phase 2 has established; future phases will add
-structure that this document does not yet describe. When a future
-WBS introduces a new module, boundary, or contract, it adds the
-corresponding section here.
+structure that Phase 2 has established.
 
 ### 17.5 Document History
 
-Every substantive change to this document is recorded in § 19, with
-the WBS item that motivated it.
+Every substantive change to this document is recorded in § 20.
 
 ---
 
@@ -2615,8 +3250,10 @@ the WBS item that motivated it.
 | [Validation](./validation-spec.md) | Implemented by the Validator package |
 | [Security Model](./security-model.md) | Enforced by the Filesystem package; defines the secret pattern list |
 | [Update Model](./update-model.md) | Implemented by the Update Engine package |
-| [CLI UX Spec](./cli-ux-spec.md) | Implemented by the CLI layer; pins the flag inventory and the pre-parse rejection contract |
-| [Development Guide](./development.md) | Contributor-facing companion; describes how to build, test, and diagnose the structures this document defines |
+| [CLI UX Spec](./cli-ux-spec.md) | Implemented by the CLI layer; pins the flag inventory, the error format, the verbose mode, and the pre-parse rejection contract |
+| [Error Categories](./reference/error-categories.md) | Implemented by `internal/forgeerr/category.go` |
+| [Error Codes](./reference/error-codes.md) | Implemented by `internal/forgeerr/codes.go` |
+| [Development Guide](./development.md) | Contributor-facing companion |
 | [Dependency Policy](./dependency-policy.md) | Governs what this architecture may depend on |
 | [Product Discovery](./product-discovery.md) | Defines the product this architecture implements |
 
@@ -2624,30 +3261,24 @@ the WBS item that motivated it.
 
 ## 19. Open Questions
 
-The following questions remain open and should be resolved before
-implementation:
+The following questions remain open:
 
-- Should the Application layer use a **use case** pattern (one service
-  per command) or a **service** pattern (one service per domain
-  concept)? Current code uses the use-case pattern; the document
-  records it as the accepted choice pending further services.
-- Should the Domain layer use **value objects** or plain structs?
-- Should the Filesystem interface be **narrow** (few methods) or
-  **wide** (all operations)? Current code uses a wide interface.
-- Should the Update Engine use a library for **three-way merge** or
+- Should the Application layer use a use-case pattern or a
+  service pattern?
+- Should the Domain layer use value objects or plain structs?
+- Should the Filesystem interface be narrow or wide?
+- Should the Update Engine use a library for three-way merge or
   implement one?
-- Should logging use a library (e.g., `slog`, `zap`) or a custom
-  implementation? Current code uses `log/slog`.
-- Should the CLI support **shell completion** out of the box?
-- Should the architecture support **parallelism** for large
-  repositories, and if so, where?
-- Should the State store use **YAML**, **JSON**, or a binary format?
-- Should the architecture include a **cache** layer for template
+- Should logging use a library or a custom implementation?
+- Should the CLI support shell completion out of the box?
+- Should the architecture support parallelism for large
+  repositories?
+- Should the State store use YAML, JSON, or a binary format?
+- Should the architecture include a cache layer for template
   resolution?
 
 These questions will be addressed in Phase 2 as implementation
-begins. Answers that affect the structure described in this document
-will be added to the relevant section.
+begins.
 
 ---
 
@@ -2657,7 +3288,9 @@ will be added to the relevant section.
 |---------|------|--------|--------|
 | 0.1.0 | 2026-10-09 | @thapelomagqazana | Initial Phase 1 draft. |
 | 0.2.0 | 2026-10-09 | @thapelomagqazana | Added module list, dependency direction, interface contracts, and data flow. |
-| 0.3.0 | 2026-10-09 | @thapelomagqazana | Refined § 11 to describe the two-boundary execution model introduced by WBS 4.2.2. Added the `Dependencies` struct, the `options`/`Dependencies` split, the transformation, the two testability seams, the two auditable invariants, and the seven rules for extending the model. Renamed § 11 from "The Two-Layer Execution Model" to "The Two-Boundary Execution Model". |
-| 0.4.0 | 2026-10-10 | @thapelomagqazana | Added § 11.12 (Handler / Service Boundary) in response to WBS 4.3.1. Added the reference implementation (`forge version`), the allowed / forbidden table, the enforcement rules, and the rationale for the `internal/version` leaf package. Added § 4.2.2a (Version Service) as a concrete example of the Application module. Updated § 5.3, § 7.2, § 7.4, § 10, § 11.9, § 13, § 16, and the module list to reflect the new service. Added rules for adding a command in § 15.1. |
-| 0.5.0 | 2026-10-10 | @thapelomagqazana | Added § 11.13 (Command Registration) in response to WBS 4.4.1. Added § 11.14 (Global Flags) in response to WBS 5.3.1. Added § 11.15 (Pre-Parse Argument Validation) in response to WBS 5.2.2 and WBS 5.2.3. Extended § 4.2.1, § 7.1, § 10, § 11.9, § 13, § 15, § 16. |
-| 0.6.0 | 2026-10-10 | @thapelomagqazana | Structural-review response. Added WBS attribution to every module in § 4.1. Resolved the `Filesystem` interface placement in § 3.3 and § 13.1. Changed `Dependencies.Config` from `*config.Config` to `config.Config` in § 11.2.2, with rationale. Made the "Cobra-generated command names" coupling explicit in § 11.15 and required a test for it. Made the enforcement claims in § 11.5, § 11.13, § 11.14, and § 11.15 honest: where a Taskfile target or Go test does not yet exist, the document says so and records the gap. Added § 11.12's three explicit import constraints (Cobra, `internal/cli`, `Dependencies`). Added § 11.12's line-count enforcement paragraph. Consolidated the file lists into § 11.9 and § 13.2 with a single source of truth. Added § 17 (Keeping This Document Accurate). Added § 4.2.17 (Version Model). Added the leaf-package rule to § 5.2 and § 5.3. Added the leaf-package box to § 10. Added § 15.6 (Adding a Field to `Dependencies`). Reorganised § 16 into two tiers: five cardinal sins and ten additional rules. Added the § 8.8 / § 9.6 cross-reference for the secret pattern list. Added the § 8.7 exit-code row for pre-parse validation. Added § 18's new entries (Development Guide, Dependency Policy). |
+| 0.3.0 | 2026-10-09 | @thapelomagqazana | Refined § 11 to describe the two-boundary execution model. |
+| 0.4.0 | 2026-10-10 | @thapelomagqazana | Added § 11.12 (Handler / Service Boundary). |
+| 0.5.0 | 2026-10-10 | @thapelomagqazana | Added § 11.13, § 11.14, § 11.15. |
+| 0.6.0 | 2026-10-10 | @thapelomagqazana | Structural-review response. |
+| 0.7.0 | 2026-10-12 | @thapelomagqazana | Error-architecture update for WBS 10.1.1, 10.1.2, 10.2.1, 10.3.1, and 10.3.2. |
+| 0.8.0 | 2026-10-12 | @thapelomagqazana | Error-architecture update for WBS 10.4.1, 10.4.2, 10.4.3, 10.4.4, 10.5.1, and 10.5.2. Added § 8.7 (user-facing format), § 8.11 (log format), § 8.12 (redaction), § 8.13 (verbose modes), § 8.14 (boundary integration). Rewrote § 8.7, § 8.9, § 11.7, § 11.16 to reflect `forgeerr.Format`, `wrapCobraError`, `wrappedUnexpectedError`, `recoveredPanicError`, and `exitCodeOf`; the legacy `formatError` and `exitCodeFromError` helpers are deleted. Updated § 6.13 with the formatter, log, redaction, and verbose surfaces. Updated § 13.2 with the new `internal/forgeerr` files and the updated `internal/cli` file list. Added § 16.2.13 (parse-error classification), § 16.2.14 (direct writes to process streams), and § 16.2.15 (legacy renderers in the boundary). Updated § 11.9, § 11.10, § 11.14, § 14.4, § 14.5, and § 15 (added § 15.9 and § 15.10). |

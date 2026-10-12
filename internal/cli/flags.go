@@ -67,6 +67,8 @@
 package cli
 
 import (
+	"fmt"
+
 	"github.com/spf13/cobra"
 )
 
@@ -213,30 +215,38 @@ func registerGlobalFlags(cmd *cobra.Command) {
 		"output format: text|json")
 }
 
-// verboseRequested reports whether --verbose was set on the command
-// or on any of its ancestors.
+// verboseRequested reports whether the --verbose flag was set on
+// the invocation.
 //
-// # Reading the flag
+// The flag is a persistent flag registered by registerGlobalFlags
+// (WBS 5.3.1). It is inherited by every subcommand, so reading it
+// from the root command returns the value the user passed
+// regardless of where the flag appeared on the command line.
 //
-// The function reads the flag from the command's flag set. A
-// persistent flag set on the root is visible to every subcommand;
-// a persistent flag set on a subcommand is visible to that
-// subcommand and to its descendants. The function reads from the
-// command it receives, which is the command the invocation is
-// running.
+// # Why the helper exists
 //
-// # Error handling
+// The flag's value is read from a *cobra.Command, not from the
+// options struct or from a global. The helper centralises the
+// read so that a future change to the flag's name or type is a
+// change in one place.
 //
-// The function ignores the error returned by GetBool. The flag is
-// guaranteed to exist because registerGlobalFlags registered it,
-// and the call sites are always commands on which the
-// registration has run. A future refactor that removes the
-// registration would break the call sites at compile time only if
-// they were rewritten to depend on the flag's presence; the
-// current form would silently return false. The trade-off is
-// accepted because the registration is centralized and reviewed.
+// # The nil-command case
+//
+// A nil cmd is a programming error. The helper panics rather than
+// returning a default, because a caller that passes nil has a
+// bug that a default would hide. The signature is unchanged from
+// the pre-WBS-10.4.4 helper.
 func verboseRequested(cmd *cobra.Command) bool {
-	v, _ := cmd.Flags().GetBool(FlagVerbose)
+	if cmd == nil {
+		panic("cli: verboseRequested called with nil command")
+	}
+	v, err := cmd.Flags().GetBool(FlagVerbose)
+	if err != nil {
+		// The flag was not registered. This is a programming
+		// error: registerGlobalFlags is called from newRootCmd,
+		// and every command in the tree inherits the flag.
+		panic(fmt.Sprintf("cli: --%s flag not registered: %v", FlagVerbose, err))
+	}
 	return v
 }
 

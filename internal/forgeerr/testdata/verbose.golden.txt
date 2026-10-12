@@ -1,0 +1,15 @@
+Error: invalid YAML
+Code:  FORGE_CONFIG_MALFORMED
+       file: config.yaml
+       internal_trace_id: abc-123
+       line: 12
+
+Cause:
+  yaml: line 12: did not find expected key
+
+Stack:
+  main.loadConfig (internal/config/loader.go:42)
+  main.runConfig (internal/cli/config.go:31)
+
+Suggestion:
+  Fix the YAML syntax at line 12.

@@ -540,20 +540,36 @@ func TestVersionHandler_ReturnsErrorNotExit(t *testing.T) {
 //
 // # The allowlist
 //
-// The four allowed tokens are the handler's legitimate touch
+// The five allowed tokens are the handler's legitimate touch
 // points on the service:
 //
 //   - appversion.Get             — the read accessor (WBS 6.3.1).
 //   - appversion.FormatAs        — the format dispatcher (WBS 6.4.2).
-//   - appversion.ErrUnknownFormat — the sentinel error the handler
-//     inspects (WBS 6.4.2).
-//   - appversion.FormatText      — the default format value for the
-//     --format flag (WBS 6.4.2).
+//   - appversion.ErrUnknownFormat — the sentinel error the service
+//     exports (WBS 6.4.2). Kept in the allowlist for symmetry; the
+//     current handler does not reference it, because the handler
+//     pre-checks the format against the two format constants
+//     rather than inspecting the service's sentinel.
+//   - appversion.FormatText      — the text format constant
+//     (WBS 6.4.2). Referenced by the handler's pre-check and by the
+//     --format flag's default value.
+//   - appversion.FormatJSON      — the JSON format constant
+//     (WBS 6.4.2). Referenced by the handler's pre-check.
 //
 // Any other reference to the service is a boundary violation. The
 // handler must not, for example, call appversion.WriteJSON directly
 // (that is the dispatcher's job), nor reach into an unexported
 // helper.
+//
+// # Why the format constants are allowed
+//
+// The handler's `RunE` pre-checks the --format value against the
+// two supported values before delegating to FormatAs. The check is
+// a switch on the constant identifiers; the identifiers are the
+// service's public surface for the format values, and the handler
+// is permitted to reference them. The alternative — inspecting the
+// error returned by FormatAs for the sentinel ErrUnknownFormat —
+// was the pre-WBS-10.5.1 pattern; the pre-check replaces it.
 //
 // # How the scan works
 //
@@ -575,6 +591,7 @@ func TestVersionHandler_OnlyCallsDocumentedService(t *testing.T) {
 		"appversion.FormatAs(":        true,
 		"appversion.ErrUnknownFormat": true,
 		"appversion.FormatText":       true,
+		"appversion.FormatJSON":       true,
 	}
 
 	const prefix = "appversion."
@@ -597,7 +614,8 @@ func TestVersionHandler_OnlyCallsDocumentedService(t *testing.T) {
 			t.Errorf("version.go references %q; "+
 				"handler must call only the service's documented API "+
 				"(appversion.Get, appversion.FormatAs, "+
-				"appversion.ErrUnknownFormat, appversion.FormatText)",
+				"appversion.ErrUnknownFormat, appversion.FormatText, "+
+				"appversion.FormatJSON)",
 				token)
 		}
 		rest = rest[end:]

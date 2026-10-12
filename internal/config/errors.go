@@ -1,224 +1,123 @@
 // Package config defines the CLI configuration for Forge.
 //
 // This file holds the configuration error taxonomy (WBS 8.5.1).
-// Every failure in the config package produces an error whose
-// sentinel is one of the eight values declared here. The sentinel
-// identifies the category; the constructor that produced the error
-// adds the context (the file path, the offending value, the allowed
-// values) and the suggestion.
+// Every failure in the config package produces a *forgeerr.Error
+// with category CategoryConfig. The code (E1..E8 in the
+// taxonomy's numbering, FORGE_CONFIG_* in the registry) identifies
+// the specific failure; the constructor that produced the error
+// adds the context (the file path, the offending value, the
+// allowed values) and the remediation.
 //
 // # The eight categories
 //
-//	E1  ErrConfigNotFound          --config points to a missing file
-//	E2  ErrConfigPermission        file exists but cannot be read
-//	E3  ErrConfigMalformed         invalid YAML syntax
-//	E4  ErrConfigUnknownField      unknown YAML key
-//	E5  ErrConfigInvalidType       type mismatch
-//	E6  ErrConfigInvalid           value outside allowed enum
-//	E7  ErrConfigTooLarge          file exceeds 1 MiB
-//	E8  ErrConfigInvalidEncoding   BOM or non-UTF-8
+//	E1  CodeConfigNotFound        --config points to a missing file
+//	E2  CodeConfigPermission      file exists but cannot be read
+//	E3  CodeConfigMalformed       invalid YAML syntax
+//	E4  CodeConfigUnknownField    unknown YAML key
+//	E5  CodeConfigInvalidType     type mismatch
+//	E6  CodeConfigInvalidValue    value outside allowed enum
+//	E7  CodeConfigTooLarge        file exceeds 1 MiB
+//	E8  CodeConfigInvalidEncoding BOM or non-UTF-8
 //
 // The codes are documented in docs/cli-ux-spec.md "Config Error
-// Reference". Their exit code is ExitConfig (3) for all eight.
+// Reference" and in docs/reference/error-codes.md. Their exit
+// code is ExitConfig (3) for all eight.
 //
 // # How the CLI classifies a config error
 //
-// The CLI's exitCodeFromError reads the error's Category() method.
-// Every sentinel's Category() returns "config". The classifier maps
-// that category to ExitConfig (3).
+// The CLI's exitCodeOf reads the error's Category() method.
+// Every config error's Category() returns CategoryConfig. The
+// helper maps that category to CategoryConfig.ExitCode(), which
+// is ExitConfig (3).
 //
 // The classification is done by category, not by code. The eight
 // codes all map to ExitConfig (3); a future WBS that splits the
 // exit codes (for example, a distinct code for a syntax error)
-// changes the classifier's mapping, not the sentinels.
+// changes the categories' ExitCode method, not the constructors.
 //
 // # The error's structure
 //
-// Each error the package produces has:
+// Each error the package produces is a *forgeerr.Error with:
 //
-//   - A sentinel (the category). Reachable via errors.Is.
-//   - A message. The message names the file path and the
-//     offending element (where applicable). It does not end with
-//     a period; the CLI's formatter adds the "Error: " prefix.
-//   - A suggestion. The suggestion is the actionable remediation.
-//     It is read via the Suggestion() method, which the CLI's
-//     formatter uses to render the "Suggestion:" block.
+//   - Category: CategoryConfig.
+//   - Code: one of the eight FORGE_CONFIG_* codes.
+//   - Message: a short fixed string naming the failure kind.
+//   - Context: the varying data (path, field name, line number,
+//     offending value, allowed values).
+//   - Remediation: the actionable suggestion, ending with a
+//     period (the frozen format's rule F6).
+//   - Cause: the underlying error, if any, attached via WithCause.
 //
-// The message and the suggestion are separate concerns: the
-// message says what happened; the suggestion says what to do. A
-// future renderer (a JSON emitter, a log formatter) reads them
-// separately.
+// The split between the message and the context is deliberate.
+// The message is short and stable; the context carries the
+// varying data. The frozen user-facing format renders both:
 //
-// # No package-level mutable state
+//	Error: config file not found
+//	Code:  FORGE_CONFIG_NOT_FOUND
+//	       path: /etc/forge/config.yaml
 //
-// The sentinels declared here are package-level values. The config
-// package's contract test does not forbid them: the sentinels are
-// the package's public API, not accidental state. Each sentinel is
-// a pointer to a configError value whose fields are set once at
-// declaration and never mutated. The values are safe for
-// concurrent reads.
+// # Migration note (WBS 10.5.2)
 //
-// A future WBS that wants to make the sentinels values instead of
-// pointers can do so; the errors.Is check works either way because
-// the type's Is method does the comparison.
+// Before WBS 10.5.2, the constructors returned plain *configError
+// values whose Category() method returned the string "config".
+// The plain errors were the source of an incorrect exit code at
+// the CLI boundary: the boundary's non-*forgeerr.Error wrapping
+// path classified them as FORGE_INTERNAL_UNEXPECTED, whose
+// category is CategoryInternal and whose exit code is
+// ExitFailure (1), not ExitConfig (3).
+//
+// The migration replaces the plain errors with *forgeerr.Error
+// values. The configError type is deleted; the Category() string
+// method is no longer needed because the category is a
+// forgeerr.Category and the *forgeerr.Error carries it.
+//
+// # What about the sentinels
+//
+// The eight sentinels (ErrConfigNotFound, ErrConfigPermission,
+// ...) remain exported. Their type changes from *configError to
+// *forgeerr.Error, but their role is unchanged: they are values
+// that callers can match with errors.Is. The *forgeerr.Error's
+// Is method compares codes, so errors.Is(err, ErrConfigNotFound)
+// matches any error with code CodeConfigNotFound, regardless of
+// the error's context or cause.
+//
+// # What about the Category() and Suggestion() methods
+//
+// The old *configError type had a Category() string method and a
+// Suggestion() string method. Both are superseded:
+//
+//   - Category() string is replaced by Category() forgeerr.Category
+//     on the *forgeerr.Error. The type is different; a caller that
+//     asserted on the old string method must use errors.As with a
+//     *forgeerr.Error target and read the category via the new
+//     method.
+//
+//   - Suggestion() string is replaced by Remediation() string on
+//     the *forgeerr.Error. The name changed because the frozen
+//     format calls the field "remediation"; the concept is the
+//     same. A caller that read the old method must read the new
+//     one.
 package config
 
 import (
-	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/thapelomagqazana/forge/internal/forgeerr"
 )
-
-// =============================================================================
-// The error type
-// =============================================================================
-
-// configError is the type of every error the config package
-// produces.
-//
-// # Why a type and not a plain errors.New
-//
-// The type carries four pieces of information:
-//
-//   - code: the E1..E8 identifier.
-//   - msg: the human-readable message.
-//   - suggestion: the actionable remediation.
-//   - cause: the underlying error, if any (for example, the
-//     os.ReadFile error that triggered E2).
-//
-// A plain errors.New carries only the message. The type is the
-// minimum structure that supports errors.Is (via the Is method),
-// the Category() classification, and the Suggestion() accessor.
-//
-// # Why the fields are unexported
-//
-// The error is a value object; its fields are read by the
-// package's methods, not by callers. Callers use errors.Is,
-// Category(), and Suggestion(). Exposing the fields would invite
-// callers to depend on the internal representation.
-//
-// # Immutability
-//
-// A configError's fields are set once, by the constructor that
-// produced it, and never mutated. A caller that holds a
-// configError can read its fields through the methods; a caller
-// that holds an error interface can check errors.Is and read
-// Category() and Suggestion().
-type configError struct {
-	code       string
-	msg        string
-	suggestion string
-	cause      error
-}
-
-// Error implements the error interface. The message does not end
-// with a period; the CLI's formatter adds the "Error: " prefix.
-func (e *configError) Error() string {
-	return e.msg
-}
-
-// Unwrap returns the cause, or nil if there is none.
-//
-// The Unwrap method is what lets errors.Is and errors.As see
-// through the error to its cause. A caller that wants to
-// distinguish "permission denied" from "file not found" checks
-// the cause's errors.Is against os.ErrPermission.
-func (e *configError) Unwrap() error {
-	return e.cause
-}
-
-// Is reports whether target is the same sentinel as e's code.
-//
-// # How the comparison works
-//
-// errors.Is calls the receiver's Is method (this method) with
-// each error in the target's chain. The method compares the
-// target's code to e's code. Two errors with the same code are
-// considered the same error for the purposes of errors.Is, even
-// if their messages or suggestions differ.
-//
-// # Why the comparison is on the code
-//
-// The code is the identity of the category. Two E2 errors, one
-// for /home/user/forge.yaml and one for /etc/forge.yaml, are
-// both E2 errors; a caller that writes
-// errors.Is(err, ErrConfigPermission) wants to match both. The
-// code is the right comparison key.
-//
-// # The target's type
-//
-// The target is expected to be a *configError. A target of a
-// different type is not matched by this method; errors.Is
-// continues to the next error in the chain or returns false.
-func (e *configError) Is(target error) bool {
-	t, ok := target.(*configError)
-	if !ok {
-		return false
-	}
-	return t.code == e.code
-}
-
-// Category returns the error's category. Every config error
-// returns "config".
-//
-// # Why the method exists
-//
-// The CLI's exitCodeFromError classifies errors by category. A
-// single category for every config error keeps the classifier
-// simple: one case handles all eight codes. A future WBS that
-// splits the exit codes (for example, a distinct code for a
-// syntax error) changes this method to return different strings
-// per sentinel.
-//
-// # Why the value is a constant-like string
-//
-// The string "config" is the category name used by the CLI UX
-// spec's exit-code table (docs/cli-ux-spec.md § 7.2). Changing
-// it is a change to that table; the two are updated in the same
-// commit.
-func (e *configError) Category() string {
-	return "config"
-}
-
-// Suggestion returns the error's suggestion.
-//
-// # What the suggestion is
-//
-// The suggestion is the actionable remediation: what the user
-// should do to fix the error. It is read by the CLI's error
-// formatter (WBS 7.3.2), which renders it in the "Suggestion:"
-// block.
-//
-// # Why the suggestion is not part of the message
-//
-// The message says what happened; the suggestion says what to
-// do. A renderer that wants to show only the message (for
-// example, a log line) reads Error(). A renderer that wants to
-// show the suggestion (for example, the CLI's error formatter)
-// reads Suggestion(). The two are separate; the separation
-// lets each renderer choose.
-func (e *configError) Suggestion() string {
-	return e.suggestion
-}
-
-// Code returns the error's E1..E8 code. It is used by tests and
-// by a future structured-error model (WBS 10.0).
-func (e *configError) Code() string {
-	return e.code
-}
 
 // =============================================================================
 // The eight sentinels
 // =============================================================================
 //
-// Each sentinel is a *configError with the code set and the
-// message and suggestion empty. The sentinel is used only as a
-// target for errors.Is; the message and suggestion are added by
-// the constructors.
+// Each sentinel is a *forgeerr.Error with the code set and the
+// message and remediation filled in. The sentinel is used as a
+// target for errors.Is; the constructors produce errors with the
+// same code but with context and cause attached.
 //
-// The docstring on each sentinel records the category's trigger,
-// the message format, and the suggestion. The three together are
-// the category's contract.
+// The docstring on each sentinel records the code's meaning, the
+// trigger, the message shape, and the remediation. The four
+// together are the code's contract.
 
 // ErrConfigNotFound is the sentinel for E1: the file the user
 // asked for does not exist.
@@ -232,21 +131,24 @@ func (e *configError) Code() string {
 // discovered file is not an error; discovery's contract is to
 // return "" when no file exists).
 //
-// # Message format
+// # Message shape
 //
-//	config file not found: <path>
+// The constructor's message is "config file not found". The path
+// is in the context under the key "path".
 //
-// # Suggestion
+// # Remediation
 //
-//	Check the path passed to --config.
+// "Check the path passed to --config." (ends with a period, per
+// rule F6 of the frozen format).
 //
 // # Exit code
 //
-// ExitConfig (3).
-var ErrConfigNotFound = &configError{
-	code: "E1",
-	msg:  "config file not found",
-}
+// ExitConfig (3), via CategoryConfig.ExitCode().
+var ErrConfigNotFound = forgeerr.New(
+	forgeerr.CategoryConfig,
+	string(forgeerr.CodeConfigNotFound),
+	"config file not found",
+)
 
 // ErrConfigPermission is the sentinel for E2: the file exists but
 // cannot be read.
@@ -258,21 +160,23 @@ var ErrConfigNotFound = &configError{
 // a caller can check errors.Is(err, os.ErrPermission) to
 // distinguish a permission failure from a generic read failure.
 //
-// # Message format
+// # Message shape
 //
-//	cannot read config file: <path>
+// The constructor's message is "cannot read config file". The
+// path is in the context under the key "path".
 //
-// # Suggestion
+// # Remediation
 //
-//	Check file permissions: chmod 644 <path>
+// "Check the file's permissions." (ends with a period).
 //
 // # Exit code
 //
 // ExitConfig (3).
-var ErrConfigPermission = &configError{
-	code: "E2",
-	msg:  "cannot read config file",
-}
+var ErrConfigPermission = forgeerr.New(
+	forgeerr.CategoryConfig,
+	string(forgeerr.CodeConfigPermission),
+	"cannot read config file",
+)
 
 // ErrConfigMalformed is the sentinel for E3: the file is not
 // valid YAML.
@@ -283,21 +187,25 @@ var ErrConfigPermission = &configError{
 // parser's error; the constructor extracts the line and column
 // from it if the parser provides them.
 //
-// # Message format
+// # Message shape
 //
-//	invalid YAML in <path>: <line>:<col>
+// The constructor's message is "invalid YAML". The path, line,
+// and column are in the context under the keys "path", "line",
+// and "column" (the latter two as decimal strings).
 //
-// # Suggestion
+// # Remediation
 //
-//	Fix the YAML syntax at line <N>.
+// "Fix the YAML syntax at line <N>." when the line is known, or
+// "Fix the YAML syntax." when it is not.
 //
 // # Exit code
 //
 // ExitConfig (3).
-var ErrConfigMalformed = &configError{
-	code: "E3",
-	msg:  "invalid YAML",
-}
+var ErrConfigMalformed = forgeerr.New(
+	forgeerr.CategoryConfig,
+	string(forgeerr.CodeConfigMalformed),
+	"invalid YAML",
+)
 
 // ErrConfigUnknownField is the sentinel for E4: the YAML
 // contains a key the schema does not declare.
@@ -308,46 +216,52 @@ var ErrConfigMalformed = &configError{
 // returns an "unknown field" error. The cause is the decoder's
 // error; the constructor extracts the field name from it.
 //
-// # Message format
+// # Message shape
 //
-//	unknown field <name> in <path>
+// The constructor's message is "unknown field". The path and
+// field name are in the context under the keys "path" and
+// "field".
 //
-// # Suggestion
+// # Remediation
 //
-//	Remove field '<name>' or check for typos.
+// "Remove the field or check for typos." (ends with a period).
 //
 // # Exit code
 //
 // ExitConfig (3).
-var ErrConfigUnknownField = &configError{
-	code: "E4",
-	msg:  "unknown field",
-}
+var ErrConfigUnknownField = forgeerr.New(
+	forgeerr.CategoryConfig,
+	string(forgeerr.CodeConfigUnknownField),
+	"unknown field",
+)
 
 // ErrConfigInvalidType is the sentinel for E5: a field has a
 // value of the wrong type.
 //
 // # Trigger
 //
-// The YAML decoder returns a type-mismatch error (for example,
-// a string where an integer was expected). The cause is the
+// The YAML decoder returns a type-mismatch error (for example, a
+// string where an integer was expected). The cause is the
 // decoder's error.
 //
-// # Message format
+// # Message shape
 //
-//	invalid type for <field> in <path>
+// The constructor's message is "invalid type". The path and
+// field name are in the context under the keys "path" and
+// "field".
 //
-// # Suggestion
+// # Remediation
 //
-//	Check the type of '<field>' in <path>.
+// "Check the field's type." (ends with a period).
 //
 // # Exit code
 //
 // ExitConfig (3).
-var ErrConfigInvalidType = &configError{
-	code: "E5",
-	msg:  "invalid type",
-}
+var ErrConfigInvalidType = forgeerr.New(
+	forgeerr.CategoryConfig,
+	string(forgeerr.CodeConfigInvalidType),
+	"invalid type",
+)
 
 // ErrConfigInvalid is the sentinel for E6: a field's value is
 // outside the allowed set (typically an enum).
@@ -359,17 +273,16 @@ var ErrConfigInvalidType = &configError{
 // debug|info|warn|error. The constructor names the field, the
 // invalid value, and the allowed values.
 //
-// # Message format
+// # Message shape
 //
-//	invalid value for <field>: <value>
+// The constructor's message is "invalid value". The field, the
+// offending value, and the allowed values are in the context
+// under the keys "field", "value", and "allowed". The path, if
+// known, is in the context under the key "path".
 //
-// The constructor that produced the error may append the
-// allowed values to the message; the CLI UX spec's example
-// message format omits them and puts them in the suggestion.
+// # Remediation
 //
-// # Suggestion
-//
-//	Allowed values: <list>.
+// "Allowed values: <list>." (ends with a period).
 //
 // # Exit code
 //
@@ -380,13 +293,13 @@ var ErrConfigInvalidType = &configError{
 //
 // The sentinel predates WBS 8.5.1: it was introduced by WBS
 // 8.4.4 for the flag-resolution errors. WBS 8.5.1 adopts it as
-// the E6 sentinel without renaming. A future WBS that wants a
-// distinct name can rename it; the rename is a coordinated
-// change across the config package and the CLI's classifier.
-var ErrConfigInvalid = &configError{
-	code: "E6",
-	msg:  "invalid value",
-}
+// the E6 sentinel without renaming. The code it carries is
+// CodeConfigInvalidValue, which is the registry's name for E6.
+var ErrConfigInvalid = forgeerr.New(
+	forgeerr.CategoryConfig,
+	string(forgeerr.CodeConfigInvalidValue),
+	"invalid value",
+)
 
 // ErrConfigTooLarge is the sentinel for E7: the file exceeds the
 // maximum size.
@@ -397,21 +310,23 @@ var ErrConfigInvalid = &configError{
 // check is done before os.ReadFile to avoid reading a large
 // file into memory.
 //
-// # Message format
+// # Message shape
 //
-//	config file too large: <path>
+// The constructor's message is "config file too large". The path
+// is in the context under the key "path".
 //
-// # Suggestion
+// # Remediation
 //
-//	Config files must be under 1 MiB.
+// "Config files must be under 1 MiB." (ends with a period).
 //
 // # Exit code
 //
 // ExitConfig (3).
-var ErrConfigTooLarge = &configError{
-	code: "E7",
-	msg:  "config file too large",
-}
+var ErrConfigTooLarge = forgeerr.New(
+	forgeerr.CategoryConfig,
+	string(forgeerr.CodeConfigTooLarge),
+	"config file too large",
+)
 
 // ErrConfigInvalidEncoding is the sentinel for E8: the file is
 // not valid UTF-8, or it starts with a UTF-8 BOM.
@@ -422,31 +337,43 @@ var ErrConfigTooLarge = &configError{
 // 0xBF), or the file contains a byte sequence that is not valid
 // UTF-8. The check is done on the raw bytes.
 //
-// # Message format
+// # Message shape
 //
-//	invalid encoding in <path>
+// The constructor's message is "invalid encoding". The path is
+// in the context under the key "path".
 //
-// # Suggestion
+// # Remediation
 //
-//	Ensure the file is UTF-8 encoded without BOM.
+// "Ensure the file is UTF-8 encoded without BOM." (ends with a
+// period).
 //
 // # Exit code
 //
 // ExitConfig (3).
-var ErrConfigInvalidEncoding = &configError{
-	code: "E8",
-	msg:  "invalid encoding",
-}
+var ErrConfigInvalidEncoding = forgeerr.New(
+	forgeerr.CategoryConfig,
+	string(forgeerr.CodeConfigInvalidEncoding),
+	"invalid encoding",
+)
 
 // =============================================================================
 // The constructors
 // =============================================================================
 //
-// Each constructor returns an error whose sentinel is the
-// category's sentinel, whose message is the formatted message,
-// and whose suggestion is the category's suggestion. The
-// constructors wrap their errors with fmt.Errorf and %w so that
-// errors.Is reaches the sentinel.
+// Each constructor returns a *forgeerr.Error with the code's
+// sentinel's code, a short fixed message, the varying data in
+// the context, and the code's remediation. Constructors that
+// receive a cause attach it via WithCause.
+//
+// # Why the constructors are not variadic for the cause
+//
+// The old constructors accepted a cause argument for some codes
+// and not others. The new constructors follow the same shape:
+// where a cause is meaningful (a permission error, a YAML parse
+// error, a strict-decode error), the constructor takes it;
+// where it is not (not-found, too-large, invalid-encoding), the
+// constructor does not. The asymmetry matches the reality: some
+// failures have an underlying cause and some do not.
 
 // NewConfigNotFound constructs an E1 error for the given path.
 //
@@ -455,26 +382,29 @@ var ErrConfigInvalidEncoding = &configError{
 // config.Discover) performs the check and calls the constructor
 // when the file is missing.
 func NewConfigNotFound(path string) error {
-	return &configError{
-		code:       ErrConfigNotFound.code,
-		msg:        fmt.Sprintf("config: %s: not found", path),
-		suggestion: "Check the path passed to --config.",
-	}
+	// ErrConfigNotFound is the sentinel; the returned error
+	// shares its code but adds the path to the context.
+	//
+	// The context is added via WithContext, which returns a
+	// copy of the sentinel with the new key set. The sentinel
+	// itself is not mutated; a caller that holds
+	// ErrConfigNotFound sees the unmodified sentinel.
+	return ErrConfigNotFound.
+		WithContext("path", path)
 }
 
 // NewConfigPermission constructs an E2 error for the given path
 // and cause.
 //
 // The cause is the underlying *os.PathError from os.ReadFile.
-// The constructor wraps the cause so that errors.Is(err,
-// os.ErrPermission) works.
+// The constructor attaches the cause so that
+// errors.Is(err, os.ErrPermission) works.
 func NewConfigPermission(path string, cause error) error {
-	return &configError{
-		code:       ErrConfigPermission.code,
-		msg:        fmt.Sprintf("%s: %s", ErrConfigPermission.msg, path),
-		suggestion: fmt.Sprintf("Check file permissions: chmod 644 %s", path),
-		cause:      cause,
+	e := ErrConfigPermission.WithContext("path", path)
+	if cause != nil {
+		e = e.WithCause(cause)
 	}
+	return e
 }
 
 // NewConfigMalformed constructs an E3 error for the given path,
@@ -483,49 +413,56 @@ func NewConfigPermission(path string, cause error) error {
 // The line and column are the location of the syntax error, as
 // reported by the YAML parser. A parser that does not report a
 // line uses 0; the constructor then omits the line and column
-// from the message.
+// from the context.
 func NewConfigMalformed(path string, line, col int, cause error) error {
-	var location string
-	switch {
-	case line > 0 && col > 0:
-		location = fmt.Sprintf(":%d:%d", line, col)
-	case line > 0:
-		location = fmt.Sprintf(":%d", line)
-	}
-	var suggestion string
+	e := ErrConfigMalformed.WithContext("path", path)
 	if line > 0 {
-		suggestion = fmt.Sprintf("Fix the YAML syntax at line %d.", line)
+		e = e.WithContext("line", fmt.Sprintf("%d", line))
+	}
+	if col > 0 {
+		e = e.WithContext("column", fmt.Sprintf("%d", col))
+	}
+
+	// The remediation names the line when it is known; the
+	// generic form is used otherwise.
+	var remediation string
+	if line > 0 {
+		remediation = fmt.Sprintf("Fix the YAML syntax at line %d.", line)
 	} else {
-		suggestion = "Fix the YAML syntax."
+		remediation = "Fix the YAML syntax."
 	}
-	return &configError{
-		code:       ErrConfigMalformed.code,
-		msg:        fmt.Sprintf("%s in %s%s", ErrConfigMalformed.msg, path, location),
-		suggestion: suggestion,
-		cause:      cause,
+	e = e.WithRemediation(remediation)
+
+	if cause != nil {
+		e = e.WithCause(cause)
 	}
+	return e
 }
 
 // NewConfigUnknownField constructs an E4 error for the given
 // path and field name.
 func NewConfigUnknownField(path, field string, cause error) error {
-	return &configError{
-		code:       ErrConfigUnknownField.code,
-		msg:        fmt.Sprintf("%s %s in %s", ErrConfigUnknownField.msg, field, path),
-		suggestion: fmt.Sprintf("Remove field '%s' or check for typos.", field),
-		cause:      cause,
+	e := ErrConfigUnknownField.
+		WithContext("path", path).
+		WithContext("field", field).
+		WithRemediation("Remove the field or check for typos.")
+	if cause != nil {
+		e = e.WithCause(cause)
 	}
+	return e
 }
 
 // NewConfigInvalidType constructs an E5 error for the given
 // path and field name.
 func NewConfigInvalidType(path, field string, cause error) error {
-	return &configError{
-		code:       ErrConfigInvalidType.code,
-		msg:        fmt.Sprintf("%s for %s in %s", ErrConfigInvalidType.msg, field, path),
-		suggestion: fmt.Sprintf("Check the type of '%s' in %s.", field, path),
-		cause:      cause,
+	e := ErrConfigInvalidType.
+		WithContext("path", path).
+		WithContext("field", field).
+		WithRemediation("Check the field's type.")
+	if cause != nil {
+		e = e.WithCause(cause)
 	}
+	return e
 }
 
 // NewConfigInvalid constructs an E6 error for the given field,
@@ -536,68 +473,55 @@ func NewConfigInvalidType(path, field string, cause error) error {
 // E6 errors arise from two sources: a value in the config file,
 // and a value in a CLI flag or environment variable. The first
 // has a path; the second does not. The constructor takes an
-// optional path; when the path is empty, the message omits it.
+// optional path; when the path is empty or omitted, the context
+// does not include a "path" key.
 //
-// The signature uses a variadic path for compatibility with the
-// existing callers from WBS 8.4.4; the callers pass one path or
-// none.
+// The variadic signature preserves the call shape the existing
+// callers from WBS 8.4.4 use; the callers pass one path or none.
 func NewConfigInvalid(field, value string, allowed []string, path ...string) error {
-	var location string
+	e := ErrConfigInvalid.
+		WithContext("field", field).
+		WithContext("value", value).
+		WithContext("allowed", fmt.Sprintf("%v", allowed)).
+		WithRemediation(fmt.Sprintf("Allowed values: %s.", joinAllowed(allowed)))
 	if len(path) > 0 && path[0] != "" {
-		location = fmt.Sprintf(" in %s", path[0])
+		e = e.WithContext("path", path[0])
 	}
-	return &configError{
-		code:       ErrConfigInvalid.code,
-		msg:        fmt.Sprintf("%s for %s: %s%s", ErrConfigInvalid.msg, field, value, location),
-		suggestion: fmt.Sprintf("Allowed values: %s.", strings.Join(allowed, ", ")),
-	}
+	return e
 }
 
 // NewConfigTooLarge constructs an E7 error for the given path.
 func NewConfigTooLarge(path string) error {
-	return &configError{
-		code:       ErrConfigTooLarge.code,
-		msg:        fmt.Sprintf("%s: %s", ErrConfigTooLarge.msg, path),
-		suggestion: "Config files must be under 1 MiB.",
-	}
+	return ErrConfigTooLarge.
+		WithContext("path", path).
+		WithRemediation("Config files must be under 1 MiB.")
 }
 
 // NewConfigInvalidEncoding constructs an E8 error for the given
 // path.
 func NewConfigInvalidEncoding(path string) error {
-	return &configError{
-		code:       ErrConfigInvalidEncoding.code,
-		msg:        fmt.Sprintf("%s in %s", ErrConfigInvalidEncoding.msg, path),
-		suggestion: "Ensure the file is UTF-8 encoded without BOM.",
-	}
+	return ErrConfigInvalidEncoding.
+		WithContext("path", path).
+		WithRemediation("Ensure the file is UTF-8 encoded without BOM.")
 }
 
 // =============================================================================
-// Sentinel accessor for tests and for a future structured-error model
+// Helpers
 // =============================================================================
 
-// ConfigErrorCategory is the category string returned by every
-// config error's Category() method.
+// joinAllowed renders a slice of allowed values as a
+// comma-separated string for the E6 remediation.
 //
-// The constant is exported for tests and for the CLI's
-// classifier; a future WBS that splits the exit codes reads it
-// to know which string to compare against.
-const ConfigErrorCategory = "config"
-
-// asConfigError returns err as *configError, or nil if err is not
-// one. The helper is used by tests and by a future structured-
-// error model (WBS 10.0).
+// # Why a helper and not strings.Join directly
 //
-// # Why the function is unexported
-//
-// The function is used only by the package's own tests and by
-// future code in the package. A caller outside the package uses
-// the exported methods (Category, Suggestion, Code) through an
-// interface assertion.
-func asConfigError(err error) *configError {
-	var ce *configError
-	if errors.As(err, &ce) {
-		return ce
-	}
-	return nil
+// The remediation is a single sentence ending with a period
+// (rule F6 of the frozen format). The list of allowed values is
+// rendered inside the sentence. strings.Join's output does not
+// include the list's delimiters; a caller that wants a
+// human-friendly rendering (for example, "debug, info, warn, or
+// error") uses this helper. The current implementation uses a
+// simple comma-separated list; a future change that adds an
+// "or" before the last item is localized to this function.
+func joinAllowed(allowed []string) string {
+	return strings.Join(allowed, ", ")
 }

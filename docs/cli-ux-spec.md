@@ -2,11 +2,11 @@
 
 - **Document type:** Specification
 - **Status:** Draft
-- **Version:** 0.8.0
+- **Version:** 0.10.0
 - **Author:** @thapelomagqazana
 - **Created:** 2026-10-09
 - **Last Updated:** 2026-10-12
-- **Supersedes:** 0.7.0
+- **Supersedes:** 0.9.0
 - **Superseded by:** —
 
 ---
@@ -1513,6 +1513,10 @@ the `Long` field.
 
 WBS 7.3.1 freezes the behaviour of seven invalid invocations.
 
+WBS 10.5.1 refines the error's shape: the CLI wraps Cobra's parser
+and dispatcher errors as `*forgeerr.Error` values, so the error's
+rendered form is the frozen format (§ 4.10g), not a flat message.
+
 ##### The contract
 
 | Aspect | Frozen behaviour |
@@ -1520,85 +1524,196 @@ WBS 7.3.1 freezes the behaviour of seven invalid invocations.
 | Exit code | `ExitUsage` (2) |
 | Output stream | stderr (only) |
 | stdout | Empty |
-| Error format | `Error: unknown command "<input>" for "forge"` |
-| Suggestion line (no match) | `Run 'forge --help' for usage.` |
-| Suggestion line (match) | `Did you mean "<name>"? Run 'forge --help' for usage.` |
+| Error format | the frozen format (§ 4.10g) |
 | Trailing newline | Yes (exactly one) |
 | Colour | None |
 | Timestamp | None |
-| Stack trace | Never |
+| Stack trace | Never (Phase 2) |
 
 ##### The cases
 
-| # | Input | Exit | stderr contains |
-|---|-------|------|-----------------|
-| I1 | `forge foobar` | 2 | `unknown command "foobar"` |
-| I2 | `forge verison` | 2 | `Did you mean` and `version` |
-| I3 | `forge version extra` | 2 | `unknown command "extra"` |
-| I4 | `forge --unknown-flag` | 2 | `unknown flag: --unknown-flag` |
-| I5 | `forge version --unknown-flag` | 2 | `unknown flag: --unknown-flag` |
-| I6 | `forge help unknown` | 2 | a diagnostic naming the unknown topic |
-| I7 | `forge --help unknown` | 2 | a diagnostic about the help flag |
+The substrings below are what the *rendered* output contains, per the
+frozen format. The code is the stable identifier; the message and the
+context data are the fields the CLI fills in.
+
+| # | Input | Exit | Rendered output contains |
+|---|-------|------|--------------------------|
+| I1 | `forge foobar` | 2 | `Error: unknown command`, `Code:  FORGE_CLI_UNKNOWN_COMMAND`, `command: foobar` |
+| I2 | `forge verison` | 2 | `Error: unknown command`, `Code:  FORGE_CLI_UNKNOWN_COMMAND`, `command: verison`, `Suggestion:`, `Did you mean`, `version` |
+| I3 | `forge version extra` | 2 | `Error: unknown command`, `Code:  FORGE_CLI_UNKNOWN_COMMAND`, `command: extra` |
+| I4 | `forge --unknown-flag` | 2 | `Error: unknown flag`, `Code:  FORGE_CLI_UNKNOWN_FLAG`, `flag: --unknown-flag` |
+| I5 | `forge version --unknown-flag` | 2 | `Error: unknown flag`, `Code:  FORGE_CLI_UNKNOWN_FLAG`, `flag: --unknown-flag` |
+| I6 | `forge help unknown` | 2 | `Error: unknown help topic`, `Code:  FORGE_CLI_UNKNOWN_COMMAND`, `topic: unknown` |
+| I7 | `forge --help unknown` | 2 | `Error: the --help flag takes no argument`, `Code:  FORGE_CLI_INVALID_ARGUMENT`, `argument: unknown` |
+
+##### Error wrapping
+
+Cobra's parser and dispatcher produce plain `errors.errorString`
+values. The CLI's `wrapCobraError` helper (in `internal/cli/execute.go`)
+recognizes the three message shapes (unknown flag, unknown shorthand
+flag, unknown command) and constructs the corresponding
+`*forgeerr.Error`. The recognition is textual because Cobra does not
+export the error types.
+
+The wrapped error's message is a fixed string; the varying data (the
+flag name, the command name, the parent command) is in the error's
+context map. The user-facing rendering (§ 4.10g) therefore shows the
+data as context lines, not as part of the message.
 
 ##### Suggestions
 
 Cobra's suggestion mechanism fires when an unknown command's name is
 within edit distance 2 of a known command. The value is configured by
-`SuggestionsMinimumDistance` on the root command.
+`SuggestionsMinimumDistance` on the root command. The suggestion is
+carried as the `*forgeerr.Error`'s remediation and rendered as the
+`Suggestion:` block. Rule F6 of the frozen format (remediation ends
+with a period) governs the rendered text: `Did you mean "version".`
 
 #### 4.10g Error Message Format
 
-WBS 7.3.2 freezes the format of every error message the CLI renders.
+WBS 10.4.1 freezes the user-facing error format. The format is
+implemented by `forgeerr.Format` (in
+`internal/forgeerr/format.go`) and is enforced byte-for-byte by the
+golden files under `internal/forgeerr/testdata/format/`. The
+format is the same for every error the CLI prints to stderr.
 
 ##### The frozen format
 
 ```text
 Error: <message>
-       <optional context line, indented 7 spaces>
-       <optional context line, indented 7 spaces>
+Code:  <code>
+       <context-key-1>: <value-1>
+       <context-key-2>: <value-2>
 
 Suggestion:
-  <actionable remediation>
+  <remediation>
 ```
 
 ##### Rules
 
-1. The first line starts with `Error:`.
-2. The message is a single line, 80 runes or fewer.
-3. The message does not end with a period.
-4. Context lines are indented 7 spaces.
-5. A blank line separates the message block from the Suggestion block.
-6. The `Suggestion:` label is on its own line; the body is indented 2
-   spaces.
-7. The suggestion is imperative.
-8. No stack traces unless `--verbose` is set (Phase 6+).
-9. No timestamps.
-10. No colour by default.
+| # | Rule |
+|---|---|
+| F1 | First line: `Error:` + message. |
+| F2 | Second line: `Code:` + code (two spaces after the colon). |
+| F3 | Context lines: 7 spaces + `<key>: <value>`. |
+| F4 | Blank line before the Suggestion block. |
+| F5 | `Suggestion:` label on its own line. |
+| F6 | Suggestion content: 2-space indent, ends with a period. |
+| F7 | No trailing whitespace on any line. |
+| F8 | No colour, no ANSI escapes. |
+| F9 | Every line ends with `\n`. |
+| F10 | Output ends with exactly one `\n`. |
+| F11 | Context keys are sorted alphabetically. |
+| F12 | The Code prefix identifies the category. |
+
+##### Variations
+
+| Case | Lines |
+|---|---|
+| No context, no remediation | F1, F2 |
+| Context, no remediation | F1, F2, F3 (per key) |
+| Remediation, no context | F1, F2, blank, F5, F6 |
+| Both | F1, F2, F3 (per key), blank, F5, F6 |
 
 ##### Examples
 
-Minimal error:
+**Minimal (no context, no remediation):**
 
 ```text
-Error: unknown command "foobar" for "forge"
-
-Suggestion:
-  Run 'forge --help' for usage.
+Error: unknown command
+Code:  FORGE_CLI_UNKNOWN_COMMAND
 ```
 
-Typo error:
+**With context:**
 
 ```text
-Error: unknown command "verison" for "forge"
-
-Suggestion:
-  Did you mean "version"? Run 'forge --help' for usage.
+Error: invalid YAML
+Code:  FORGE_CONFIG_MALFORMED
+       line: 12
+       path: config.yaml
 ```
 
-##### Phase 2 scope
+**With remediation:**
 
-The format is the Phase 2 shape. Richer errors (with structured fields,
-error codes, file/line information) arrive with WBS 10.0.
+```text
+Error: unknown command
+Code:  FORGE_CLI_UNKNOWN_COMMAND
+       command: verison
+
+Suggestion:
+  Did you mean "version".
+```
+
+**Full (context and remediation):**
+
+```text
+Error: invalid YAML
+Code:  FORGE_CONFIG_MALFORMED
+       line: 12
+       path: config.yaml
+
+Suggestion:
+  Fix the YAML syntax at line 12.
+```
+
+##### Relationship to § 4.10f
+
+§ 4.10f (Invalid Command Behaviour) describes the CLI's behaviour
+for seven invalid invocations: which exit code they produce, which
+stream they write to, and which substrings appear in the output.
+§ 4.10g describes the byte-exact format that every such output
+follows. The two contracts are complementary: § 4.10f pins the
+behaviour, § 4.10g pins the rendering.
+
+##### Relationship to § 4.10h
+
+§ 4.10h (Output Stream Boundary) pins which stream each category
+of output goes to. Errors go to stderr; the format in this
+subsection applies only to the errors that reach stderr.
+
+##### Design notes
+
+- The format is byte-frozen. It is the exact string a user sees;
+  a change to any character is a change to the contract. A change
+  requires an ADR (ADR-016) and a regenerated set of golden files.
+- `Code:` is always shown. Even when the code does not help the
+  user directly, it helps them search the documentation and file
+  bug reports.
+- Context keys are snake_case, as enforced by `WithContext`
+  (WBS 10.1.2).
+- Context values are redacted per WBS 10.4.3. Redaction happens at
+  the CLI boundary, before `Format` is called.
+- The remediation is optional but recommended for every error.
+- The remediation must end with a period (rule F6). A suggestion
+  that would naturally end with a question mark ("Did you mean
+  'version'?") is rendered with a period instead ("Did you mean
+  'version'.") to satisfy the rule. If the team wants a question
+  mark to satisfy the rule, that requires an ADR amending
+  WBS 10.4.1.
+- There is no `Cause:` line. The cause is a programmer concern,
+  reachable via `errors.Is` and `errors.As`; it is not shown to
+  the user.
+- The format is applied by `forgeerr.Format(err, opts)`.
+  `executeWithOptions` (in `internal/cli/execute.go`) is the
+  single caller; the CLI does not implement its own formatter.
+- A non-`*forgeerr.Error` input (an error that is neither a
+  `*forgeerr.Error` nor wraps one) is rendered by a minimal
+  fallback: `Error: <msg>\n`. The fallback preserves the shape
+  of the format without inventing a Code line. In practice,
+  every CLI error path constructs a `*forgeerr.Error`:
+  commands produce them, the validator produces them, Cobra's
+  errors are wrapped by `wrapCobraError`, and the boundary wraps
+  any leftover as `FORGE_INTERNAL_UNEXPECTED`. The fallback is
+  reached only by a genuine contract violation.
+
+##### The Phase 2 supersession
+
+An earlier draft of this specification (version 0.7.0 and earlier)
+described a local format with no `Code:` line and no code
+prefix. WBS 10.4.1 supersedes that description. The current format
+is the one in this subsection; the earlier format's examples
+appear only in the version history's changelog, not in the
+contract.
 
 #### 4.10h Output Stream Boundary
 
@@ -1658,12 +1773,12 @@ the matrix with the `forge config` rows.
 | `forge --quiet unknown-cmd` | Error still printed to stderr |
 | `forge --verbose unknown-cmd` | Error printed to stderr; stack trace in Phase 6+ |
 | `forge --quiet --verbose version` | `--quiet` wins; version still prints |
-| `forge --config nonexistent.yml version` | Version prints (config is a warning in Phase 2) |
-| `forge --config nonexistent.yml check` | Config is an error in future phases |
+| `forge --config nonexistent.yml version` | Error; exit 3 (config loading fails) |
+| `forge --config nonexistent.yml check` | Error; exit 3 |
 | `forge --quiet config` | Config printed to stdout; `--quiet` does not suppress it |
 | `forge --verbose config` | Config printed to stdout; no debug output in Phase 2 |
 | `forge --quiet --verbose config` | `--quiet` wins; config printed to stdout |
-| `forge --config nonexistent.yml config` | Error; exit 3 (Phase 8 loader behaviour) |
+| `forge --config nonexistent.yml config` | Error; exit 3 |
 
 ##### The rules
 
@@ -1674,7 +1789,9 @@ the matrix with the `forge config` rows.
 4. Errors are always printed to stderr.
 5. `--quiet` wins over `--verbose` when both are set.
 6. Help and version are always printed to stdout.
-7. A config load failure in Phase 2 is a warning, not a fatal error.
+7. An explicit `--config <path>` that names a missing file is an
+   error; the loader produces it before any command runs. The CLI
+   maps it to `ExitConfig` (3).
 8. `--quiet` never suppresses `forge config`'s output. The command's
    output is its result; the flag's contract is not to suppress
    results. This is the same rule as item 2, applied to a specific
@@ -1746,8 +1863,8 @@ cross-references.
 | Root help content | WBS 7.1.2 | § 4.10c | `help_golden_test.go` |
 | Per-command help content | WBS 7.1.3 | § 4.10d | `help_content_test.go`, `help_golden_test.go` |
 | Examples convention | WBS 7.2.2 | § 4.10e | `examples_test.go` |
-| Invalid command | WBS 7.3.1 | § 4.10f | `errors_test.go` |
-| Error message format | WBS 7.3.2 | § 4.10g | `format_error_test.go`, `errors_test.go` |
+| Invalid command | WBS 7.3.1, WBS 10.5.1 | § 4.10f | `errors_test.go` |
+| Error message format | WBS 10.4.1 | § 4.10g | `internal/forgeerr/format_test.go` |
 | Output stream boundary | WBS 7.4.1 | § 4.10h | `stream_boundary_test.go` |
 | Global flag interaction | WBS 7.4.3, WBS 9.4.2 | § 4.10i | `flag_interaction_test.go`, `config_interaction_test.go` |
 | Colour / ASCII policy | WBS 7.4.2 | § 4.10j | `ascii_policy_test.go` |
@@ -2112,8 +2229,8 @@ WBS 8.4.2 freezes the config file loader.
 ```text
 path
   -> Read file (with 1 MiB size limit)
+  -> Check encoding (BOM, UTF-8)
   -> Parse YAML (strict mode: unknown fields rejected)
-  -> Unmarshal into Config
   -> Validate values (enum check, case-insensitive)
   -> Return Config
 ```
@@ -2138,6 +2255,28 @@ func Load(path string) (Config, error)
 9. Trailing content after the first YAML document produces an error.
 10. A BOM at the file's start produces an error.
 11. Environment-variable expansion is not performed.
+
+##### The classification
+
+The loader classifies its errors by code. The codes and the sentinels
+are defined by the config error taxonomy (WBS 8.5.1, WBS 10.5.2):
+
+| Code | Sentinel | Trigger |
+|------|----------|---------|
+| `FORGE_CONFIG_NOT_FOUND` | `ErrConfigNotFound` | The file does not exist. |
+| `FORGE_CONFIG_PERMISSION` | `ErrConfigPermission` | The file exists but cannot be read. |
+| `FORGE_CONFIG_MALFORMED` | `ErrConfigMalformed` | YAML syntax error, duplicate key. |
+| `FORGE_CONFIG_UNKNOWN_FIELD` | `ErrConfigUnknownField` | The YAML contains a key the schema does not declare. |
+| `FORGE_CONFIG_INVALID_TYPE` | `ErrConfigInvalidType` | A field's YAML type does not match the field's Go type. |
+| `FORGE_CONFIG_INVALID_VALUE` | `ErrConfigInvalid` | A field's value is outside its allowed set; trailing content after the first document. |
+| `FORGE_CONFIG_TOO_LARGE` | `ErrConfigTooLarge` | The file exceeds 1 MiB. |
+| `FORGE_CONFIG_INVALID_ENCODING` | `ErrConfigInvalidEncoding` | The file starts with a BOM. |
+
+The parse-error classification is textual: yaml.v3 does not export a
+structured error type for parse failures, so the loader distinguishes
+the shapes by their message prefixes. The three recognized shapes
+are documented on `classifyYAMLError` in
+`internal/config/loader.go`.
 
 ##### The size limit
 
@@ -2453,9 +2592,8 @@ Dry-run is **optional** for:
 #### 2 - Usage error
 
 Includes: unknown command, unknown flag, missing required argument,
-invalid flag value (including unsupported `--format` value), malformed
-`forge.yaml` syntax, ambiguous foundation selection, and malformed
-invocations rejected by `validateArgs`.
+invalid flag value (including unsupported `--format` value), and
+malformed invocations rejected by `validateArgs`.
 
 #### 3 - Configuration failure
 
@@ -2479,16 +2617,26 @@ an ADR.
 
 ### 7.4 The mapping
 
-| Error condition | Exit code |
-|-----------------|-----------|
-| No error | `ExitSuccess` |
-| Error with `Category() == "config"` | `ExitConfig` |
-| Error with `Category() == "filesystem"` | `ExitFilesystem` |
-| Error with `Category() == "validation"` | `ExitValidation` |
-| Error with `Category() == "security"` | `ExitSecurity` |
-| Error with `Category() == "conflict"` | `ExitConflict` |
-| Error with an unrecognised category | `ExitFailure` |
-| Error without a category | `ExitUsage` |
+The exit code for an error is its category's exit code. The
+categories and their codes are frozen in the closed taxonomy
+(WBS 10.2.1); the mapping is a method on the category type, defined in
+`internal/forgeerr/category.go`.
+
+| Category | Exit code |
+|----------|-----------|
+| `CategoryCLI` | `ExitUsage` (2) |
+| `CategoryConfig` | `ExitConfig` (3) |
+| `CategoryFilesystem` | `ExitFilesystem` (4) |
+| `CategoryValidation` | `ExitValidation` (5) |
+| `CategoryTemplate` | `ExitFailure` (1) |
+| `CategorySecurity` | `ExitSecurity` (6) |
+| `CategoryInternal` | `ExitFailure` (1) |
+
+An error that is not a `*forgeerr.Error` and does not wrap one is
+wrapped as `FORGE_INTERNAL_UNEXPECTED` at the CLI boundary; the exit
+code is `ExitFailure` (1). In practice, every CLI error path produces
+a `*forgeerr.Error`, so the boundary's wrapping path fires only for a
+genuine contract violation.
 
 ### 7.5 Scripting
 
@@ -2619,42 +2767,49 @@ Non-interactive mode is triggered by:
 
 ## 11. Error Catalogue
 
-Every error returned by Forge has a stable code.
+Every error returned by Forge is a `*forgeerr.Error` with a stable
+code. The codes are enumerated in
+`internal/forgeerr/codes.go` and documented in
+[`docs/reference/error-codes.md`](./reference/error-codes.md).
 
 Categories:
 
 | Category | Meaning |
 |----------|---------|
-| `USAGE` | Invalid command or flags |
-| `INPUT` | Invalid user input |
+| `CLI` | Invalid command, flag, or argument |
 | `CONFIG` | Configuration file issue |
-| `FOUNDATION` | Foundation resolution issue |
-| `TEMPLATE` | Template issue |
-| `COMPONENT` | Component issue |
-| `VALIDATION` | Validation failure |
 | `FILESYSTEM` | Filesystem failure |
+| `VALIDATION` | Validation failure |
+| `TEMPLATE` | Template issue |
 | `SECURITY` | Security violation |
-| `NETWORK` | Network failure (future) |
 | `INTERNAL` | Internal error |
 
-Example codes:
+The taxonomy is closed. Adding a category requires an ADR (ADR-013).
+Adding a code requires an ADR (ADR-014) and a regenerated golden file.
 
-- `FORGE_USAGE_UNKNOWN_COMMAND`
-- `FORGE_USAGE_UNKNOWN_FLAG`
-- `FORGE_USAGE_UNKNOWN_FORMAT`
-- `FORGE_INPUT_MISSING_ARGUMENT`
+Example codes (from the Phase 2 registry):
+
+- `FORGE_CLI_UNKNOWN_COMMAND`
+- `FORGE_CLI_UNKNOWN_FLAG`
+- `FORGE_CLI_INVALID_ARGUMENT`
+- `FORGE_CLI_UNKNOWN_FORMAT`
 - `FORGE_CONFIG_NOT_FOUND`
-- `FORGE_CONFIG_INVALID`
+- `FORGE_CONFIG_PERMISSION`
+- `FORGE_CONFIG_MALFORMED`
+- `FORGE_CONFIG_UNKNOWN_FIELD`
+- `FORGE_CONFIG_INVALID_TYPE`
+- `FORGE_CONFIG_INVALID_VALUE`
 - `FORGE_CONFIG_TOO_LARGE`
-- `FORGE_CONFIG_BOM`
-- `FORGE_FOUNDATION_NOT_FOUND`
-- `FORGE_TEMPLATE_NOT_FOUND`
-- `FORGE_TEMPLATE_INCOMPATIBLE`
-- `FORGE_VALIDATION_FAILED`
-- `FORGE_FILESYSTEM_PERMISSION_DENIED`
-- `FORGE_FILESYSTEM_PATH_EXISTS`
+- `FORGE_CONFIG_INVALID_ENCODING`
+- `FORGE_FILESYSTEM_NOT_FOUND`
+- `FORGE_FILESYSTEM_PERMISSION`
+- `FORGE_FILESYSTEM_ESCAPE`
 - `FORGE_SECURITY_PATH_TRAVERSAL`
-- `FORGE_SECURITY_UNSAFE_TEMPLATE`
+- `FORGE_SECURITY_SYMLINK_ESCAPE`
+- `FORGE_INTERNAL_PANIC`
+- `FORGE_INTERNAL_UNEXPECTED`
+
+The registry's full contents are the authoritative list.
 
 ---
 
@@ -2714,3 +2869,5 @@ becomes **Approved** when:
 | 0.6.0 | 2026-10-10 | @thapelomagqazana | Added § 4.9b through § 4.9m in response to WBS 7.1.1 through WBS 7.4.3. The new subsections cover the help invocation matrix, the root and per-command help content contracts, the Examples convention, the invalid-command contract, the error message format, the output stream boundary, the global flag interaction matrix, and the colour and terminal policy. Updated § 4.7 to reflect the ASCII-only constants. Updated § 9.6 and § 9.8 to use ASCII-safe markers. |
 | 0.7.0 | 2026-10-11 | @thapelomagqazana | Added § 4.13 (Configuration) with nine subsections in response to WBS 8.1.1, WBS 8.1.2, WBS 8.2.1, WBS 8.2.2, WBS 8.3.1, WBS 8.4.1, WBS 8.4.2, and WBS 8.4.3. The new subsections cover the CLI configuration scope, the schema, the field-name mapping rules, the safe defaults, the precedence order, the file discovery algorithm, the YAML loading with strict validation, and the environment-variable resolution. Added § 4.6 (`forge config` command reference). Updated § 3.1 (command tree) and § 3.2 (tier assignments) to include `forge config`. Renumbered § 4.9 through § 4.12 to § 4.10 through § 4.14 to make room for the new `forge config` section. Updated § 6 (dry-run list), § 7.2 (exit-code semantics for the config category), § 8.1 (schema-versioning exceptions), § 10 (non-interactive commands), and § 11 (error catalogue) to reference the config subsystem. |
 | 0.8.0 | 2026-10-12 | @thapelomagqazana | Added § 4.6.1 through § 4.6.5 in response to WBS 9.2.1, WBS 9.3.1, WBS 9.4.1, and WBS 9.4.2. The new subsections freeze the `forge config` text output format, the JSON output format, the `--path` mode, the interaction with the global flags, and the exit codes. Added § 4.13.10 (Source Attribution) in response to WBS 9.2.2. Updated § 4.12 (Global Flags) to include `--format` as the fourth global flag, superseding the earlier "`--format` is not global" note. Updated § 4.14 (`--format` Flag Semantics) to correct the config command's value set to `text`, `json` and to add a historical note about the superseded `human` value. Added a clause to § 4.10d about the `Flags:` vs. `Global Flags:` split in a command's help output. Added four config-specific rows to § 4.10i. Updated § 4.10c to include the config row in the root help's command list. Added § 4.13.9's source-attribution row. Updated § 4.10m (Summary of Contracts) to reference the new tests. |
+| 0.9.0 | 2026-10-12 | @thapelomagqazana | Rewrote § 4.10g (Error Message Format) in response to WBS 10.4.1. The frozen format now includes a `Code:` line and is implemented by `forgeerr.Format`; the previous subsection described the pre-10.4.1 local format. Added the twelve byte-level rules (F1–F12), the four variations, and four worked examples. Updated the error-message-format row in § 4.10m to name `internal/forgeerr/format_test.go` as the enforcing test. The format is byte-frozen and requires an ADR (ADR-016) to change. |
+| 0.10.0 | 2026-10-12 | @thapelomagqazana | Rewrote § 4.10f (Invalid Command Behaviour) in response to WBS 10.5.1. The CLI now wraps Cobra's parser and dispatcher errors as `*forgeerr.Error` values; the rendered output uses the frozen format, and the varying data (the flag name, the command name) is in the error's context, not the message. The table of cases in § 4.10f now lists the substrings the *rendered* output contains, per the frozen format. Updated § 4.10g's design note that referenced the removed `formatError` helper; the format is now applied by `forgeerr.Format` from `executeWithOptions`. Updated § 4.10i's `--config nonexistent` row: the missing explicit path is now a hard error (exit 3), not a warning (WBS 8.4.5). Rewrote § 7.4 (Exit Code Mapping) to describe the taxonomy-based mapping (`Category.ExitCode()`) instead of the string-based mapping. Rewrote § 11 (Error Catalogue) to list the codes the CLI actually produces today (the Phase 2 registry), replacing the aspirational pre-implementation list. Updated § 4.13.7's strictness rules with the code-to-sentinel classification table (WBS 10.5.2). Updated § 4.10m's rows to reference the current enforcing tests. |

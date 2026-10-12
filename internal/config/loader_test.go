@@ -19,6 +19,41 @@
 // size-limit test) write the file into a t.TempDir(). The
 // testdata/ fixtures cover the parsing rules; the temp files
 // cover the size and BOM rules.
+//
+// # The parse-error classification
+//
+// The loader classifies a YAML parse error by the shape of the
+// parser's message. The classification is documented on
+// classifyYAMLError in loader.go. The relevant sentinels are:
+//
+//	E3  ErrConfigMalformed         syntax error, duplicate key
+//	E4  ErrConfigUnknownField      unknown YAML field
+//	E5  ErrConfigInvalidType       type mismatch
+//	E6  ErrConfigInvalid           invalid enum value, trailing
+//	                               content after the first document
+//
+// A test that asserts on a parse error asserts the sentinel that
+// matches the case's classification. A test that asserts the old
+// catch-all (ErrConfigInvalid) for a case now classified more
+// specifically would fail; the failure points at the classification
+// change, and the fix is a one-line assertion update.
+//
+// # Rendering the error
+//
+// After WBS 10.5.2, the config package's errors are
+// *forgeerr.Error values. The message is short and fixed; the
+// varying data (paths, field names, line numbers, offending
+// values) is in the error's context map. A test that wants to
+// assert on the full diagnostic renders the error through
+// forgeerr.Format, which produces the frozen user-facing format:
+//
+//	Error: <message>
+//	Code:  <code>
+//	       <context-key>: <value>
+//
+// The tests below that assert on the diagnostic use
+// forgeerr.Format for that reason. The tests that assert only on
+// the error's existence or its sentinel use errors.Is.
 package config
 
 import (
@@ -27,6 +62,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/thapelomagqazana/forge/internal/forgeerr"
 )
 
 // =============================================================================
@@ -168,29 +205,63 @@ func TestLoad_CaseInsensitiveEnumAccepted(t *testing.T) {
 // =============================================================================
 
 // TestLoad_UnknownFieldRejected verifies that a file with an
-// unknown field produces an error wrapping ErrConfigInvalid.
+// unknown field produces ErrConfigUnknownField.
+//
+// The code is E4 (CodeConfigUnknownField). The loader's
+// classifyYAMLError recognizes yaml.v3's unknown-field message
+// ("field <name> not found in type") and constructs an E4 error.
+//
+// # Why not ErrConfigInvalid
+//
+// The pre-WBS-10.5.2 loader classified every parse error as
+// ErrConfigInvalid (E6). The current loader distinguishes the
+// three shapes: unknown field (E4), type mismatch (E5), and
+// syntax error (E3). The distinction tells the user what kind
+// of problem the file has; the exit code is ExitConfig (3) for
+// all three.
 func TestLoad_UnknownFieldRejected(t *testing.T) {
 	t.Parallel()
 
 	_, err := Load("testdata/invalid-unknown-field.yaml")
-	if !errors.Is(err, ErrConfigInvalid) {
-		t.Fatalf("Load: err = %v; want ErrConfigInvalid", err)
+	if !errors.Is(err, ErrConfigUnknownField) {
+		t.Fatalf("Load: err = %v; want ErrConfigUnknownField", err)
 	}
 }
 
 // TestLoad_TypeMismatchRejected verifies that a file with a type
-// mismatch produces an error wrapping ErrConfigInvalid.
+// mismatch produces ErrConfigInvalidType.
+//
+// The code is E5 (CodeConfigInvalidType). The loader's
+// classifyYAMLError recognizes yaml.v3's type-mismatch message
+// ("cannot unmarshal ... into ...") and constructs an E5 error.
+//
+// # Why not ErrConfigInvalid
+//
+// Same rationale as TestLoad_UnknownFieldRejected: the loader
+// distinguishes the three parse-error shapes.
 func TestLoad_TypeMismatchRejected(t *testing.T) {
 	t.Parallel()
 
 	_, err := Load("testdata/invalid-type.yaml")
-	if !errors.Is(err, ErrConfigInvalid) {
-		t.Fatalf("Load: err = %v; want ErrConfigInvalid", err)
+	if !errors.Is(err, ErrConfigInvalidType) {
+		t.Fatalf("Load: err = %v; want ErrConfigInvalidType", err)
 	}
 }
 
 // TestLoad_InvalidEnumRejected verifies that a file with an
-// invalid enum value produces an error wrapping ErrConfigInvalid.
+// invalid enum value produces ErrConfigInvalid.
+//
+// The code is E6 (CodeConfigInvalidValue). An enum-value error is
+// a value error, not a parse error: the YAML document parsed
+// successfully, but the field's value is outside the allowed set.
+// The loader's validateConfig produces the error.
+//
+// # The sentinel is the E6 sentinel
+//
+// ErrConfigInvalid is the sentinel for E6. It is the catch-all
+// for the value errors the validator produces. The name is
+// historical: it was introduced by WBS 8.4.4 before the
+// taxonomy's current shape.
 func TestLoad_InvalidEnumRejected(t *testing.T) {
 	t.Parallel()
 
@@ -201,34 +272,73 @@ func TestLoad_InvalidEnumRejected(t *testing.T) {
 }
 
 // TestLoad_DuplicateKeyRejected verifies that a file with a
-// duplicate key produces an error wrapping ErrConfigInvalid.
+// duplicate key produces ErrConfigMalformed.
+//
+// The code is E3 (CodeConfigMalformed). yaml.v3 reports a
+// duplicate key as a syntax error (the YAML spec requires keys
+// to be unique). The loader's classifyYAMLError falls through to
+// E3 for this shape.
+//
+// # Why E3 and not a dedicated E-code
+//
+// The taxonomy (WBS 8.5.1) has eight codes. Duplicate keys are
+// one of the E3 cases: the YAML document's structure is invalid.
+// A future WBS item that wants to distinguish "duplicate key"
+// from "syntax error" reads the parser's message and adds a
+// code. Until then, the E3 classification is correct: the user
+// sees a diagnostic that names the line, and the exit code is
+// ExitConfig (3).
 func TestLoad_DuplicateKeyRejected(t *testing.T) {
 	t.Parallel()
 
 	_, err := Load("testdata/invalid-duplicate-key.yaml")
-	if !errors.Is(err, ErrConfigInvalid) {
-		t.Fatalf("Load: err = %v; want ErrConfigInvalid", err)
+	if !errors.Is(err, ErrConfigMalformed) {
+		t.Fatalf("Load: err = %v; want ErrConfigMalformed", err)
 	}
 }
 
 // TestLoad_MalformedYAMLRejected verifies that a malformed YAML
-// file produces an error wrapping ErrConfigInvalid.
+// file produces ErrConfigMalformed.
+//
+// The code is E3 (CodeConfigMalformed). The loader's
+// classifyYAMLError falls through to E3 for syntax errors; the
+// error's context includes the line and column when the parser
+// names them.
+//
+// # Why E3 and not ErrConfigInvalid
+//
+// The pre-WBS-10.5.2 loader classified every parse error as
+// ErrConfigInvalid (E6). The current loader distinguishes the
+// three shapes and classifies a syntax error as E3. The
+// distinction is user-visible: the error message names the
+// offending line, and the remediation suggests fixing the YAML
+// syntax at that line.
 func TestLoad_MalformedYAMLRejected(t *testing.T) {
 	t.Parallel()
 
 	_, err := Load("testdata/invalid-malformed.yaml")
-	if !errors.Is(err, ErrConfigInvalid) {
-		t.Fatalf("Load: err = %v; want ErrConfigInvalid", err)
+	if !errors.Is(err, ErrConfigMalformed) {
+		t.Fatalf("Load: err = %v; want ErrConfigMalformed", err)
 	}
 }
 
 // TestLoad_MalformedYAMLIncludesLineNumber verifies that a
-// malformed YAML file's error message includes a line number.
+// malformed YAML file's error carries a line number in its
+// context.
 //
-// The check is textual: the error's message contains the string
-// "line" (yaml.v3's error messages name the line). A future
-// library release that changed the message format would fail the
-// test; the contributor updates the expectation.
+// The check renders the error through forgeerr.Format and
+// asserts that the rendered string contains a "line:" context
+// line. The structured error keeps the message short and puts
+// the line number in the context; the user-facing format renders
+// both.
+//
+// # Why the test renders instead of reading err.Error()
+//
+// err.Error() returns only the short fixed message
+// ("<code>: <message>"). The line number is in the error's
+// context map, which err.Error() does not include. Rendering the
+// error through forgeerr.Format is the way to see the full
+// diagnostic.
 func TestLoad_MalformedYAMLIncludesLineNumber(t *testing.T) {
 	t.Parallel()
 
@@ -236,8 +346,13 @@ func TestLoad_MalformedYAMLIncludesLineNumber(t *testing.T) {
 	if err == nil {
 		t.Fatal("Load: err = nil; want an error")
 	}
-	if !strings.Contains(err.Error(), "line") {
-		t.Errorf("error message does not mention a line: %v", err)
+
+	// Render the error and assert that the rendered diagnostic
+	// names the line. The "line:" prefix is what the frozen
+	// format uses for context keys.
+	rendered := forgeerr.Format(err, forgeerr.Options{})
+	if !strings.Contains(rendered, "line:") {
+		t.Errorf("rendered error does not mention a line:\n%s", rendered)
 	}
 }
 
@@ -292,49 +407,65 @@ func TestLoad_BOMRejected(t *testing.T) {
 	}
 }
 
-// TestLoad_NoEnvironmentExpansion verifies that a value containing
-// "${VAR}" is treated as the literal string, not expanded.
+// TestLoad_NoEnvironmentExpansion verifies that a value
+// containing "${VAR}" is treated as the literal string, not
+// expanded.
+//
+// # What the test asserts
+//
+//   - A literal value that is a valid enum ("info") is loaded
+//     and normalised.
+//   - A value that looks like an environment expansion
+//     ("${LOG_LEVEL}") is rejected, because it is not a valid
+//     enum. The rejection's context contains the literal value.
+//
+// The check renders the rejected error through forgeerr.Format
+// and asserts that the rendered string contains the literal
+// value. If the loader had expanded the value, the error's
+// context would contain the expansion's result (the empty
+// string, or an unrelated value), not the literal string.
 func TestLoad_NoEnvironmentExpansion(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	path := filepath.Join(dir, "no-expansion.yaml")
-	// Write a config with an expansion-looking value. The
-	// value is not a valid enum; if the loader did not
-	// expand, it would reject the value.
-	//
-	// The test uses a valid enum whose name contains "$" so
-	// that the value survives validation. The actual check is
-	// that the loader did not expand the value.
+
+	// Case 1: a literal value that is a valid enum is loaded.
+	path := filepath.Join(dir, "literal-valid.yaml")
 	content := "log_level: info\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-
 	got, err := Load(path)
 	if err != nil {
-		t.Fatalf("Load: %v", err)
+		t.Fatalf("Load(%q): %v", path, err)
 	}
 	if got.LogLevel != LogLevelInfo {
 		t.Errorf("LogLevel = %q; want %q", got.LogLevel, LogLevelInfo)
 	}
 
-	// Now check that an expansion-looking value is preserved.
-	// Since the value is not a valid enum, the loader
-	// rejects it. The test asserts the rejection's cause: the
-	// value was not expanded.
+	// Case 2: a value that looks like an environment expansion
+	// is rejected; the error's context contains the literal
+	// value.
 	path2 := filepath.Join(dir, "expansion.yaml")
 	content2 := "log_level: ${LOG_LEVEL}\n"
 	if err := os.WriteFile(path2, []byte(content2), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	_, err = Load(path2)
-	if !errors.Is(err, ErrConfigInvalid) {
-		t.Fatalf("Load(${LOG_LEVEL}): err = %v; want ErrConfigInvalid",
-			err)
+	if err == nil {
+		t.Fatalf("Load(${LOG_LEVEL}): err = nil; want an error")
 	}
-	if !strings.Contains(err.Error(), "${LOG_LEVEL}") {
-		t.Errorf("error does not quote the literal value: %v", err)
+	if !errors.Is(err, ErrConfigInvalid) {
+		t.Fatalf("Load(${LOG_LEVEL}): err = %v; want ErrConfigInvalid", err)
+	}
+
+	// The rendered error contains the literal value in its
+	// context. If the loader had expanded the value, the context
+	// would contain the expansion's result, not the literal.
+	rendered := forgeerr.Format(err, forgeerr.Options{})
+	if !strings.Contains(rendered, "${LOG_LEVEL}") {
+		t.Errorf("rendered error does not quote the literal value:\n%s",
+			rendered)
 	}
 }
 

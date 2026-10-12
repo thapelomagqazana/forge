@@ -3,7 +3,8 @@
 // This file tests the boundary between the CLI and the process
 // environment: the Execute public function, the unexported
 // executeWithOptions function, and the helper functions that
-// support the boundary: defaultOptions and formatError.
+// support the boundary: defaultOptions, exitCodeOf,
+// recoveredPanicError, wrappedUnexpectedError, and hasVerboseArg.
 //
 // The test file is declared in package cli, not package cli_test,
 // because it needs to reach unexported symbols.
@@ -41,6 +42,32 @@
 // Dependencies exactly once, and threads Dependencies to the root
 // command constructor.
 //
+// # The error boundary (WBS 10.5.1)
+//
+// The CLI's error handling is split across two functions:
+//
+//   - Execute recovers panics and converts them to
+//     FORGE_INTERNAL_PANIC errors. The conversion is exercised
+//     through recoveredPanicError; the placement of the deferred
+//     recovery is a matter of code review, not of test.
+//
+//   - executeWithOptions ensures every error is a *forgeerr.Error
+//     (wrapping non-*Error errors as FORGE_INTERNAL_UNEXPECTED),
+//     renders the error, writes it to the injected stderr, and
+//     returns the error's Category().ExitCode().
+//
+// The tests below cover the conversion, the wrapping, and the
+// exit-code derivation. The tests that cannot exercise the
+// recovery through runCLI are the reason recoveredPanicError is
+// extracted: the helper is the testable unit.
+//
+// # Verbose mode (WBS 10.4.4)
+//
+// The CLI's error path reads the --verbose flag from the command
+// tree and passes it through to forgeerr.Options.Verbose. The
+// tests in the "verbose mode" section assert that the flag is
+// honoured at the boundary.
+//
 // # Test organisation
 //
 // The file is organised in sections, each with a banner comment:
@@ -50,11 +77,13 @@
 //  3. Tests — the injectable boundary
 //  4. Tests — stream separation
 //  5. Tests — the Dependencies transformation (WBS 4.2.2)
-//  6. Tests — formatError
-//  7. Tests — the options struct
-//  8. Tests — non-functional properties
-//  9. Tests — the structural invariants the WBS specifies
-//  10. Test helpers — source file reading and function body extraction
+//  6. Tests — the panic recovery (WBS 10.5.1)
+//  7. Tests — the non-*Error wrapping (WBS 10.5.1)
+//  8. Tests — exit code derivation
+//  9. Tests — the options struct
+//  10. Tests — non-functional properties
+//  11. Tests — the structural invariants the WBS specifies
+//  12. Test helpers — source file reading and function body extraction
 //
 // A reader looking for a specific behaviour should scan the section
 // banners, not read the file top to bottom.
@@ -63,6 +92,7 @@ package cli
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -70,6 +100,7 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+	"github.com/thapelomagqazana/forge/internal/forgeerr"
 )
 
 // =============================================================================
@@ -103,11 +134,13 @@ func TestExecute_IsCallable(t *testing.T) {
 // TestExecute_HasFrozenSignature verifies that Execute has the
 // signature frozen by WBS 4.1.1.
 //
-// The signature must be exactly:
+// The exported signature is exactly:
 //
 //	func Execute() int
 //
-// This is a compile-time check: if the signature changes, the
+// The named return in the implementation (the WBS 10.5.1 change)
+// does not change the exported signature: callers see an int.
+// This is a compile-time check; if the signature changes, the
 // assignment below fails to compile.
 func TestExecute_HasFrozenSignature(t *testing.T) {
 	t.Parallel()
@@ -239,6 +272,11 @@ func TestExecuteWithOptions_GivenHelpFlag_ThenExitsSuccess(t *testing.T) {
 //
 // The error is written to the injected stderr. The stdout remains
 // empty.
+//
+// The unknown-command error is produced by the root command's RunE
+// handler, which constructs a *forgeerr.Error with category
+// CategoryCLI (WBS 10.4.2). The exit code is therefore the CLI
+// category's code (2).
 func TestExecuteWithOptions_GivenUnknownCommand_ThenExitsUsage(t *testing.T) {
 	t.Parallel()
 
@@ -424,63 +462,301 @@ func TestExecuteWithOptions_GivenNilEnv_StillRuns(t *testing.T) {
 }
 
 // =============================================================================
-// Tests — formatError
+// Tests — the panic recovery (WBS 10.5.1)
+// =============================================================================
+//
+// The panic recovery lives in Execute, at the outermost point
+// before os.Exit. It cannot be exercised through the test helpers:
+// runCLI calls executeWithOptions, which does not recover, and
+// calling Execute directly would require redirecting the process's
+// streams (os.Args and os.Stderr).
+//
+// The conversion — the part of the recovery with logic — is
+// extracted into recoveredPanicError and tested directly. The
+// placement of the deferred recovery is a matter of code review.
+
+// TestRecoveredPanicError asserts that a recovered panic value is
+// converted into a *forgeerr.Error with category
+// CategoryInternal, code CodeInternalPanic, and the panic's
+// string representation in the context map.
+//
+// The test exercises the conversion with several panic-value
+// shapes: a string, an integer, an error, and nil. The
+// conversion's contract is that fmt.Sprint handles every shape
+// and produces a non-empty string (nil renders as "<nil>").
+func TestRecoveredPanicError(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		panicValue any
+		wantCtx    string
+	}{
+		{"string", "panic-value", "panic-value"},
+		{"int", 42, "42"},
+		{"error", errors.New("boom"), "boom"},
+		{"nil", nil, "<nil>"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			e := recoveredPanicError(tc.panicValue)
+
+			if got := e.Category(); got != forgeerr.CategoryInternal {
+				t.Errorf("Category() = %v; want %v",
+					got, forgeerr.CategoryInternal)
+			}
+			if got := e.Code(); got != string(forgeerr.CodeInternalPanic) {
+				t.Errorf("Code() = %q; want %q",
+					got, forgeerr.CodeInternalPanic)
+			}
+			if got := e.Context()["panic"]; got != tc.wantCtx {
+				t.Errorf("Context()[panic] = %q; want %q",
+					got, tc.wantCtx)
+			}
+		})
+	}
+}
+
+// TestRecoveredPanicError_ExitCode asserts that the converted
+// error's category's exit code is the INTERNAL category's code.
+//
+// The check is separate from the conversion test so that a
+// failure in the exit-code derivation is distinguishable from a
+// failure in the conversion.
+func TestRecoveredPanicError_ExitCode(t *testing.T) {
+	t.Parallel()
+
+	e := recoveredPanicError("panic-value")
+	if got := e.Category().ExitCode(); got != forgeerr.CategoryInternal.ExitCode() {
+		t.Errorf("Category().ExitCode() = %d; want %d (INTERNAL)",
+			got, forgeerr.CategoryInternal.ExitCode())
+	}
+}
+
+// TestRecoveredPanicError_MessageIsFixed asserts that the
+// converted error's message does not depend on the panic value.
+//
+// The message is a fixed string ("internal error occurred") so
+// that the message invariants (single line, no trailing period,
+// <= 80 bytes) hold regardless of the panic value's content. A
+// panic value that happens to contain newlines or a trailing
+// period would otherwise produce a malformed *forgeerr.Error if
+// the message included it.
+func TestRecoveredPanicError_MessageIsFixed(t *testing.T) {
+	t.Parallel()
+
+	// A panic value with a newline and a trailing period. If the
+	// message included the value, the constructor would panic.
+	cases := []any{
+		"line one\nline two",
+		"ends with a period.",
+		strings.Repeat("a", 200),
+	}
+	for _, v := range cases {
+		v := v
+		t.Run(fmt.Sprintf("%v", v)[:minInt(len(fmt.Sprintf("%v", v)), 20)], func(t *testing.T) {
+			t.Parallel()
+
+			e := recoveredPanicError(v)
+			if got := e.Message(); got != "internal error occurred" {
+				t.Errorf("Message() = %q; want %q",
+					got, "internal error occurred")
+			}
+		})
+	}
+}
+
+// =============================================================================
+// Tests — the non-*Error wrapping (WBS 10.5.1)
 // =============================================================================
 
-// TestFormatError_GivenNilError_ReturnsEmptyString verifies that a
-// nil error formats as an empty string.
-//
-// The function is defensive: it does not panic on a nil input.
-func TestFormatError_GivenNilError_ReturnsEmptyString(t *testing.T) {
+// TestWrappedUnexpectedError asserts that a plain error is
+// wrapped in a *forgeerr.Error with category CategoryInternal,
+// code CodeInternalUnexpected, and the original error's message
+// preserved in the context and attached as the cause.
+func TestWrappedUnexpectedError(t *testing.T) {
 	t.Parallel()
 
-	if got := formatError(nil); got != "" {
-		t.Errorf("formatError(nil): got %q, want %q", got, "")
+	original := errors.New("plain error")
+	e := wrappedUnexpectedError(original)
+
+	if got := e.Category(); got != forgeerr.CategoryInternal {
+		t.Errorf("Category() = %v; want %v",
+			got, forgeerr.CategoryInternal)
+	}
+	if got := e.Code(); got != string(forgeerr.CodeInternalUnexpected) {
+		t.Errorf("Code() = %q; want %q",
+			got, forgeerr.CodeInternalUnexpected)
+	}
+	if got := e.Context()["cause"]; got != "plain error" {
+		t.Errorf("Context()[cause] = %q; want %q", got, "plain error")
+	}
+	if !errors.Is(e, original) {
+		t.Error("errors.Is(e, original) = false; the cause is not reachable")
 	}
 }
 
-// TestFormatError_GivenError_ReturnsFormattedMessage verifies that
-// formatError renders a plain error into the frozen error message
-// format (WBS 7.3.2).
-//
-// A plain error with no suggestion renders as a single line
-// prefixed with "Error: ". There is no Suggestion block.
-//
-// # Why the test name changed
-//
-// The test was previously named
-// TestFormatError_GivenError_ReturnsMessage and asserted that
-// formatError returned the error's message unchanged. WBS 7.3.2
-// changed the contract; formatError now renders the frozen format.
-// The test name was updated to describe the new behaviour, and the
-// assertion was updated to match.
-func TestFormatError_GivenError_ReturnsFormattedMessage(t *testing.T) {
+// TestWrappedUnexpectedError_ReachableThroughChain asserts that
+// the original error is reachable through errors.As and errors.Is
+// when the wrapper is in a chain.
+func TestWrappedUnexpectedError_ReachableThroughChain(t *testing.T) {
 	t.Parallel()
 
-	err := errors.New("test error")
-	got := formatError(err)
-	want := "Error: test error"
+	original := errors.New("plain error")
+	e := wrappedUnexpectedError(original)
+	wrapped := fmt.Errorf("outer: %w", e)
 
-	if got != want {
-		t.Errorf("formatError: got %q, want %q", got, want)
+	if !errors.Is(wrapped, original) {
+		t.Error("errors.Is did not reach the original error through the wrapper")
 	}
 }
 
-// TestFormatError_IsPure verifies that formatError is
-// deterministic.
+// TestExecute_NonForgeErrorWrapped asserts that a non-*forgeerr.Error
+// error returned from a command is wrapped in a
+// FORGE_INTERNAL_UNEXPECTED error at the boundary.
 //
-// Calling it twice with the same error returns the same string.
-func TestFormatError_IsPure(t *testing.T) {
+// The test installs a temporary command that returns a plain
+// error, runs the CLI with that command, and asserts on the
+// output and exit code.
+//
+// # Why the test is serial
+//
+// The test installs a temporary registry entry via the test-only
+// hook. The registry is shared state; the hook mutates it. A
+// parallel test would race with other tests that read the
+// registry. The test is therefore serial.
+func TestExecute_NonForgeErrorWrapped(t *testing.T) {
+	restore := testOnlyRegisterPlainErrorCommand(errors.New("plain error"))
+	defer restore()
+
+	got := runCLI(t, []string{"__test_plain_error__"}, nil)
+
+	// The exit code is the INTERNAL category's code (1). The
+	// wrapper has category CategoryInternal.
+	if got.exitCode != forgeerr.CategoryInternal.ExitCode() {
+		t.Errorf("exit code = %d; want %d (INTERNAL category)",
+			got.exitCode, forgeerr.CategoryInternal.ExitCode())
+	}
+
+	// The stderr contains the FORGE_INTERNAL_UNEXPECTED code,
+	// which proves the plain error was wrapped rather than
+	// rendered by the fallback path.
+	if !strings.Contains(got.stderr, string(forgeerr.CodeInternalUnexpected)) {
+		t.Errorf("stderr does not contain %q:\n%s",
+			forgeerr.CodeInternalUnexpected, got.stderr)
+	}
+
+	// The stdout is empty on failure.
+	if got.stdout != "" {
+		t.Errorf("stdout = %q; want empty", got.stdout)
+	}
+}
+
+// =============================================================================
+// Tests — exit code derivation
+// =============================================================================
+
+// TestExitCodeOf_GivenNilError_ReturnsExitSuccess asserts the
+// nil case of the exit-code helper.
+func TestExitCodeOf_GivenNilError_ReturnsExitSuccess(t *testing.T) {
 	t.Parallel()
 
-	err := errors.New("test error")
-	first := formatError(err)
+	if got := exitCodeOf(nil); got != ExitSuccess {
+		t.Errorf("exitCodeOf(nil) = %d; want %d (ExitSuccess)",
+			got, ExitSuccess)
+	}
+}
 
-	for i := 0; i < 100; i++ {
-		if got := formatError(err); got != first {
-			t.Fatalf("iteration %d: got %q, want %q",
-				i, got, first)
-		}
+// TestExitCodeOf_GivenForgeError_ReturnsCategoryCode asserts that
+// the helper reads the error's category's code.
+//
+// The test constructs a *forgeerr.Error with each category and
+// asserts that the helper returns the category's code. The
+// category-code agreement is defined by the taxonomy (WBS
+// 10.2.1); the helper does not maintain a separate mapping.
+func TestExitCodeOf_GivenForgeError_ReturnsCategoryCode(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		cat  forgeerr.Category
+		code forgeerr.Code
+	}{
+		{forgeerr.CategoryCLI, forgeerr.CodeCLIUnknownCommand},
+		{forgeerr.CategoryConfig, forgeerr.CodeConfigMalformed},
+		{forgeerr.CategoryFilesystem, forgeerr.CodeFilesystemNotFound},
+		{forgeerr.CategorySecurity, forgeerr.CodeSecurityPathTraversal},
+		{forgeerr.CategoryInternal, forgeerr.CodeInternalUnexpected},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(string(tc.cat), func(t *testing.T) {
+			t.Parallel()
+
+			e := forgeerr.New(tc.cat, string(tc.code), "message")
+			got := exitCodeOf(e)
+			want := tc.cat.ExitCode()
+			if got != want {
+				t.Errorf("exitCodeOf(%v) = %d; want %d (category's code)",
+					tc.cat, got, want)
+			}
+		})
+	}
+}
+
+// TestExitCodeOf_GivenWrappedForgeError_ReturnsCategoryCode
+// asserts that the helper extracts the *forgeerr.Error from a
+// wrapping chain.
+func TestExitCodeOf_GivenWrappedForgeError_ReturnsCategoryCode(t *testing.T) {
+	t.Parallel()
+
+	e := forgeerr.New(
+		forgeerr.CategoryConfig,
+		string(forgeerr.CodeConfigMalformed),
+		"invalid YAML",
+	)
+	wrapped := fmt.Errorf("outer context: %w", e)
+
+	if got := exitCodeOf(wrapped); got != forgeerr.CategoryConfig.ExitCode() {
+		t.Errorf("exitCodeOf(wrapped) = %d; want %d",
+			got, forgeerr.CategoryConfig.ExitCode())
+	}
+}
+
+// TestExitCodeOf_GivenPlainError_ReturnsExitFailure asserts the
+// safety-net branch: an error that is not a *forgeerr.Error and
+// does not wrap one yields ExitFailure.
+//
+// The branch is reached only when executeWithOptions is called
+// directly by a caller that constructed a non-*Error error
+// without the wrapping. The wrapping in executeWithOptions
+// normally prevents this; the branch exists as a safety net.
+func TestExitCodeOf_GivenPlainError_ReturnsExitFailure(t *testing.T) {
+	t.Parallel()
+
+	if got := exitCodeOf(errors.New("plain")); got != ExitFailure {
+		t.Errorf("exitCodeOf(plain error) = %d; want %d (ExitFailure)",
+			got, ExitFailure)
+	}
+}
+
+// TestExecute_UsesCategoryExitCode asserts that the exit code
+// returned by executeWithOptions for an error is the error's
+// Category().ExitCode().
+//
+// The test is indirect: it runs the unknown-command path, which
+// produces a *forgeerr.Error with category CategoryCLI, and
+// asserts that the exit code is that category's code.
+func TestExecute_UsesCategoryExitCode(t *testing.T) {
+	t.Parallel()
+
+	got := runCLI(t, []string{"unknown-command"}, nil)
+
+	if got.exitCode != forgeerr.CategoryCLI.ExitCode() {
+		t.Errorf("exit code = %d; want %d (CategoryCLI.ExitCode)",
+			got.exitCode, forgeerr.CategoryCLI.ExitCode())
 	}
 }
 
@@ -498,6 +774,10 @@ func TestFormatError_IsPure(t *testing.T) {
 // The rootPath field may be empty in a test binary that runs from a
 // directory that has been removed, so its emptiness is not
 // asserted.
+//
+// The verbose field is not set by defaultOptions: it is read from
+// the command tree after Cobra parses the arguments. The test
+// asserts that the zero value is false.
 func TestDefaultOptions_HasNonEmptyFields(t *testing.T) {
 	t.Parallel()
 
@@ -514,6 +794,9 @@ func TestDefaultOptions_HasNonEmptyFields(t *testing.T) {
 	}
 	if opts.env == nil {
 		t.Error("env is nil")
+	}
+	if opts.verbose {
+		t.Error("verbose is true; defaultOptions must leave it unset")
 	}
 }
 
@@ -573,14 +856,9 @@ func TestExecuteWithOptions_IsDeterministic(t *testing.T) {
 // executeWithOptions is not allowed to reference them, because it
 // must receive every input through the options struct.
 //
-// # Why the body is extracted by brace counting
-//
-// The body is extracted by extractFuncBody, which counts braces
-// rather than searching for the first "\n}\n" after the function
-// declaration. The naive search would stop at the first inner
-// block's closing brace (for example, the closing brace of the
-// `if err == nil` block), truncating the body and producing a false
-// positive or false negative depending on what follows.
+// The panic path in Execute references os.Stderr directly; the
+// exception is documented in Execute's docstring. The check is
+// scoped to executeWithOptions and does not flag the panic path.
 func TestExecuteWithOptions_NoProcessStreamsReferenced(t *testing.T) {
 	t.Parallel()
 
@@ -600,23 +878,6 @@ func TestExecuteWithOptions_NoProcessStreamsReferenced(t *testing.T) {
 				"all I/O must flow through the options struct",
 				token)
 		}
-	}
-}
-
-// TestExecuteWithOptions_UsesExitCodeFromError verifies that
-// executeWithOptions does not derive exit codes itself; it
-// delegates to exitCodeFromError.
-//
-// The test is a source-code check: it asserts that the function
-// body contains a call to exitCodeFromError.
-func TestExecuteWithOptions_UsesExitCodeFromError(t *testing.T) {
-	t.Parallel()
-
-	content := readFile(t, "execute.go")
-	body := extractFuncBody(t, content, "executeWithOptions")
-
-	if !strings.Contains(body, "exitCodeFromError(err)") {
-		t.Error("executeWithOptions does not call exitCodeFromError")
 	}
 }
 
@@ -683,21 +944,106 @@ func TestExecuteWithOptions_ThreadsDependenciesToRoot(t *testing.T) {
 	}
 }
 
+// TestExecuteWithOptions_UsesVerboseRequested verifies that
+// executeWithOptions reads the verbose flag from the command tree
+// rather than from the options struct or from a global.
+//
+// The test is a source-code check: it asserts that the function
+// body contains a call to verboseRequested. This is the WBS
+// 10.4.4 contract: the flag is read after Cobra parses the
+// arguments, from the command that carries it.
+func TestExecuteWithOptions_UsesVerboseRequested(t *testing.T) {
+	t.Parallel()
+
+	content := readFile(t, "execute.go")
+	body := extractFuncBody(t, content, "executeWithOptions")
+
+	if !strings.Contains(body, "verboseRequested(root)") {
+		t.Error("executeWithOptions does not call verboseRequested(root); " +
+			"the verbose flag must be read from the command tree")
+	}
+}
+
+// TestExecuteWithOptions_WrapsNonForgeErrors verifies that
+// executeWithOptions wraps non-*forgeerr.Error errors as
+// FORGE_INTERNAL_UNEXPECTED before rendering.
+//
+// The test is a source-code check: it asserts that the function
+// body contains a call to errors.As with a *forgeerr.Error target
+// and a call to wrappedUnexpectedError. The combination is the
+// wrapping's fingerprint.
+//
+// # Why the check is source-code
+//
+// The runtime test (TestExecute_NonForgeErrorWrapped) exercises
+// the wrapping through the CLI's error path. This source-code
+// check is a belt-and-braces assertion: it catches a regression
+// in which the wrapping is removed or bypassed, even if the
+// runtime test happens to pass for a different reason.
+func TestExecuteWithOptions_WrapsNonForgeErrors(t *testing.T) {
+	t.Parallel()
+
+	content := readFile(t, "execute.go")
+	body := extractFuncBody(t, content, "executeWithOptions")
+
+	if !strings.Contains(body, "errors.As(err, &ferr)") {
+		t.Error("executeWithOptions does not call errors.As with a " +
+			"*forgeerr.Error target; the wrapping cannot happen")
+	}
+	if !strings.Contains(body, "wrappedUnexpectedError(err)") {
+		t.Error("executeWithOptions does not call wrappedUnexpectedError; " +
+			"non-*forgeerr.Error errors are not wrapped")
+	}
+}
+
+// TestExecuteWithOptions_NoFormatError verifies that the
+// formatError helper no longer exists. The check is a
+// source-code scan: it reads the file and asserts that
+// "func formatError(" is not present.
+//
+// # Why the check is a source-code scan
+//
+// The compiler would catch a direct reference to a removed
+// symbol. The source-code scan catches the case where the symbol
+// is re-introduced but not used, which a compiler cannot detect.
+// A re-introduction is a regression: the format is owned by
+// forgeerr.Format (WBS 10.4.1), and a duplicate would drift.
+func TestExecuteWithOptions_NoFormatError(t *testing.T) {
+	t.Parallel()
+
+	content := readFile(t, "execute.go")
+	if strings.Contains(content, "func formatError(") {
+		t.Error("execute.go still contains a formatError definition; " +
+			"the format is owned by forgeerr.Format (WBS 10.4.1)")
+	}
+}
+
+// TestExecuteWithOptions_NoExitCodeFromError verifies that the
+// exitCodeFromError helper no longer exists. The check is a
+// source-code scan over both execute.go and exitcodes.go.
+//
+// # Why the check is a source-code scan
+//
+// Same rationale as TestExecuteWithOptions_NoFormatError: the
+// compiler catches direct references, but a re-introduction that
+// is not referenced would slip through. The check is a
+// regression guard against the helper's return.
+func TestExecuteWithOptions_NoExitCodeFromError(t *testing.T) {
+	t.Parallel()
+
+	for _, file := range []string{"execute.go", "exitcodes.go"} {
+		content := readFile(t, file)
+		if strings.Contains(content, "func exitCodeFromError(") {
+			t.Errorf("%s still contains an exitCodeFromError definition; "+
+				"the exit code mapping is owned by Category.ExitCode (WBS 10.2.1)",
+				file)
+		}
+	}
+}
+
 // =============================================================================
 // Test helpers — source file reading and function body extraction
 // =============================================================================
-//
-// The structural tests in this file inspect the source code of
-// execute.go rather than the runtime behaviour of
-// executeWithOptions. They need to read the file from disk and to
-// extract the body of a named function.
-//
-// The helpers below are duplicated from structure_test.go, which
-// lives in package cli_test. A test file in package cli cannot call
-// unexported helpers from a test file in package cli_test, even
-// though both files are in the same directory: they are compiled as
-// two different packages. The duplication is the consequence of
-// the white-box / black-box split documented in doc.go.
 
 // executeTestPackageDir returns the absolute path to the
 // internal/cli directory.

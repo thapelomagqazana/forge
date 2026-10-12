@@ -34,13 +34,29 @@
 //
 // The helper returns a testRun value with three fields:
 //
-//   - exitCode — the value returned by executeWithOptions.
+//   - exitCode — the value returned by executeWithOptions. The
+//     value is derived from the error's category, via
+//     Category.ExitCode (WBS 10.2.1) and the boundary's
+//     exitCodeOf helper (WBS 10.5.1).
 //   - stdout   — the content written to the injected stdout writer.
 //   - stderr   — the content written to the injected stderr writer.
 //
 // The three fields are sufficient to assert on every user-observable
 // behaviour of a command: what it prints, where it prints it, and
 // whether it succeeded.
+//
+// # The error boundary (WBS 10.5.1)
+//
+// The helpers exercise the CLI through executeWithOptions, which
+// renders errors via forgeerr.Format, wraps non-*forgeerr.Error
+// errors via wrappedUnexpectedError, and derives exit codes via
+// Category.ExitCode. The Execute function (the process's error
+// boundary) is not exercised by the helpers; its panic recovery
+// is tested directly through recoveredPanicError in execute_test.go.
+//
+// The only test-only hook in this file is
+// testOnlyRegisterPlainErrorCommand, which is used by the
+// non-*forgeerr.Error wrapping test.
 package cli
 
 import (
@@ -51,6 +67,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 	"github.com/thapelomagqazana/forge/internal/config"
 	"github.com/thapelomagqazana/forge/internal/filesystem"
@@ -75,7 +92,9 @@ import (
 // unexported, and no test outside `package cli` can name it.
 type testRun struct {
 	// exitCode is the value returned by executeWithOptions. It is
-	// the same value main.go passes to os.Exit.
+	// the same value main.go passes to os.Exit. The value is the
+	// error's Category().ExitCode(), or ExitSuccess for a nil
+	// error; see WBS 10.5.1.
 	exitCode int
 
 	// stdout is the content written to the injected stdout writer.
@@ -169,6 +188,13 @@ const testConfigPath = "/home/user/.config/forge/config.yaml"
 // buffers and its own options value. No package-level state is
 // touched. Tests may call runCLI from parallel subtests without
 // synchronisation.
+//
+// The one exception is the registry: a caller that installs a
+// test-only command via testOnlyRegisterPlainErrorCommand mutates
+// the registry for the duration of the test. A parallel test that
+// reads the registry during that window would race. The hook is
+// therefore documented as serial-only, and the tests that call it
+// are not marked t.Parallel.
 //
 // # Why the helper takes *testing.T
 //
@@ -567,5 +593,79 @@ func assertOnlyStderr(t *testing.T, got testRun) {
 	if got.stdout != "" {
 		t.Errorf("stdout is non-empty; want nothing on stdout\n"+
 			"stdout: %q", got.stdout)
+	}
+}
+
+// =============================================================================
+// Test-only registry hooks
+// =============================================================================
+//
+// The hook below installs a temporary subcommand into the registry
+// for the duration of a test. It exists so that the boundary's
+// non-*forgeerr.Error wrapping path can be exercised in-process,
+// without spawning a subprocess.
+//
+// # Why the hook is in testhelper_test.go
+//
+// The hook is a test-only fixture. The _test.go suffix ensures it
+// is compiled only into the test binary; the production binary
+// does not contain it. Placing it in the shared helper file
+// (rather than in the execute_test.go file that calls it) makes it
+// available to any future test file that needs the same seam.
+//
+// # Why the hook is serial-only
+//
+// The registry is a package-level slice. The hook appends to it
+// and its restore function truncates it. A parallel test that
+// reads the registry during the hook's lifetime would race with
+// the mutation. The hook is therefore documented as serial-only,
+// and the tests that call it are not marked t.Parallel.
+//
+// # Why the hook does not take a mutex
+//
+// The registry is not protected by a mutex in production. Adding
+// one would impose a cost on every command construction for the
+// benefit of a test-only concern. The serial-only convention is
+// the simpler alternative: the tests that mutate the registry
+// run in sequence, and the tests that read it run in parallel
+// only when the hook is not active.
+//
+// # The panicking hook was removed in WBS 10.5.1
+//
+// A sibling hook, testOnlyRegisterPanickingCommand, existed to
+// exercise the boundary's panic recovery. It was removed when the
+// recovery's test was rewritten to test recoveredPanicError
+// directly. The recovery lives in Execute, which cannot be
+// exercised through runCLI; the conversion is the testable unit,
+// and it does not need a registry hook.
+
+// testOnlyRegisterPlainErrorCommand appends a subcommand that
+// returns a plain error to the registry for the duration of one
+// test.
+//
+// The function returns a restore function that removes the
+// subcommand. The test must defer the restore so that a failed
+// assertion does not leave the registry in a mutated state.
+//
+// The subcommand is used by TestExecute_NonForgeErrorWrapped to
+// verify that the boundary wraps a non-*forgeerr.Error error as
+// FORGE_INTERNAL_UNEXPECTED.
+//
+// The subcommand is not added to the visible list in the help
+// output: it has no Short field, and its Use field is prefixed
+// with "__test_" so that it is recognisable as a test fixture if
+// it leaks into any golden file. The tests that use the hook do
+// not run the help path.
+func testOnlyRegisterPlainErrorCommand(err error) func() {
+	registry = append(registry, func(Dependencies) *cobra.Command {
+		return &cobra.Command{
+			Use: "__test_plain_error__",
+			RunE: func(*cobra.Command, []string) error {
+				return err
+			},
+		}
+	})
+	return func() {
+		registry = registry[:len(registry)-1]
 	}
 }
