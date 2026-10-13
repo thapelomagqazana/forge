@@ -1,7 +1,11 @@
 package version
 
 import (
+	"context"
 	"strings"
+	"time"
+
+	"github.com/thapelomagqazana/forge/internal/logger"
 )
 
 // Info is the result of the version application service.
@@ -63,20 +67,21 @@ type Info struct {
 	Dirty string
 }
 
-// Get returns the build information for the running Forge binary.
+// resolve returns the build information for the running Forge
+// binary, without emitting any DEBUG records.
 //
 // # Purity
 //
-// Get is pure. It reads package-level variables from
-// internal/version, constructs an Info value, and returns it. It
-// does not touch the filesystem, the network, the environment, or
-// any other global state. Two calls with no intervening mutation
-// return equal values.
+// resolve reads package-level variables from internal/version,
+// constructs an Info value, and returns it. It does not touch the
+// filesystem, the network, the environment, or any other global
+// state. Two calls with no intervening mutation return equal
+// values.
 //
 // The purity is what makes the version command testable without a
 // subprocess. A test can stub the build variables (by assigning to
-// them in the test package), call Get, and assert on the result.
-// See service_test.go for the pattern.
+// them in the test package), call resolve (or Get, which calls it),
+// and assert on the result. See service_test.go for the pattern.
 //
 // # Where the build variables live
 //
@@ -96,9 +101,31 @@ type Info struct {
 // otherwise have existed. See docs/architecture.md § 11.12 for the
 // full account.
 //
-// Get reads the variables through buildInfo, a small accessor that
-// isolates the import of internal/version to one file.
-func Get() Info {
+// resolve reads the variables through buildInfo, a small accessor
+// that isolates the import of internal/version to one file.
+//
+// # Why this function is separate from GetContext
+//
+// GetContext emits two DEBUG records and measures their duration.
+// The records' emission calls logger.Debug, which allocates; the
+// duration measurement calls time.Now, which also allocates. The
+// allocations would fail the
+// TestNonFunctional_GetIsAllocationFreeOnHeap test, which asserts
+// that the resolution is allocation-free.
+//
+// Splitting the two concerns keeps both properties:
+//
+//   - resolve is pure and allocation-free (the property the
+//     non-functional test measures).
+//   - GetContext wraps resolve with the DEBUG records (the
+//     property WBS 12.5.1 requires).
+//
+// The allocation test calls Get (or resolve), not GetContext. A
+// future change that adds allocation to resolve fails the test; a
+// change that adds allocation to GetContext (a new record, a new
+// field) does not, because the measurement is on the inner
+// function.
+func resolve() Info {
 	version, commit, buildDate, dirty := buildInfo()
 	return Info{
 		Version:   version,
@@ -106,6 +133,115 @@ func Get() Info {
 		BuildDate: buildDate,
 		Dirty:     dirty,
 	}
+}
+
+// Get returns the build information for the running Forge binary.
+//
+// Get is the pure entry point. It calls resolve directly and does
+// not emit DEBUG records. Callers that want the records use
+// GetContext.
+//
+// # Why Get does not take a context
+//
+// Get is called from two places where a context is not available
+// or not wanted:
+//
+//   - The non-functional test
+//     TestNonFunctional_GetIsAllocationFreeOnHeap calls Get
+//     repeatedly to measure its allocations. A context parameter
+//     would be irrelevant to that measurement, and its presence
+//     would tempt a future change to emit a record (which would
+//     reintroduce the allocation).
+//
+//   - Raw, which is called by newRootCmd during command-tree
+//     construction, before any invocation's context exists.
+//
+// Callers that have an invocation's context use GetContext, which
+// emits the DEBUG records and returns the same Info.
+//
+// The allocation-free property that
+// TestNonFunctional_GetIsAllocationFreeOnHeap measures applies to
+// Get (and to resolve). GetContext is the record-emitting variant
+// and is not allocation-free by design.
+func Get() Info {
+	return resolve()
+}
+
+// GetContext returns the build information for the running Forge
+// binary, emitting two DEBUG records.
+//
+// # Purity
+//
+// GetContext is pure with respect to its inputs. It reads
+// package-level variables from internal/version, constructs an
+// Info value, and returns it. It does not touch the filesystem,
+// the network, the environment, or any other global state. Two
+// calls with no intervening mutation return equal values.
+//
+// The context is used solely for the DEBUG records; the
+// resolution's behavior does not depend on it.
+//
+// # Nil context
+//
+// A nil context is replaced by context.Background(). The
+// substitution keeps the DEBUG records' emission unconditional
+// without requiring every caller to pass a non-nil context.
+//
+// # Relationship to Get
+//
+// Get and GetContext return the same Info value. The difference is
+// that GetContext emits the records and measures the duration;
+// Get does neither. The CLI handler (internal/cli/version.go) uses
+// GetContext so its DEBUG surface includes the resolution; the
+// non-functional test and Raw use Get so their performance and
+// output are independent of the logging configuration.
+//
+// # DEBUG records (WBS 12.5.1)
+//
+// The function emits two DEBUG records:
+//
+//  1. "version service: reading build info" — before resolve
+//     runs. The record has no fields; its presence is the signal
+//     that the service was invoked. The alternative — a record
+//     with a "binary" field naming the running executable's path
+//     — was rejected because the service does not read the
+//     binary's path (it reads package-level variables), and a
+//     field whose value the function cannot produce would be
+//     misleading.
+//
+//  2. "version service: resolved" — after resolve returns, with
+//     the four fields (version, commit, build_date, dirty) and a
+//     duration in milliseconds. The duration is the wall time
+//     between the two records. It is reported because the
+//     underlying debug.ReadBuildInfo call can be slow in a
+//     container with a limited /proc, and a reader diagnosing a
+//     slow `forge version` benefits from the measurement.
+//
+// The two records are the version subsystem's contribution to
+// docs/reference/verbose-mode.md §3, alongside the two records the
+// CLI handler emits (see internal/cli/version.go). The service
+// records the resolution's behavior; the handler records the
+// command's dispatch decisions.
+func GetContext(ctx context.Context) Info {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	logger.Debug(ctx, "version service: reading build info")
+
+	start := time.Now()
+	info := resolve()
+	duration := time.Since(start)
+
+	logger.Debug(ctx, "version service: resolved",
+		"version", info.Version,
+		"commit", info.Commit,
+		"build_date", info.BuildDate,
+		"dirty", info.Dirty,
+		"duration_ms", duration.Milliseconds(),
+	)
+
+	return info
 }
 
 // Raw returns the version string that the CLI prints for the version
@@ -150,6 +286,16 @@ func Get() Info {
 // Raw is pure. It reads the same values that Get reads and formats
 // them. Two calls with no intervening mutation return the same
 // string.
+//
+// # Context
+//
+// Raw does not take a context, and it calls Get (not GetContext).
+// It is called by the root command's Version field initialization,
+// which runs before the CLI's per-invocation context exists. The
+// absence of a context is deliberate: the call is not part of any
+// invocation, and its output must not depend on the logging
+// configuration. Calling Get (the pure path) rather than
+// GetContext (the record-emitting path) keeps the property.
 func Raw() string {
 	var b strings.Builder
 	if err := Format(&b, Get()); err != nil {

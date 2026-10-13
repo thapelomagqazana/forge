@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -43,15 +42,37 @@ import (
 //
 //   1. Full output, no flag interaction: the row asserts the full
 //      output and no stderr.
-//   2. Flag interaction on full output: --quiet, --verbose, and
-//      their combination; --config with a resolved file.
+//   2. Flag interaction on full output: --quiet, --verbose; --config
+//      with a resolved file.
 //   3. Flag interaction on --path output: --path with --quiet and
 //      --path with --verbose.
 //
-// The error case (--config <missing>) is separate, because it never
-// reaches the config command: the loader produces the error before
-// the command tree runs. Its assertion pins the CLI-level behavior
-// (exit 3, stderr, empty stdout).
+// The error cases (--quiet --verbose conflict; --config <missing>)
+// are separate, because they exercise the boundary's error path
+// rather than the command's success path. Their assertions pin the
+// CLI-level behavior: the exit code, the empty stdout, the
+// diagnostic on stderr.
+//
+// # How the assertions changed when the contracts changed
+//
+// The original version of this file (WBS 9.4.2) asserted that
+// --verbose left stderr empty and that --quiet --verbose produced
+// exit 0 (the "--quiet wins" rule). Two later WBS items changed
+// those contracts:
+//
+//   - WBS 12.1.2 made --quiet and --verbose mutually exclusive.
+//     The combination is now a usage error (exit 64), not a
+//     silent precedence tie.
+//
+//   - WBS 12.5.1 wired the resolved log level into the
+//     invocation's logger and had the config handler emit three
+//     DEBUG records under --verbose: "config: resolving
+//     invocation", "config: resolved path", "config: selected
+//     format". Under --verbose, stderr is no longer empty.
+//
+// The rows below reflect the current contracts. The change is a
+// deliberate, one-time update recorded in the commit that
+// introduced the new behavior.
 //
 // # Why the assertions are structured this way
 //
@@ -59,15 +80,13 @@ import (
 //
 //   - the exit code
 //   - the presence and content of the output on each stream
-//   - (where applicable) the invariants that no output appeared on
-//     the wrong stream
+//   - the invariants that no output appeared on the wrong stream
 //
-// They do not assert on the *absence* of output beyond what the
-// contract requires. In particular, the --verbose rows assert that
-// stdout is unchanged from the no-flag case and that stderr is
-// empty (Phase 2 behavior); when WBS 12.0 introduces discovery
-// debug output, those assertions will be updated to assert on the
-// new stderr content.
+// They do not assert on the exact content of the DEBUG records
+// (timestamps and field values vary by invocation). They assert
+// on the records' *message names*, which are stable and are the
+// names the reference doc lists as the config subsystem's records
+// (docs/reference/verbose-mode.md §3.4).
 //
 // # Non-functional properties
 //
@@ -104,6 +123,24 @@ const fullOutputGoldenDefault = "testdata/config/default.golden.txt"
 // carries a SourcePath.
 const fullOutputGoldenWithFile = "testdata/config/with-file.golden.txt"
 
+// configDebugRecords is the set of DEBUG record message names the
+// config handler emits under --verbose (WBS 12.5.1).
+//
+// The three names are the handler's contribution to the verbose
+// surface. They are documented in docs/reference/verbose-mode.md
+// §3.4. A future change to the handler's records updates this
+// slice, the reference doc, and the rows that use it.
+//
+// The names are the stable parts of the records. The full lines
+// carry timestamps and field values (mode, path, format) that
+// vary by invocation; asserting on the names pins the record's
+// identity without coupling the test to its rendering.
+var configDebugRecords = []string{
+	"config: resolving invocation",
+	"config: resolved path",
+	"config: selected format",
+}
+
 // TestConfigInteraction_FullOutput pins the behavior of
 // `forge config` and `forge config --path` when combined with the
 // three global flags.
@@ -119,10 +156,10 @@ const fullOutputGoldenWithFile = "testdata/config/with-file.golden.txt"
 //   - asserts on stderr via the row's checkErr function.
 //
 // The checks are functions rather than expected strings so that a
-// row can delegate to compareGolden, assertOnlyStdout, or a
+// row can delegate to compareGolden, assertStderrEmpty, or a
 // bespoke assertion without inflating the table's struct.
 //
-// # Why a single test with two tables
+// # Why a single test with one table
 //
 // The full-output and path-only invocations share the same shape
 // (args, injected config, exit, stream checks) but differ in which
@@ -139,7 +176,7 @@ const fullOutputGoldenWithFile = "testdata/config/with-file.golden.txt"
 // would have produced; the flags that affect loading (--config)
 // are exercised by the injected SourcePath, and the flags that
 // affect logging (--quiet, --verbose) are exercised by their
-// observable effect (currently, none on the command's output).
+// observable effect on the invocation's streams.
 func TestConfigInteraction_FullOutput(t *testing.T) {
 	t.Parallel()
 
@@ -176,7 +213,9 @@ func TestConfigInteraction_FullOutput(t *testing.T) {
 			// this stands in for what the loader would produce
 			// from --config <path>. The loader's own behavior
 			// (reading the file at the given path, or erroring
-			// if it is missing) is covered elsewhere.
+			// if it is missing) is covered by
+			// TestConfigInteraction_MissingConfig below and by
+			// the config package's tests.
 			name:     "config --config <path>",
 			args:     []string{"config", "--config", "/injected/from/test/config.yaml"},
 			cfg:      withPath,
@@ -190,8 +229,8 @@ func TestConfigInteraction_FullOutput(t *testing.T) {
 		{
 			// Row 3: `forge config --quiet` — the flag sets the
 			// log level to error; it does not suppress the
-			// command's output. The output is unchanged from
-			// the no-flag case.
+			// command's output. The config handler emits no
+			// records at ERROR level, so stderr stays empty.
 			name:     "config --quiet",
 			args:     []string{"--quiet", "config"},
 			cfg:      noPath,
@@ -204,14 +243,15 @@ func TestConfigInteraction_FullOutput(t *testing.T) {
 		},
 		{
 			// Row 4: `forge config --verbose` — the flag sets
-			// the log level to debug. In Phase 2, the config
-			// command does not emit debug output; the stdout
-			// is unchanged and stderr is empty.
+			// the log level to debug. The config handler emits
+			// three DEBUG records on stderr (WBS 12.5.1):
+			// resolving invocation, resolved path, selected
+			// format.
 			//
-			// When WBS 12.0 introduces discovery debug output,
-			// this row's checkErr will be updated to assert on
-			// the new stderr content. The stdout assertion is
-			// unchanged: debug output never goes to stdout.
+			// The stdout assertion is unchanged: debug output
+			// never goes to stdout. The stderr assertion is
+			// updated from assertStderrEmpty to
+			// assertDebugRecordsPresent.
 			name:     "config --verbose",
 			args:     []string{"--verbose", "config"},
 			cfg:      noPath,
@@ -220,26 +260,42 @@ func TestConfigInteraction_FullOutput(t *testing.T) {
 				t.Helper()
 				compareGolden(t, fullOutputGoldenDefault, stdout)
 			},
-			checkErr: assertStderrEmpty,
+			checkErr: assertDebugRecordsPresent(configDebugRecords...),
 		},
 		{
 			// Row 5: `forge config --quiet --verbose` — both
-			// flags set. The precedence rule (--quiet wins) is
-			// implemented in resolveLogLevel; this test pins
-			// the composition's observable effect: stdout is
-			// unchanged and stderr is empty (Phase 2).
+			// flags set. WBS 12.1.2 made the flags mutually
+			// exclusive: the invocation is rejected as a usage
+			// error before the tree runs.
 			//
-			// The precedence itself is asserted at the unit
-			// level by TestResolveLogLevel in flags_test.go.
+			// The row's pre-12.1.2 expectation was exit 0 (the
+			// "--quiet wins" rule). The current rule is mutual
+			// exclusion; the boundary renders the conflict and
+			// returns ExitUsage (64).
+			//
+			// The conflict's exact behavior is pinned by
+			// TestFlagInteraction_QuietVerboseConflict in
+			// flag_interaction_test.go and by
+			// TestGlobalFlags_QuietVerboseConflict in
+			// root_test.go. This row pins the composition with
+			// the config command: the command's own output is
+			// not produced, and the conflict message appears on
+			// stderr.
 			name:     "config --quiet --verbose",
 			args:     []string{"--quiet", "--verbose", "config"},
 			cfg:      noPath,
-			wantExit: ExitSuccess,
+			wantExit: ExitUsage,
 			checkOut: func(t *testing.T, stdout string) {
 				t.Helper()
-				compareGolden(t, fullOutputGoldenDefault, stdout)
+				assert.Empty(t, stdout,
+					"the conflict must be detected before the tree "+
+						"runs; stdout must be empty")
 			},
-			checkErr: assertStderrEmpty,
+			checkErr: func(t *testing.T, stderr string) {
+				t.Helper()
+				assert.Contains(t, stderr, "mutually exclusive",
+					"stderr must name the conflict")
+			},
 		},
 		{
 			// Row 6: `forge config --path --quiet` — the path
@@ -257,9 +313,15 @@ func TestConfigInteraction_FullOutput(t *testing.T) {
 			checkErr: assertStderrEmpty,
 		},
 		{
-			// Row 7: `forge config --path --verbose` — the
-			// path mode with verbose. Same behavior as the
-			// full-output row: Phase 2 adds no stderr.
+			// Row 7: `forge config --path --verbose` — the path
+			// mode with verbose. The config handler emits three
+			// DEBUG records on stderr (WBS 12.5.1); the --path
+			// branch emits the same three message shapes but
+			// with mode=path in the second record and no
+			// `accepted` field in the third.
+			//
+			// The stdout assertion is unchanged: debug output
+			// never goes to stdout.
 			name:     "config --path --verbose",
 			args:     []string{"--verbose", "config", "--path"},
 			cfg:      withPath,
@@ -269,7 +331,7 @@ func TestConfigInteraction_FullOutput(t *testing.T) {
 				assert.Equal(t, configFullOutputPath+"\n", stdout,
 					"--verbose must not change the path output")
 			},
-			checkErr: assertStderrEmpty,
+			checkErr: assertDebugRecordsPresent(configDebugRecords...),
 		},
 	}
 
@@ -307,16 +369,15 @@ func TestConfigInteraction_FullOutput(t *testing.T) {
 // the CLI-level contract: an error from the loader surfaces on
 // stderr, produces exit 3, and leaves stdout empty.
 //
-// # Why the test does not go through the loader
+// # Why the test does not go through the loader's success path
 //
 // The test invokes `forge config --config <missing>`. In the
 // current architecture, the loader runs in the PersistentPreRunE
 // hook, which executes before the config command's RunE. The hook
-// returns the loader's error; executeWithOptions renders it and
-// maps it to exit 3. The test therefore exercises the full path
-// (runCLI → executeWithOptions → newRootCmd → hook → loader →
-// error), not the command handler. No config injection is
-// involved.
+// returns the loader's error; runWithOptions renders it and maps
+// it to exit 3. The test therefore exercises the full path
+// (runWithOptions → newRootCmd → hook → loader → error), not the
+// command handler. No config injection is involved.
 //
 // # Why the path is deliberately impossible
 //
@@ -354,6 +415,12 @@ func TestConfigInteraction_MissingConfig(t *testing.T) {
 // the property visible: a reader who sees `checkErr:
 // assertStderrEmpty` knows the row asserts the absence of
 // diagnostics without reading the closure.
+//
+// # Which rows use it
+//
+// The rows whose args do not include --verbose or --quiet
+// --verbose. Under those args, the config handler emits no
+// records, so stderr is empty by the handler's construction.
 func assertStderrEmpty(t *testing.T, stderr string) {
 	t.Helper()
 	assert.Empty(t, stderr, "stderr must be empty for this row")
@@ -371,52 +438,45 @@ func assertStdoutNonEmpty(t *testing.T, stdout string) {
 	assert.NotEmpty(t, stdout, "stdout must be non-empty for this row")
 }
 
-// =============================================================================
-// Notes on the --verbose rows
-// =============================================================================
-
-// The rows for --verbose and --path --verbose assert that stderr is
-// empty. This is the Phase 2 behavior: the flag sets the log level
-// (via resolveLogLevel), but no command emits debug output.
+// assertDebugRecordsPresent returns a checkErr closure that
+// asserts stderr contains each of the given substrings.
 //
-// When WBS 12.0 introduces the discovery debug output, the
-// assertions in the --verbose rows will change:
+// # Why a closure factory and not a plain function
 //
-//   - The checkErr for `config --verbose` will assert that stderr
-//     contains one or more lines describing the discovery steps.
-//   - The checkErr for `config --path --verbose` will do the same.
-//   - The checkErr for `config --quiet --verbose` will remain
-//     assertStderrEmpty: --quiet wins over --verbose, so no debug
-//     output is emitted.
+// The rows have different sets of expected DEBUG records (today
+// they all use configDebugRecords, but a future row may expect a
+// subset). A factory lets each row name the substrings it expects
+// without the table carrying a []string column.
 //
-// The update is a deliberate change: the tests will fail when the
-// new behavior lands, and the contributor introducing WBS 12.0
-// will edit these three rows in the same commit. The failure is
-// the signal that the change is being made in a specific, planned
-// place.
+// # What the helper asserts
 //
-// # Why not t.Skip the --verbose rows
+// For each substring in want, the returned closure asserts the
+// substring appears in stderr. The helper does not assert order,
+// count, or absence of other lines; the config handler's records
+// are the subject of its own tests, and this file's purpose is to
+// pin composition.
 //
-// A skipped test is invisible in the test output; a passing test
-// is a positive assertion. The --verbose rows are meaningful in
-// Phase 2: they assert that the flag *composes* with `forge
-// config` — that it is accepted, that it does not change the
-// output, and that it does not accidentally pollute stdout. These
-// are real properties worth pinning. When WBS 12.0 changes the
-// assertions, the Phase 2 properties will be extended, not
-// removed: stdout is still unchanged, and stderr gains content.
+// # Why the helper does not assert "stderr is non-empty"
 //
-// The rows are therefore active tests with inverted assertions,
-// not skipped placeholders. The distinction matters: a skipped
-// test says "this isn't tested yet"; an inverted assertion says
-// "this property holds today, and will be extended later."
+// The per-substring assertion implies non-emptiness: if every
+// substring is present, stderr cannot be empty. A separate
+// emptiness check would be redundant.
 //
-// The trailing comment at the bottom of this file (this one) is
-// the file's record of the plan. A reader who wonders why the
-// --verbose rows assert the *absence* of stderr reads here and
-// finds the answer.
-
-// Ensure unused imports do not linger. strings is used by the
-// docstrings above and will be used when the WBS 12.0 assertions
-// are added; keeping it imported now avoids a second edit.
-var _ = strings.Contains
+// # Why the substrings are message names, not full lines
+//
+// The full lines contain timestamps and field values that vary
+// by invocation. The message names ("config: resolving
+// invocation", "config: resolved path", "config: selected
+// format") are stable across invocations and are what the
+// reference doc lists as the config subsystem's records (see
+// docs/reference/verbose-mode.md §3.4). Asserting on them is
+// asserting on the record's identity, not its rendering.
+func assertDebugRecordsPresent(want ...string) func(*testing.T, string) {
+	return func(t *testing.T, stderr string) {
+		t.Helper()
+		for _, w := range want {
+			assert.Contains(t, stderr, w,
+				"stderr must contain the DEBUG record %q", w)
+		}
+	}
+}

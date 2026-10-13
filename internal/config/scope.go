@@ -3,22 +3,39 @@ package config
 import "strings"
 
 // This file holds the config scope contract (WBS 8.1.1, amended by
-// ADR-009). The contract names the config's fields and the rules
-// that constrain them, and it distinguishes value fields from
+// ADR-009 and ADR-022). The contract names the config's fields and
+// the rules that constrain them, and it distinguishes three
+// categories of field: scalar value fields, sections, and
 // bookkeeping fields.
 //
-// # Value fields
+// # Scalar value fields
 //
-// The value fields are the fields that carry configuration values.
-// There are exactly three:
+// The scalar value fields are the fields that carry scalar
+// configuration values. There are exactly three:
 //
 //	LogLevel       the log level
 //	OutputFormat   the output format
 //	SourcePath     the resolved config file path (metadata)
 //
-// Every value field is exported and has type string. The count,
-// exportedness, and type are frozen. Adding, removing, or
-// retyping a value field requires an ADR.
+// Every scalar value field is exported and has type string. The
+// count, exportedness, and type are frozen. Adding, removing, or
+// retyping a scalar value field requires an ADR.
+//
+// # Sections
+//
+// A section is an exported field whose type is a pointer to a
+// struct defined in this package. A section carries a named group
+// of related configuration values (for example, Registry.URL and
+// Registry.Token). Sections are part of the configuration surface,
+// but they are a distinct category from scalar value fields: they
+// are not counted by configFieldCount, and they are not required
+// to have type string.
+//
+// The current sections are listed by InScopeSectionNames. The
+// first sections were added by WBS 12.7.1 to hold the credential
+// fields declared `sensitive: true` in the schema. Adding a
+// section requires an ADR: it widens the configuration surface,
+// even though the surface is nested.
 //
 // # Bookkeeping fields
 //
@@ -92,24 +109,26 @@ const (
 	OutputFormatJSON = "json"
 )
 
-// configFieldCount is the number of value fields the Config type
-// has.
+// configFieldCount is the number of scalar value fields the Config
+// type has.
 //
 // # Why a constant
 //
 // The scope contract (WBS 8.1.1, amended by ADR-009) freezes the
-// value-field count at three. The test
+// scalar value-field count at three. The test
 // TestScope_ConfigHasExactlyThreeValueFields reads this constant;
-// adding a value field requires updating the constant and the ADR.
+// adding a scalar value field requires updating the constant and
+// the ADR.
 //
-// # Why "value fields" and not "fields"
+// # Why "scalar value fields" and not "fields"
 //
-// ADR-009 distinguishes value fields (exported, carrying
+// ADR-009 distinguishes value fields (exported, carrying scalar
 // configuration values) from bookkeeping fields (unexported,
-// carrying internal state). The constant counts value fields
-// only. The bookkeeping fields' count is not frozen by the
-// contract; each bookkeeping field is added by amending the
-// contract, not by ADR.
+// carrying internal state). WBS 12.7.1 added a third category,
+// sections (exported, pointer-to-struct, carrying a named group
+// of related values), recognized by ADR-022. The constant counts
+// scalar value fields only. Neither the bookkeeping fields' count
+// nor the sections' count is frozen by this constant.
 //
 // The constant is not exported. A future caller that wants the
 // count can compute it with reflection; the constant is for the
@@ -194,12 +213,23 @@ func forbiddenFieldNameSubstrings() []string {
 // # Applies to both value and bookkeeping fields
 //
 // The check applies to every field of the Config type, whether
-// it is a value field (exported) or a bookkeeping field
-// (unexported). A bookkeeping field named "secretCache" would be
-// rejected by the check even though the field is not part of the
-// configuration surface. The reason: a bookkeeping field that
-// holds secrets would be an implicit widening of the surface,
-// and the scope contract's intent is to prevent that.
+// it is a scalar value field (exported), a section (exported), or
+// a bookkeeping field (unexported). A bookkeeping field named
+// "secretCache" would be rejected by the check even though the
+// field is not part of the configuration surface. The reason: a
+// bookkeeping field that holds secrets would be an implicit
+// widening of the surface, and the scope contract's intent is to
+// prevent that.
+//
+// # Scope of the current application
+//
+// The scope tests apply the check to Config's own fields only, not
+// to section members. Sensitive fields inside a section
+// (Registry.Token, Registry.Password, Telemetry.APIKey) are
+// intentionally on the surface and would match the substrings
+// "token", "password", and "api_key". Whether the check should
+// extend into sections with an explicit sensitive-field carve-out
+// is left as future work; see ADR-022.
 func IsForbiddenFieldName(name string) bool {
 	lower := strings.ToLower(name)
 	for _, sub := range forbiddenFieldNameSubstrings() {
@@ -210,16 +240,18 @@ func IsForbiddenFieldName(name string) bool {
 	return false
 }
 
-// InScopeFieldNames returns the names of the Config type's value
-// fields, in the order they appear in the struct.
+// InScopeFieldNames returns the names of the Config type's scalar
+// value fields, in the order they appear in the struct.
 //
 // # Why the function exists
 //
 // The scope test checks that every exported field of the Config
-// type is in this list. A future contributor who adds a field
-// without updating the list fails the test. The failure names
-// the new field; the contributor either renames it to one of the
-// allowed names or opens an ADR to extend the list.
+// type is either a scalar value field (in this list) or a section
+// (in InScopeSectionNames). A future contributor who adds a field
+// without updating one of the two lists fails the test. The
+// failure names the new field; the contributor either renames it
+// to one of the allowed names or opens an ADR to extend the
+// surface.
 //
 // # Why the list is authoritative
 //
@@ -245,6 +277,64 @@ func InScopeFieldNames() []string {
 		"LogLevel",
 		"OutputFormat",
 		"SourcePath",
+	}
+}
+
+// InScopeSectionNames returns the names of the Config type's
+// sections, in the order they appear in the struct.
+//
+// # What a section is
+//
+// A section is an exported field whose type is a pointer to a
+// struct defined in this package. A section carries a named group
+// of related configuration values; the field's name is the
+// section's name, and the group's members are the pointer's
+// target's fields (for example, Registry.URL and Registry.Token).
+//
+// Sections are part of the configuration surface. They are
+// distinct from scalar value fields for two reasons:
+//
+//   - Their type is a pointer to a struct, not a string.
+//   - Their members can carry per-field schema metadata
+//     (sensitive: true), which the scalar value fields cannot.
+//
+// Both reasons are why configFieldCount does not count them.
+// Adding a section still requires an ADR: it widens the
+// configuration surface.
+//
+// # Why the function exists
+//
+// The scope test checks that every exported field of the Config
+// type is either a scalar value field or a section. A future
+// contributor who adds a section without updating this list fails
+// the test. The failure names the new field; the contributor
+// opens an ADR to add the name.
+//
+// # The WBS 12.7.1 sections
+//
+// Registry and Telemetry were added by WBS 12.7.1 and recognized
+// as a category by ADR-022. Registry holds the registry endpoint
+// (Registry.URL) and two sensitive members (Registry.Token,
+// Registry.Password); Telemetry holds a telemetry endpoint
+// (Telemetry.Endpoint) and one sensitive member
+// (Telemetry.APIKey). A nil section pointer means the section was
+// absent from the config file.
+//
+// # Order
+//
+// The names are returned in the order the fields appear in the
+// struct. The order is not part of the contract; the test
+// compares membership, not sequence.
+//
+// # Why a function, not a variable
+//
+// The CLI package's contract test forbids package-level
+// variables. A function that returns a fresh slice on each call
+// has no package-level state.
+func InScopeSectionNames() []string {
+	return []string{
+		"Registry",
+		"Telemetry",
 	}
 }
 

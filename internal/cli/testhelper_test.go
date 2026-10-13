@@ -45,6 +45,15 @@
 // behaviour of a command: what it prints, where it prints it, and
 // whether it succeeded.
 //
+// # The three streams (WBS 12.4.1)
+//
+// The options and Dependencies structs carry the three standard
+// streams in a single streams.Streams value. Every helper in this
+// file constructs the value once and captures the two buffers
+// (Out and Err) it placed inside. A caller that wants to assert on
+// bytes reads testRun.stdout or testRun.stderr, which the helper
+// fills from the two buffers.
+//
 // # The error boundary (WBS 10.5.1)
 //
 // The helpers exercise the CLI through runWithOptions, which
@@ -66,6 +75,20 @@
 // The only test-only hook in this file is
 // testOnlyRegisterPlainErrorCommand, which is used by the
 // non-*forgeerr.Error wrapping test.
+//
+// # Helper naming conventions
+//
+// The helpers below follow two naming conventions:
+//
+//   - runCLI* names describe verbs: the helper runs the CLI and
+//     returns the result. A test calls it once per scenario.
+//   - test* names describe nouns: the helper returns a fixture
+//     value (testRun, testDependencies). The value is read by the
+//     test, not executed.
+//
+// The distinction matters at the call site: runCLI(t, args, env)
+// reads as "run the CLI and give me the result"; testDependencies()
+// reads as "give me the test dependencies fixture."
 package cli
 
 import (
@@ -81,6 +104,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/thapelomagqazana/forge/internal/config"
 	"github.com/thapelomagqazana/forge/internal/filesystem"
+	"github.com/thapelomagqazana/forge/internal/streams"
 )
 
 // testRun captures the observable result of a CLI invocation.
@@ -159,9 +183,10 @@ const testConfigPath = "/home/user/.config/forge/config.yaml"
 //
 // The helper:
 //
-//  1. Constructs an options value with synthetic inputs. stdout and
-//     stderr are fresh bytes.Buffers; stdin is an empty reader; env
-//     is a lookup function over the caller-supplied map.
+//  1. Constructs an options value with synthetic inputs. The three
+//     streams are assembled into a streams.Streams value: Out and
+//     Err are fresh bytes.Buffers, In is an empty reader; env is a
+//     lookup function over the caller-supplied map.
 //  2. Calls runWithOptions with a background context and the
 //     options value.
 //  3. Returns a testRun containing the exit code and the captured
@@ -221,10 +246,12 @@ func runCLI(t *testing.T, args []string, env map[string]string) testRun {
 	var stdout, stderr bytes.Buffer
 
 	opts := options{
-		args:     args,
-		stdin:    strings.NewReader(""),
-		stdout:   &stdout,
-		stderr:   &stderr,
+		args: args,
+		streams: streams.Streams{
+			In:  strings.NewReader(""),
+			Out: &stdout,
+			Err: &stderr,
+		},
 		env:      func(k string) string { return env[k] },
 		rootPath: "",
 	}
@@ -251,10 +278,12 @@ func runCLIWithRoot(t *testing.T, args []string, env map[string]string, rootPath
 	var stdout, stderr bytes.Buffer
 
 	opts := options{
-		args:     args,
-		stdin:    strings.NewReader(""),
-		stdout:   &stdout,
-		stderr:   &stderr,
+		args: args,
+		streams: streams.Streams{
+			In:  strings.NewReader(""),
+			Out: &stdout,
+			Err: &stderr,
+		},
 		env:      func(k string) string { return env[k] },
 		rootPath: rootPath,
 	}
@@ -281,27 +310,22 @@ func runCLIWithRoot(t *testing.T, args []string, env map[string]string, rootPath
 //
 // # Threading the Config
 //
-// The options struct must carry a Config field (or a similar
-// mechanism) that buildDependencies threads into the Dependencies
-// value it constructs. If the options struct does not have such a
-// field, one must be added, and buildDependencies must be updated
-// to use it when non-nil. Without this plumbing, the injected
-// Config is discarded and the command runs with the default
-// (zero-value) Config.
-//
-// # Why not extend runCLI
-//
-// runCLI's signature (args, env) is used by dozens of tests.
-// Adding a config parameter would require touching every call
-// site. A sibling function with a distinct name is the idiomatic
-// Go choice: the common case stays terse, and the new case is
-// explicit at the call site.
+// The options struct carries a Config field that
+// buildDependencies threads into the Dependencies value it
+// constructs. When the field is non-nil, the PersistentPreRunE
+// hook treats the value as pre-resolved and skips the loader.
 //
 // # Concurrency
 //
 // runCLIWithConfig is safe for concurrent use. Every call
 // allocates its own buffers and its own options value. No
 // package-level state is touched.
+//
+// The two bytes.Buffer values are declared *inside* the function
+// body. An earlier version may have used package-level or
+// shared buffers; the logger's DEBUG records (WBS 12.5.1) exposed
+// the sharing as a data race, and the correct fix is per-call
+// allocation.
 func runCLIWithConfig(
 	t *testing.T,
 	args []string,
@@ -313,10 +337,12 @@ func runCLIWithConfig(
 	var stdout, stderr bytes.Buffer
 
 	opts := options{
-		args:     args,
-		stdin:    strings.NewReader(""),
-		stdout:   &stdout,
-		stderr:   &stderr,
+		args: args,
+		streams: streams.Streams{
+			In:  strings.NewReader(""),
+			Out: &stdout,
+			Err: &stderr,
+		},
 		env:      func(k string) string { return env[k] },
 		rootPath: "",
 		config:   cfg,
@@ -446,22 +472,19 @@ func loadFixtureConfig(t *testing.T, fixtures map[string]string) config.Config {
 	return cfg
 }
 
-// testDependencies returns a Dependencies value with non-nil writers,
+// testDependencies returns a Dependencies value with non-nil fields,
 // suitable for tests that construct commands but do not execute them.
 //
 // # What the helper provides
 //
-//   - Stdout and Stderr are fresh bytes.Buffer values. Tests that
-//     want to assert on output should call runCLI instead, which
+//   - Streams is a streams.Streams value with fresh bytes.Buffers
+//     for Out and Err and an empty reader for In. Tests that want
+//     to assert on output should call runCLI instead, which
 //     captures the writers it allocates.
 //
 //   - Config is a fresh &config.Config{}. In Phase 2 the struct is
 //     empty; the pointer is non-nil so that commands may read its
 //     fields without a nil check.
-//
-//   - Logger is a no-op logger. Tests that want to assert on log
-//     output construct their own logger and pass it in a Dependencies
-//     value they build themselves.
 //
 //   - FS is an OS-backed filesystem bound to an empty root. Tests
 //     that need a specific root call runCLIWithRoot instead.
@@ -470,23 +493,21 @@ func loadFixtureConfig(t *testing.T, fixtures map[string]string) config.Config {
 //     Tests that want to inject environment variables call runCLI
 //     with an env map.
 //
+// # What the helper does not provide
+//
+// The helper does not provide a Logger. After WBS 12.3.1, the
+// invocation's logger is not a field on Dependencies: it is
+// constructed by the PersistentPreRunE hook and stored on the
+// command's context. A test that wants to observe log records
+// runs the hook (or builds the logger itself) and reads from the
+// context; the two patterns are exercised in hooks_test.go.
+//
 // # When to use this helper
 //
 // Use testDependencies for tests that construct a command and
 // inspect its metadata (Use, Short, Long, Hidden, Args) but do not
 // execute it. For tests that execute a command, use runCLI, which
 // captures the command's observable output.
-//
-// # Why the helper is not named newTestDependencies
-//
-// The name follows the convention used by the package's other test
-// helpers (testRun, testHelper, etc.): a noun phrase beginning with
-// "test" describes a value or a fixture; a verb phrase beginning
-// with "new" describes a constructor that produces a distinct value
-// on every call. testDependencies produces a distinct value on every
-// call, but its name is read as "the test dependencies", which is a
-// stable, reusable fixture. The two conventions are documented in
-// the package docstring of testhelper_test.go.
 //
 // # Concurrency
 //
@@ -496,11 +517,13 @@ func loadFixtureConfig(t *testing.T, fixtures map[string]string) config.Config {
 func testDependencies() Dependencies {
 	return Dependencies{
 		Config: &config.Config{},
-		Logger: newNoopLogger(),
 		FS:     filesystem.NewOSFS(""),
-		Stdout: &bytes.Buffer{},
-		Stderr: &bytes.Buffer{},
-		Env:    func(string) string { return "" },
+		Streams: streams.Streams{
+			In:  strings.NewReader(""),
+			Out: &bytes.Buffer{},
+			Err: &bytes.Buffer{},
+		},
+		Env: func(string) string { return "" },
 	}
 }
 

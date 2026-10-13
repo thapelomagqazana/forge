@@ -81,10 +81,48 @@
 // initialization. The YAML library (yaml.v3) is imported as a
 // direct dependency; its own package-level state is the
 // library's concern.
+//
+// # DEBUG records (WBS 12.5.1)
+//
+// The loader emits four DEBUG records, all to the process logger
+// (which writes to stderr):
+//
+//  1. "config loader: entered" — after Load/LoadContext is
+//     called, with the input path (or "(none)"). This is the
+//     entry record: it answers "did the loader run, and with
+//     what input?".
+//  2. "config loader: read file" — after the file is read
+//     successfully, with the path, the byte count, and the BOM
+//     check result.
+//  3. "config loader: parsed YAML" — after the YAML document
+//     parses into a Config, with the byte count and the two
+//     field-set indicators.
+//  4. "config loader: validated" — after the enum validation
+//     passes, with the two effective field values.
+//
+// The four records trace the pipeline's three successful stages
+// (read, parse, validate) plus the entry. They are the config
+// subsystem's contribution to docs/reference/verbose-mode.md §3.
+//
+// The error branches do NOT emit DEBUG records. An error is a
+// failure, not a decision; the boundary renders it with
+// forgeerr.Format, and the user sees the failure there. Emitting
+// a DEBUG record in addition to the rendered error would
+// duplicate the diagnostic. The rule from the reference doc is
+// "emit at decision points"; an error is not a decision.
+//
+// # Context
+//
+// The records carry the context passed to LoadContext. A caller
+// that uses Load (the legacy entry point) gets records with a
+// background context, which means they carry the zero
+// correlation ID. A caller that wants the records to carry an
+// invocation's correlation ID uses LoadContext.
 package config
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -92,6 +130,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/thapelomagqazana/forge/internal/logger"
 )
 
 // maxConfigFileSize is the maximum permitted size of a config
@@ -132,13 +172,28 @@ const maxConfigFileSize = 1 << 20 // 1 MiB
 // variables, but that rule applies to the cli package, not the
 // config package. The config package's structure test (if one
 // exists) does not forbid this value; the slice is read-only
-// after initialization. If a future config structure test forbids
-// package-level variables, this slice is the exception to
-// document: the alternative — a function returning a fresh
+// after initialization. If a future config structure test
+// forbids package-level variables, this slice is the exception
+// to document: the alternative — a function returning a fresh
 // three-byte slice on each call — is a two-line change.
 var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
 
 // Load reads, parses, and validates the config file at path.
+//
+// Load is the legacy entry point. It calls LoadContext with a
+// background context, which means the DEBUG records it emits
+// carry the zero correlation ID.
+//
+// New callers that have an invocation's context (the CLI's
+// hooks, for example) should use LoadContext directly. The two
+// functions share the same pipeline; Load is a one-line wrapper.
+//
+// The full docstring for the pipeline is on LoadContext.
+func Load(path string) (Config, error) {
+	return LoadContext(context.Background(), path)
+}
+
+// LoadContext reads, parses, and validates the config file at path.
 //
 // # What the function does
 //
@@ -189,8 +244,8 @@ var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
 //
 // A field set to null ("log_level: null") is treated as "not
 // set": the field's value is the empty string. The loader does
-// not distinguish "the file set the field to null" from "the file
-// omitted the field".
+// not distinguish "the file set the field to null" from "the
+// file omitted the field".
 //
 // # Case insensitivity
 //
@@ -202,9 +257,47 @@ var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
 //
 // The function reads only its argument and the file at the
 // argument's path. It does not read os.Getenv, os.Getwd, or
-// os.Args.
-func Load(path string) (Config, error) {
+// os.Args. The context is used solely for the DEBUG records; the
+// pipeline's behavior does not depend on it.
+//
+// # Nil context
+//
+// A nil context is replaced by context.Background(). The
+// substitution keeps the DEBUG records' emission unconditional
+// without requiring every caller to pass a non-nil context.
+// Callers that pass a real context (the CLI's hooks) get records
+// that carry the invocation's correlation ID.
+func LoadContext(ctx context.Context, path string) (Config, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	// WBS 12.5.1: the entry record.
+	//
+	// # What the record reports
+	//
+	// path is the input path, or "(none)" when the empty-path
+	// shortcut applies. The record tells a reader whether the
+	// loader was even asked to find a file, which distinguishes
+	// "discovery found nothing" (path == "") from "discovery
+	// found a file that failed to load" (path != "").
+	//
+	// The record is emitted before any work, so a reader sees
+	// it even when the pipeline fails at the first stage.
+	{
+		displayPath := path
+		if displayPath == "" {
+			displayPath = "(none)"
+		}
+		logger.Debug(ctx, "config loader: entered",
+			"path", displayPath,
+		)
+	}
+
 	if path == "" {
+		// The empty-path shortcut. The summary record is not
+		// emitted for this branch because no work was done;
+		// the entry record's "(none)" path is sufficient.
 		return Defaults(), nil
 	}
 
@@ -213,15 +306,67 @@ func Load(path string) (Config, error) {
 		return Config{}, err
 	}
 
+	// WBS 12.5.1: the file-read record.
+	//
+	// # Why "bytes" and "bom"
+	//
+	// bytes names the file's size, which is diagnostic for a
+	// user who is looking at a large file that just fit under
+	// the limit. bom reports whether the file started with the
+	// UTF-8 BOM; the loader rejected files that did, so the
+	// record's value is always false at this point. Including
+	// the field documents the check that the reader is about to
+	// see the result of; a future change that loosens the BOM
+	// policy would make the field meaningful.
+	logger.Debug(ctx, "config loader: read file",
+		"path", path,
+		"bytes", len(data),
+		"bom", bytes.HasPrefix(data, utf8BOM),
+	)
+
 	cfg, err := parseConfig(path, data)
 	if err != nil {
 		return Config{}, err
 	}
 
+	// WBS 12.5.1: the parse record.
+	//
+	// # Why these fields
+	//
+	// bytes repeats the size (from the file-read record); the
+	// two records appear back-to-back in the log, and the
+	// repetition makes each record self-contained for a reader
+	// who filters by message. log_level_set and
+	// output_format_set report which fields the file actually
+	// specified, before the defaults are applied by the caller.
+	// A file with no keys ("{}") produces two false values; a
+	// file with both keys produces two true values.
+	logger.Debug(ctx, "config loader: parsed YAML",
+		"path", path,
+		"bytes", len(data),
+		"log_level_set", cfg.LogLevel != "",
+		"output_format_set", cfg.OutputFormat != "",
+	)
+
 	cfg, err = validateConfig(path, cfg)
 	if err != nil {
 		return Config{}, err
 	}
+
+	// WBS 12.5.1: the validation record.
+	//
+	// # Why the values and not just the set indicators
+	//
+	// After validation, the values are the effective values the
+	// caller will see (with case normalization applied). The
+	// record reports them so a reader can correlate the
+	// loader's output with the resolver's input without reading
+	// the file.
+	logger.Debug(ctx, "config loader: validated",
+		"path", path,
+		"log_level", cfg.LogLevel,
+		"output_format", cfg.OutputFormat,
+	)
 
 	cfg.SourcePath = path
 	return cfg, nil
@@ -259,6 +404,14 @@ func Load(path string) (Config, error) {
 // is exactly at the limit produces maxConfigFileSize bytes; a
 // file that is larger produces maxConfigFileSize+1 bytes, which
 // the function detects.
+//
+// # Why no DEBUG records
+//
+// The file-read record is emitted by LoadContext, not by this
+// function. Emitting it here would require threading a context
+// through a function whose signature is stable and whose
+// behavior is pure; the caller already has the context and the
+// values (path, data) the record needs.
 func readConfigFile(path string) ([]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -341,8 +494,8 @@ func readConfigFile(path string) ([]byte, error) {
 //
 // An empty file produces an EOF on the first Decode call. The
 // function treats EOF as "empty config" and returns a zero-value
-// Config. The caller (Load) applies the defaults' semantics at
-// a higher layer.
+// Config. The caller (LoadContext) applies the defaults'
+// semantics at a higher layer.
 //
 // # Error classification stability
 //
@@ -357,7 +510,14 @@ func readConfigFile(path string) ([]byte, error) {
 //
 // The path is passed to the constructors so that the errors'
 // messages name the file. The function does not read the file
-// itself; the caller (Load) has already read it.
+// itself; the caller (LoadContext) has already read it.
+//
+// # Why no DEBUG records
+//
+// The parse record is emitted by LoadContext after this function
+// returns successfully. The parse-failure branches do not emit
+// records; the error itself is the diagnostic, and the boundary
+// renders it.
 func parseConfig(path string, data []byte) (Config, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
@@ -591,6 +751,13 @@ func parseYAMLErrorLocation(err error) (line, col int) {
 //
 // The path is passed to the constructors so that the errors'
 // messages name the file.
+//
+// # Why no DEBUG records
+//
+// The validation record is emitted by LoadContext after this
+// function returns successfully. The validation-failure branches
+// do not emit records; the error itself is the diagnostic, and
+// the boundary renders it.
 func validateConfig(path string, cfg Config) (Config, error) {
 	if cfg.LogLevel != "" {
 		normalised := strings.ToLower(cfg.LogLevel)

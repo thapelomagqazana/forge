@@ -21,11 +21,12 @@ Available Commands:
   version     Print Forge version information
 
 Flags:
-      --config string   path to the configuration file (overrides discovery)
-      --format string   output format: text|json (default "text")
-  -h, --help            help for forge
-      --quiet           suppress all output except errors (log level ERROR)
-      --verbose         enable verbose output (log level DEBUG)
-  -v, --version         version for forge
+      --config string      path to the configuration file (overrides discovery)
+      --format string      output format: text|json (default "text")
+  -h, --help               help for forge
+      --log-level string   set the log level explicitly: debug|info|warn|error (overrides --verbose and --quiet)
+  -q, --quiet              suppress all output except errors (log level ERROR)
+      --verbose            enable verbose output to stderr (log level DEBUG)
+  -v, --version            version for forge
 
 Use "forge [command] --help" for more information about a command.

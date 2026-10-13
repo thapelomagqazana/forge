@@ -109,6 +109,35 @@ func TestNoOtherGoFilesInDir(t *testing.T) {
 	allowedSource := map[string]string{
 		"main.go": "WBS 2.2.1 — process entry point",
 		"doc.go":  "WBS 2.2.1 — package documentation",
+
+		// WBS 12.4.1 — platform-specific signal initialization.
+		//
+		// The two files provide the same function
+		// (installPlatformSignalHandlers) with different build
+		// tags. The function installs the process's platform-
+		// specific signal dispositions; on Unix it installs
+		// SIG_IGN for SIGPIPE, and on every other platform it is
+		// a no-op.
+		//
+		// The files exist because the direct call to
+		// signal.Ignore(syscall.SIGPIPE) in main.go would fail
+		// to compile on platforms where syscall.SIGPIPE is not
+		// declared (for example, js/wasm). The split confines
+		// the platform-specific symbol to the file that is
+		// compiled on the platforms where it exists.
+		//
+		// The files are the minimum shape of the platform-tagged
+		// code pattern: one file per platform class, each a few
+		// lines, each providing a function the platform-agnostic
+		// caller invokes. They do not contain logic in the
+		// architectural sense — no parsing, no I/O, no formatting
+		// — and they do not violate the entry-point minimality
+		// invariant's intent: main.go remains the only file with
+		// the process's logic, and the signal-init files
+		// install a disposition whose lifetime must match the
+		// process's.
+		"signal_init_unix.go":  "WBS 12.4.1 — Unix SIGPIPE disposition",
+		"signal_init_other.go": "WBS 12.4.1 — non-Unix signal disposition (no-op)",
 	}
 
 	// Test files allowed in cmd/forge/, with the WBS item that
@@ -118,6 +147,25 @@ func TestNoOtherGoFilesInDir(t *testing.T) {
 		"main_test.go":               "WBS 2.2.1 — structural invariant tests",
 		"wiring_test.go":             "WBS 2.2.1 — negative wiring test",
 		"binary_integration_test.go": "WBS 2.2.1 — process boundary integration tests",
+
+		// WBS 12.4.1 — the broken-pipe tests. The three files
+		// are split by role and by build tag:
+		//
+		//   - brokenpipe_testhelpers_test.go holds the two
+		//     helpers (buildForge, processExitCode) that both
+		//     platform tests use. The file has no build tag, so
+		//     both platform tests see the same helpers.
+		//   - brokenpipe_unix_test.go exercises the contract on
+		//     Unix.
+		//   - brokenpipe_windows_test.go exercises the contract
+		//     on Windows.
+		//
+		// The three files are one logical test suite; the split
+		// is forced by Go's build-tag mechanism, not by a desire
+		// for separate concerns.
+		"brokenpipe_testhelpers_test.go": "WBS 12.4.1 — shared broken-pipe test helpers",
+		"brokenpipe_unix_test.go":        "WBS 12.4.1 — Unix broken-pipe integration test",
+		"brokenpipe_windows_test.go":     "WBS 12.4.1 — Windows broken-pipe integration test",
 	}
 
 	entries, err := os.ReadDir(".")

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forge.dev/schemas/output-envelope.schema.json",
+  "title": "Forge Output Envelope",
+  "description": "The single JSON document emitted on stdout when --format json is active. See ADR-022.",
+  "type": "object",
+  "required": ["schemaVersion", "command", "data"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "description": "Envelope schema version. Bumped only on breaking changes.",
+      "const": "1"
+    },
+    "command": {
+      "type": "string",
+      "description": "The command that produced this output, e.g. 'version'.",
+      "minLength": 1
+    },
+    "data": {
+      "description": "Command-specific payload. Shape is defined per command."
+    }
+  }
+}

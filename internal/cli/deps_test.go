@@ -2,25 +2,19 @@ package cli
 
 import (
 	"bytes"
-	"errors"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 	"unsafe"
 
 	"github.com/thapelomagqazana/forge/internal/config"
+	"github.com/thapelomagqazana/forge/internal/streams"
 )
 
-// Compile-time interface conformance checks.
-//
-// These assertions fail at compile time if slogLogger or noopLogger
-// drift from the Logger contract. They are the cheapest possible
-// regression test for interface stability (AC2, AC6).
-var (
-	_ Logger = (*slogLogger)(nil)
-	_ Logger = (noopLogger{})
-	_ Logger = (*noopLogger)(nil)
-)
+// =============================================================================
+// Helpers
+// =============================================================================
 
 // configIsZeroSized reports whether config.Config is a zero-size
 // type.
@@ -46,90 +40,167 @@ func configIsZeroSized() bool {
 	return unsafe.Sizeof(config.Config{}) == 0
 }
 
-// TestBuildDependencies_AllFieldsNonNil is the ATDD acceptance test
-// for AC2 and AC4. It asserts that every field of a Dependencies
-// value constructed by buildDependencies is non-nil. A nil field
-// would panic on first use, so this test guards against the most
-// common construction mistake.
-func TestBuildDependencies_AllFieldsNonNil(t *testing.T) {
-	t.Parallel()
-
-	opts := options{
-		stdout:   &bytes.Buffer{},
-		stderr:   &bytes.Buffer{},
+// mkOpts returns an options value with buffers for the three
+// streams, an empty environment, and a temporary rootPath. It is
+// the canonical setup for the tests in this file.
+//
+// The helper exists so a change to options' shape touches one
+// line, not every test. The tests care about the properties of the
+// constructed Dependencies, not about the options struct's field
+// order.
+//
+// # Returned value
+//
+// The streams are in-memory: In is an empty strings.Reader, Out
+// and Err are fresh *bytes.Buffer values. A test that wants to
+// assert on the buffers calls the helper and then reads
+// opts.streams.Out or opts.streams.Err. A test that wants to
+// replace a stream sets the field directly:
+//
+//	opts := mkOpts(t)
+//	opts.streams.Out = &myBuffer
+//
+// The helper does not return the two buffers separately because
+// most tests in this file assert on the *properties* of the
+// constructed Dependencies (non-nil, distinct, bound to the
+// injected value), not on the bytes the buffers receive. A test
+// that needs the buffers reads them from opts.streams.
+func mkOpts(t *testing.T) options {
+	t.Helper()
+	return options{
+		streams: streams.Streams{
+			In:  strings.NewReader(""),
+			Out: &bytes.Buffer{},
+			Err: &bytes.Buffer{},
+		},
 		env:      func(string) string { return "" },
 		rootPath: t.TempDir(),
 	}
+}
 
-	deps := buildDependencies(opts)
+// =============================================================================
+// ATDD: every field is non-nil
+// =============================================================================
+
+// TestBuildDependencies_AllFieldsNonNil asserts that every field of
+// a Dependencies value constructed by buildDependencies is non-nil.
+// A nil field would panic on first use, so this test guards against
+// the most common construction mistake.
+//
+// The Logger is deliberately absent from the assertion: it is not a
+// field of Dependencies. The invocation's logger is built by the
+// PersistentPreRunE hook and stored on the command's context; see
+// internal/cli/hooks.go. A test that wants to observe the logger
+// runs the hook and reads from the context.
+func TestBuildDependencies_AllFieldsNonNil(t *testing.T) {
+	t.Parallel()
+
+	deps := buildDependencies(mkOpts(t))
 
 	if deps.Config == nil {
 		t.Error("Config is nil; want non-nil")
 	}
-	if deps.Logger == nil {
-		t.Error("Logger is nil; want non-nil")
-	}
 	if deps.FS == nil {
 		t.Error("FS is nil; want non-nil")
 	}
-	if deps.Stdout == nil {
-		t.Error("Stdout is nil; want non-nil")
+	if deps.Streams.In == nil {
+		t.Error("Streams.In is nil; want non-nil")
 	}
-	if deps.Stderr == nil {
-		t.Error("Stderr is nil; want non-nil")
+	if deps.Streams.Out == nil {
+		t.Error("Streams.Out is nil; want non-nil")
+	}
+	if deps.Streams.Err == nil {
+		t.Error("Streams.Err is nil; want non-nil")
 	}
 	if deps.Env == nil {
 		t.Error("Env is nil; want non-nil")
 	}
 }
 
-// TestBuildDependencies_StdoutIsInjectable is the ATDD acceptance
-// test for AC5. It verifies that a test can substitute a bytes.Buffer
-// for stdout and observe the command's output. This is the property
-// that makes handlers testable without spawning a subprocess.
+// =============================================================================
+// ATDD: the three streams are injectable
+// =============================================================================
+
+// TestBuildDependencies_StdoutIsInjectable asserts that a test can
+// substitute a bytes.Buffer for stdout and observe the command's
+// output. This is the property that makes handlers testable without
+// spawning a subprocess.
 func TestBuildDependencies_StdoutIsInjectable(t *testing.T) {
 	t.Parallel()
 
 	var stdout bytes.Buffer
-	opts := options{
-		stdout:   &stdout,
-		stderr:   &bytes.Buffer{},
-		env:      func(string) string { return "" },
-		rootPath: t.TempDir(),
-	}
+	opts := mkOpts(t)
+	opts.streams.Out = &stdout
 
 	deps := buildDependencies(opts)
 
-	// Simulate a command writing to stdout.
 	const want = "hello, forge\n"
-	if _, err := io.WriteString(deps.Stdout, want); err != nil {
-		t.Fatalf("WriteString: %v", err)
+	if _, err := deps.Streams.Out.Write([]byte(want)); err != nil {
+		t.Fatalf("write to Streams.Out: %v", err)
 	}
-
 	if got := stdout.String(); got != want {
 		t.Errorf("stdout = %q; want %q", got, want)
 	}
 }
 
+// TestBuildDependencies_StderrIsInjectable asserts the same property
+// for stderr.
+func TestBuildDependencies_StderrIsInjectable(t *testing.T) {
+	t.Parallel()
+
+	var stderr bytes.Buffer
+	opts := mkOpts(t)
+	opts.streams.Err = &stderr
+
+	deps := buildDependencies(opts)
+
+	const want = "diagnostic\n"
+	if _, err := deps.Streams.Err.Write([]byte(want)); err != nil {
+		t.Fatalf("write to Streams.Err: %v", err)
+	}
+	if got := stderr.String(); got != want {
+		t.Errorf("stderr = %q; want %q", got, want)
+	}
+}
+
+// TestBuildDependencies_StdinIsInjectable asserts that the input
+// stream is the reader supplied in the options, not the process's
+// stdin.
+func TestBuildDependencies_StdinIsInjectable(t *testing.T) {
+	t.Parallel()
+
+	const payload = "piped input"
+	opts := mkOpts(t)
+	opts.streams.In = strings.NewReader(payload)
+
+	deps := buildDependencies(opts)
+
+	got, err := io.ReadAll(deps.Streams.In)
+	if err != nil {
+		t.Fatalf("read Streams.In: %v", err)
+	}
+	if string(got) != payload {
+		t.Errorf("Streams.In = %q; want %q", got, payload)
+	}
+}
+
+// =============================================================================
+// ATDD: environment injection
+// =============================================================================
+
 // TestBuildDependencies_EnvIsInjectable verifies that the Env field
-// returns whatever the injected lookup function returns. A test can
-// therefore simulate environment variables without touching the
-// process environment.
+// returns whatever the injected lookup function returns.
 func TestBuildDependencies_EnvIsInjectable(t *testing.T) {
 	t.Parallel()
 
 	const key = "FORGE_TEST_VAR"
 	const value = "injected"
-	opts := options{
-		stdout: &bytes.Buffer{},
-		stderr: &bytes.Buffer{},
-		env: func(k string) string {
-			if k == key {
-				return value
-			}
-			return ""
-		},
-		rootPath: t.TempDir(),
+	opts := mkOpts(t)
+	opts.env = func(k string) string {
+		if k == key {
+			return value
+		}
+		return ""
 	}
 
 	deps := buildDependencies(opts)
@@ -142,21 +213,18 @@ func TestBuildDependencies_EnvIsInjectable(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// ATDD: filesystem is bound to rootPath
+// =============================================================================
+
 // TestBuildDependencies_FSIsBoundToRootPath verifies that the
 // filesystem abstraction is bound to the rootPath from the options.
-// The boundary is informational in Phase 2, but it must be recorded
-// so that tests can assert on it and so that WBS 13.0 has a value
-// to enforce.
 func TestBuildDependencies_FSIsBoundToRootPath(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
-	opts := options{
-		stdout:   &bytes.Buffer{},
-		stderr:   &bytes.Buffer{},
-		env:      func(string) string { return "" },
-		rootPath: root,
-	}
+	opts := mkOpts(t)
+	opts.rootPath = root
 
 	deps := buildDependencies(opts)
 
@@ -165,138 +233,54 @@ func TestBuildDependencies_FSIsBoundToRootPath(t *testing.T) {
 	}
 }
 
-// TestNewLogger_WritesStructuredOutput verifies that newLogger
-// produces a Logger whose output is structured (key=value pairs).
-// This is the contract the CLI UX specification requires.
-func TestNewLogger_WritesStructuredOutput(t *testing.T) {
+// =============================================================================
+// ATDD: Config injection
+// =============================================================================
+
+// TestBuildDependencies_ConfigInjected verifies that a non-nil
+// opts.config is carried into Dependencies unchanged. This is the
+// test-injection path the PersistentPreRunE hook detects.
+func TestBuildDependencies_ConfigInjected(t *testing.T) {
 	t.Parallel()
 
-	var buf bytes.Buffer
-	logger := newLogger(&buf)
+	injected := &config.Config{}
+	opts := mkOpts(t)
+	opts.config = injected
 
-	logger.Info("started", "project", "forge", "phase", 2)
+	deps := buildDependencies(opts)
 
-	out := buf.String()
-	if !strings.Contains(out, "msg=started") {
-		t.Errorf("log output missing msg=started: %q", out)
-	}
-	if !strings.Contains(out, "project=forge") {
-		t.Errorf("log output missing project=forge: %q", out)
-	}
-	if !strings.Contains(out, "phase=2") {
-		t.Errorf("log output missing phase=2: %q", out)
+	if deps.Config != injected {
+		t.Errorf("Config = %p; want the injected pointer %p",
+			deps.Config, injected)
 	}
 }
 
-// TestNewLogger_WithReturnsIndependentLogger verifies that With
-// returns a logger that carries additional fields without mutating
-// the receiver. This is the "scope extension" contract from the
-// Logger interface documentation.
-//
-// # Why the assertion inspects per-line content
-//
-// Parent and child share the same underlying writer (the slog
-// handler is shared; only the accumulated attributes differ). The
-// test cannot inspect the parent's and child's outputs through
-// separate buffers. It must instead inspect the shared buffer
-// line by line: each log record is one line, and the test asserts
-// on the content of the line that carries each message.
-//
-// A naive `strings.Contains(buf.String(), "scope=child")` check
-// would pass even if the parent message carried the scope, because
-// the child's line already contains "scope=child" somewhere in the
-// buffer. The per-line check is the only check that distinguishes
-// the two records.
-func TestNewLogger_WithReturnsIndependentLogger(t *testing.T) {
+// TestBuildDependencies_ConfigFallback verifies that a nil
+// opts.config produces a non-nil Config in the returned Dependencies.
+func TestBuildDependencies_ConfigFallback(t *testing.T) {
 	t.Parallel()
 
-	var buf bytes.Buffer
-	parent := newLogger(&buf)
-	child := parent.With("scope", "child")
+	opts := mkOpts(t)
+	opts.config = nil
 
-	child.Info("child message")
-	parent.Info("parent message")
+	deps := buildDependencies(opts)
 
-	// Each log record is a line. Split the buffer into lines and
-	// find the one for each message.
-	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
-
-	var childLine, parentLine string
-	for _, line := range lines {
-		switch {
-		case strings.Contains(line, `msg="child message"`):
-			childLine = line
-		case strings.Contains(line, `msg="parent message"`):
-			parentLine = line
-		}
-	}
-
-	if childLine == "" {
-		t.Fatalf("child message not found in output: %q", buf.String())
-	}
-	if parentLine == "" {
-		t.Fatalf("parent message not found in output: %q", buf.String())
-	}
-
-	if !strings.Contains(childLine, "scope=child") {
-		t.Errorf("child line missing scope=child: %q", childLine)
-	}
-	if strings.Contains(parentLine, "scope=child") {
-		t.Errorf("parent line carried child's scope: %q", parentLine)
+	if deps.Config == nil {
+		t.Fatal("Config is nil; want the fallback non-nil value")
 	}
 }
 
-// TestNoopLogger_DiscardsEverything verifies that the noopLogger
-// writes nothing and does not panic on any method. It is the
-// logger used by tests that do not care about output.
-func TestNoopLogger_DiscardsEverything(t *testing.T) {
-	t.Parallel()
-
-	logger := newNoopLogger()
-
-	// None of these should panic.
-	logger.Debug("debug")
-	logger.Info("info")
-	logger.Warn("warn")
-	logger.Error("error")
-	scoped := logger.With("key", "value")
-	scoped.Info("scoped")
-
-	// The zero-value noopLogger must also work.
-	var zero noopLogger
-	zero.Debug("zero")
-	zero.With("a", 1).Info("zero scoped")
-}
-
-// TestNoopLogger_WithReturnsReceiver verifies that With on a
-// noopLogger returns the receiver, not a new value. This is an
-// allocation optimisation and a documented contract.
-func TestNoopLogger_WithReturnsReceiver(t *testing.T) {
-	t.Parallel()
-
-	var l noopLogger
-	scoped := l.With("k", "v")
-	if scoped != l {
-		t.Errorf("With returned a different logger; want the receiver")
-	}
-}
-
-// --- Negative / edge / boundary cases -------------------------------
+// =============================================================================
+// Edge cases
+// =============================================================================
 
 // TestBuildDependencies_EmptyRootPath verifies that an empty
-// rootPath is accepted. The OSFS constructor does not require the
-// directory to exist. This is an edge case: a caller that forgets
-// to set rootPath must not panic; it must produce a bound FS that
-// resolves paths against the empty string.
+// rootPath is accepted.
 func TestBuildDependencies_EmptyRootPath(t *testing.T) {
 	t.Parallel()
 
-	opts := options{
-		stdout:   &bytes.Buffer{},
-		stderr:   &bytes.Buffer{},
-		env:      func(string) string { return "" },
-		rootPath: "",
-	}
+	opts := mkOpts(t)
+	opts.rootPath = ""
 
 	deps := buildDependencies(opts)
 
@@ -308,22 +292,16 @@ func TestBuildDependencies_EmptyRootPath(t *testing.T) {
 	}
 }
 
-// TestBuildDependencies_NilEnvPanicsOnCall verifies that a nil Env
-// function produces a Dependencies value whose Env field panics when
-// called. This is the boundary case: buildDependencies does not
-// guard against a nil function because the options struct is
-// constructed by executeWithOptions, which always sets a non-nil
-// function. The test documents the behaviour so that a future
-// refactor does not silently change it.
+// TestBuildDependencies_NilEnvPanicsOnCall documents the nil-Env
+// boundary case: buildDependencies does not guard against a nil
+// function because the options struct is always constructed by
+// defaultOptions or by the test helper, both of which set a
+// non-nil function.
 func TestBuildDependencies_NilEnvPanicsOnCall(t *testing.T) {
 	t.Parallel()
 
-	opts := options{
-		stdout:   &bytes.Buffer{},
-		stderr:   &bytes.Buffer{},
-		env:      nil,
-		rootPath: t.TempDir(),
-	}
+	opts := mkOpts(t)
+	opts.env = nil
 
 	deps := buildDependencies(opts)
 	if deps.Env != nil {
@@ -338,77 +316,64 @@ func TestBuildDependencies_NilEnvPanicsOnCall(t *testing.T) {
 	deps.Env("ANY")
 }
 
-// TestBuildDependencies_NilWritersPanicOnUse verifies that nil
-// writers produce a Dependencies value whose Stdout and Stderr panic
-// on write. As with Env, buildDependencies does not guard against
-// nil because executeWithOptions always supplies writers.
-func TestBuildDependencies_NilWritersPanicOnUse(t *testing.T) {
+// TestBuildDependencies_NilStreamsPanicOnUse documents the nil-
+// stream boundary case for writes. A nil Out or Err causes a panic
+// on the first Write, matching the behavior of any nil io.Writer.
+func TestBuildDependencies_NilStreamsPanicOnUse(t *testing.T) {
 	t.Parallel()
 
-	opts := options{
-		stdout:   nil,
-		stderr:   nil,
-		env:      func(string) string { return "" },
-		rootPath: t.TempDir(),
-	}
+	opts := mkOpts(t)
+	opts.streams.Out = nil
+	opts.streams.Err = nil
 
 	deps := buildDependencies(opts)
 
 	t.Run("stdout", func(t *testing.T) {
 		defer func() {
 			if r := recover(); r == nil {
-				t.Error("write to nil Stdout did not panic")
+				t.Error("write to nil Streams.Out did not panic")
 			}
 		}()
-		_, _ = deps.Stdout.Write([]byte("x"))
+		_, _ = deps.Streams.Out.Write([]byte("x"))
 	})
 
 	t.Run("stderr", func(t *testing.T) {
 		defer func() {
 			if r := recover(); r == nil {
-				t.Error("write to nil Stderr did not panic")
+				t.Error("write to nil Streams.Err did not panic")
 			}
 		}()
-		_, _ = deps.Stderr.Write([]byte("x"))
+		_, _ = deps.Streams.Err.Write([]byte("x"))
 	})
 }
 
-// TestDependencies_ZeroValueIsDocumented verifies the documented
-// zero-value behaviour: Config is safe to read, but Logger, FS,
-// Stdout, Stderr, and Env are unusable. This test pins the contract
-// so that a future change to the struct cannot silently make the
-// zero value useful (which would hide construction bugs).
+// =============================================================================
+// Struct-level contracts
+// =============================================================================
+
+// TestDependencies_ZeroValueIsDocumented pins the documented
+// zero-value behavior: Config is a nil pointer (safe to test for
+// nil), and every other field is nil and unusable.
 func TestDependencies_ZeroValueIsDocumented(t *testing.T) {
 	t.Parallel()
 
 	var deps Dependencies
 
-	// Config is a nil pointer; reading its (empty) fields is safe
-	// because the struct has no fields. This assertion is a
-	// compile-time check more than a runtime one.
 	if deps.Config != nil {
 		t.Error("zero-value Config is non-nil; want nil")
 	}
-
-	// Logger is nil and must panic on use.
-	if deps.Logger != nil {
-		t.Error("zero-value Logger is non-nil; want nil")
-	}
-
-	// FS is nil and must panic on use.
 	if deps.FS != nil {
 		t.Error("zero-value FS is non-nil; want nil")
 	}
-
-	// Writers are nil and must panic on use.
-	if deps.Stdout != nil {
-		t.Error("zero-value Stdout is non-nil; want nil")
+	if deps.Streams.In != nil {
+		t.Error("zero-value Streams.In is non-nil; want nil")
 	}
-	if deps.Stderr != nil {
-		t.Error("zero-value Stderr is non-nil; want nil")
+	if deps.Streams.Out != nil {
+		t.Error("zero-value Streams.Out is non-nil; want nil")
 	}
-
-	// Env is nil and must panic on call.
+	if deps.Streams.Err != nil {
+		t.Error("zero-value Streams.Err is non-nil; want nil")
+	}
 	if deps.Env != nil {
 		t.Error("zero-value Env is non-nil; want nil")
 	}
@@ -416,60 +381,29 @@ func TestDependencies_ZeroValueIsDocumented(t *testing.T) {
 
 // TestDependencies_IsPassedByValue verifies that copying a
 // Dependencies value and mutating the copy does not affect the
-// original. This is the contract that lets commands receive the
-// struct by value without risking cross-command interference. Note
-// that the fields themselves (Config, FS) are shared; only the
-// struct header is copied.
+// original.
 func TestDependencies_IsPassedByValue(t *testing.T) {
 	t.Parallel()
 
 	original := Dependencies{
-		Stdout: &bytes.Buffer{},
+		Streams: streams.Streams{Out: &bytes.Buffer{}},
 	}
 	copy := original
-	copy.Stdout = &bytes.Buffer{}
+	copy.Streams.Out = &bytes.Buffer{}
 
-	if original.Stdout == copy.Stdout {
+	if original.Streams.Out == copy.Streams.Out {
 		t.Error("mutating the copy changed the original; want independent headers")
 	}
 }
 
-// TestLogger_InterfaceStability is a BDD-style test written in
-// Given/When/Then form. It documents the five-method contract that
-// every Logger implementation must satisfy. If a future refactor
-// adds a method to Logger, this test fails to compile, forcing the
-// author to update every implementation.
-func TestLogger_InterfaceStability(t *testing.T) {
-	t.Parallel()
+// =============================================================================
+// Non-functional: independence between calls
+// =============================================================================
 
-	// Given a Logger backed by a buffer.
-	var buf bytes.Buffer
-	var logger Logger = newLogger(&buf)
-
-	// When every method is called.
-	logger.Debug("d", "k", "v")
-	logger.Info("i", "k", "v")
-	logger.Warn("w", "k", "v")
-	logger.Error("e", "k", "v")
-	scoped := logger.With("k", "v")
-	scoped.Info("s")
-
-	// Then the output contains every message.
-	out := buf.String()
-	for _, want := range []string{"msg=d", "msg=i", "msg=w", "msg=e", "msg=s"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("output missing %q: %q", want, out)
-		}
-	}
-}
-
-// --- Non-functional cases -------------------------------------------
-
-// TestBuildDependencies_DoesNotAllocatePerCall is a non-functional
-// test that verifies buildDependencies does not retain state across
-// calls. Two calls with the same options must produce independent
-// Dependencies values. This guards against a future refactor that
-// caches a package-level value (which would break test isolation).
+// TestBuildDependencies_DoesNotShareState verifies that two calls
+// with the same options produce independent Dependencies values.
+// This guards against a future refactor that caches a package-level
+// value (which would break test isolation).
 //
 // # Why the Config check is conditional
 //
@@ -478,23 +412,17 @@ func TestLogger_InterfaceStability(t *testing.T) {
 // are equal. The pointer-inequality check for Config is therefore
 // skipped while the type is zero-size, and re-enabled automatically
 // when WBS 8.2.1 adds fields. See configIsZeroSized.
-func TestBuildDependencies_DoesNotAllocatePerCall(t *testing.T) {
+func TestBuildDependencies_DoesNotShareState(t *testing.T) {
 	t.Parallel()
 
-	mkOpts := func() options {
-		return options{
-			stdout:   &bytes.Buffer{},
-			stderr:   &bytes.Buffer{},
-			env:      func(string) string { return "" },
-			rootPath: t.TempDir(),
-		}
+	a := buildDependencies(mkOpts(t))
+	b := buildDependencies(mkOpts(t))
+
+	if a.Streams.Out == b.Streams.Out {
+		t.Error("two calls shared Streams.Out; want independent writers")
 	}
-
-	a := buildDependencies(mkOpts())
-	b := buildDependencies(mkOpts())
-
-	if a.Stdout == b.Stdout {
-		t.Error("two calls shared Stdout; want independent writers")
+	if a.Streams.Err == b.Streams.Err {
+		t.Error("two calls shared Streams.Err; want independent writers")
 	}
 	if a.FS == b.FS {
 		t.Error("two calls shared FS; want independent filesystems")
@@ -504,77 +432,94 @@ func TestBuildDependencies_DoesNotAllocatePerCall(t *testing.T) {
 	}
 }
 
-// TestBuildDependencies_LoggerWritesToStderr is a non-functional
-// test that verifies the logger writes to the injected stderr, not
-// to the process's real stderr. This is the property that keeps
-// stdout clean for command output and makes tests hermetic.
-func TestBuildDependencies_LoggerWritesToStderr(t *testing.T) {
+// =============================================================================
+// Non-functional: stream contract holds through Dependencies
+// =============================================================================
+
+// TestBuildDependencies_StreamsAreDistinct asserts that the three
+// streams in the constructed Dependencies are the three the options
+// supplied, and that Streams.Out and Streams.Err are not the same
+// value.
+//
+// The property matters because the stream contract (ADR-022)
+// depends on output and diagnostics being separated. If a caller
+// accidentally passed the same writer for both, the constructed
+// Dependencies would carry the same writer in both fields, and a
+// command that logged a diagnostic would contaminate the product
+// output.
+//
+// The test does not guard against that misuse (it is the caller's
+// responsibility), but it pins the invariant that the fields are
+// the values the caller supplied.
+func TestBuildDependencies_StreamsAreDistinct(t *testing.T) {
 	t.Parallel()
 
-	var stdout, stderr bytes.Buffer
-	opts := options{
-		stdout:   &stdout,
-		stderr:   &stderr,
-		env:      func(string) string { return "" },
-		rootPath: t.TempDir(),
-	}
+	var stdin, stdout, stderr bytes.Buffer
+	opts := mkOpts(t)
+	opts.streams.In = &stdin
+	opts.streams.Out = &stdout
+	opts.streams.Err = &stderr
 
 	deps := buildDependencies(opts)
-	deps.Logger.Info("diagnostic")
 
-	if stdout.Len() != 0 {
-		t.Errorf("logger wrote to stdout; want stderr only: %q", stdout.String())
+	if deps.Streams.Out != &stdout {
+		t.Errorf("Streams.Out = %p; want %p", deps.Streams.Out, &stdout)
 	}
-	if !strings.Contains(stderr.String(), "diagnostic") {
-		t.Errorf("logger did not write to stderr: %q", stderr.String())
+	if deps.Streams.Err != &stderr {
+		t.Errorf("Streams.Err = %p; want %p", deps.Streams.Err, &stderr)
+	}
+	if deps.Streams.In != &stdin {
+		t.Errorf("Streams.In = %p; want %p", deps.Streams.In, &stdin)
+	}
+	if deps.Streams.Out == deps.Streams.Err {
+		t.Error("Streams.Out and Streams.Err are the same value; " +
+			"the caller supplied the same writer for both")
 	}
 }
 
-// TestBuildDependencies_ConfigIsIndependentOfLogger verifies that
-// constructing a Dependencies value does not cache state across
-// calls.
+// =============================================================================
+// Logger no longer lives here
+// =============================================================================
+
+// TestDependencies_HasNoLoggerField is a structural pin: the
+// Dependencies struct must not carry a Logger field. The invocation's
+// logger travels on the command's context (see hooks.go and
+// internal/logger). A future contributor who reintroduces the field
+// breaks this test and is forced to read the docstring's rationale.
 //
-// # Why pointer identity is not asserted
+// # How the test detects the field
 //
-// In Phase 2, config.Config is an empty struct. Taking the address
-// of an empty struct literal (&config.Config{}) returns Go's
-// runtime.zerobase — the same address for every zero-size
-// allocation. Asserting first.Config != second.Config would
-// therefore fail, not because the code shares state, but because
-// Go's runtime gives all zero-size allocations the same address.
-//
-// When WBS 8.2.1 adds fields to config.Config, the struct becomes
-// non-zero-size, and the two pointers become distinct. At that
-// point, configIsZeroSized returns false and the pointer-inequality
-// assertion below becomes meaningful.
-func TestBuildDependencies_ConfigIsIndependentOfLogger(t *testing.T) {
+// The test uses reflection to inspect the struct's field set. It is
+// the only way to assert the absence of a field at test time; the
+// compiler would reject a direct reference.
+func TestDependencies_HasNoLoggerField(t *testing.T) {
 	t.Parallel()
 
-	opts := options{
-		stdout:   &bytes.Buffer{},
-		stderr:   &bytes.Buffer{},
-		env:      func(string) string { return "" },
-		rootPath: t.TempDir(),
+	typ := reflect.TypeOf(Dependencies{})
+	for i := 0; i < typ.NumField(); i++ {
+		name := typ.Field(i).Name
+		if strings.EqualFold(name, "logger") {
+			t.Fatalf("Dependencies has a %q field; the invocation's "+
+				"logger travels on the command's context. See the "+
+				"package docstring §'What is NOT a field'.", name)
+		}
 	}
+}
 
-	first := buildDependencies(opts)
-	second := buildDependencies(opts)
+// TestDependencies_HasNoDirectStreamFields is the companion pin:
+// Dependencies must not carry separate Stdout or Stderr fields.
+// The three streams travel together in Streams.
+func TestDependencies_HasNoDirectStreamFields(t *testing.T) {
+	t.Parallel()
 
-	// Every call must produce a non-nil Config, regardless of the
-	// struct's size.
-	if first.Config == nil {
-		t.Error("first.Config is nil; want non-nil")
+	typ := reflect.TypeOf(Dependencies{})
+	for i := 0; i < typ.NumField(); i++ {
+		name := typ.Field(i).Name
+		switch name {
+		case "Stdout", "Stderr", "Stdin":
+			t.Fatalf("Dependencies has a %q field; the three streams "+
+				"travel together in Streams. See the package "+
+				"docstring §'What is NOT a field'.", name)
+		}
 	}
-	if second.Config == nil {
-		t.Error("second.Config is nil; want non-nil")
-	}
-
-	// The pointer-inequality check is meaningful only when the
-	// struct is non-zero-size. It is written as a conditional so
-	// that it becomes active automatically when WBS 8.2.1 lands.
-	if !configIsZeroSized() && first.Config == second.Config {
-		t.Error("Config pointer shared between calls; want independent values")
-	}
-
-	_ = errors.New // keep the errors import for future negative cases
 }

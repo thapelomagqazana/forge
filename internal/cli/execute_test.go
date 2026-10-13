@@ -45,6 +45,15 @@
 // Dependencies exactly once, and threads Dependencies to the root
 // command constructor.
 //
+// # The three streams (WBS 12.4.1)
+//
+// The options struct carries the three standard streams in a
+// single streams.Streams value. Tests construct the value with
+// buffers for In, Out, and Err. The tests below use the
+// newTestOptions helper to build the value in one place, so that
+// a change to the streams' shape touches one helper, not every
+// test.
+//
 // # The exit boundary (WBS 11.3.1, ADR-020)
 //
 // The package has two public entry points:
@@ -93,12 +102,21 @@
 // numeric values that appear as literals in the tests are 0 and
 // 255, which are frozen by the taxonomy's coverage invariant.
 //
-// # Verbose mode (WBS 10.4.4)
+// # Verbose mode (WBS 10.4.4, WBS 12.5.1)
 //
-// The CLI's error path reads the --verbose flag from the command
-// tree and passes it through to forgeerr.Options.Verbose. The
-// tests in the "verbose mode" section assert that the flag is
-// honoured at the boundary.
+// The --verbose flag has two effects, both on stderr:
+//
+//   - The logger's level is set to DEBUG. DEBUG records emitted by
+//     the command tree reach the invocation's injected stderr.
+//     The tests in the "logger wiring" section pin this behaviour.
+//
+//   - The error rendering's verbosity is enabled. The tests in the
+//     "stream separation" and "exit boundary" sections assert on
+//     the rendered error block.
+//
+// The two effects share the flag but are otherwise independent.
+// See docs/reference/verbose-mode.md and
+// docs/reference/log-levels.md §4.
 //
 // # Test organisation
 //
@@ -108,15 +126,16 @@
 //  2. Tests — the root command constructor
 //  3. Tests — the injectable boundary
 //  4. Tests — stream separation
-//  5. Tests — the Dependencies transformation (WBS 4.2.2)
-//  6. Tests — the panic recovery (WBS 10.5.1)
-//  7. Tests — the non-*Error wrapping (WBS 10.5.1)
-//  8. Tests — exit code derivation
-//  9. Tests — the options struct
-//  10. Tests — non-functional properties
-//  11. Tests — the structural invariants the WBS specifies
-//  12. Tests — the exit boundary (WBS 11.3.1, ADR-020)
-//  13. Test helpers — source file reading and function body extraction
+//  5. Tests — the logger wiring (WBS 12.5.1)
+//  6. Tests — the Dependencies transformation (WBS 4.2.2)
+//  7. Tests — the panic recovery (WBS 10.5.1)
+//  8. Tests — the non-*Error wrapping (WBS 10.5.1)
+//  9. Tests — exit code derivation
+//  10. Tests — the options struct
+//  11. Tests — non-functional properties
+//  12. Tests — the structural invariants the WBS specifies
+//  13. Tests — the exit boundary (WBS 11.3.1, ADR-020)
+//  14. Test helpers — source file reading and function body extraction
 //
 // A reader looking for a specific behaviour should scan the section
 // banners, not read the file top to bottom.
@@ -135,8 +154,58 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+
 	"github.com/thapelomagqazana/forge/internal/forgeerr"
+	"github.com/thapelomagqazana/forge/internal/logger"
+	"github.com/thapelomagqazana/forge/internal/streams"
 )
+
+// newTestOptions returns an options value bound to in-memory
+// streams.
+//
+// The helper is the single construction point for the tests in
+// this file. Every test that needs an options value calls it and
+// then adjusts the field it cares about. A change to the options
+// struct's shape (for example, the WBS 12.4.1 change that replaced
+// three stream fields with one Streams value) touches this helper,
+// not every test.
+//
+// # Returned values
+//
+//   - stdout and stderr are *bytes.Buffer values owned by the
+//     caller. The caller captures them to assert on the CLI's
+//     output.
+//   - stdin is an empty strings.Reader. A test that needs a
+//     different stdin replaces the field after calling the
+//     helper.
+//   - env returns "" for every key. A test that needs a specific
+//     environment overrides the field.
+//   - rootPath is a t.TempDir() value.
+//
+// # Why the buffers are returned separately
+//
+// The caller needs to assert on the bytes the CLI wrote, and the
+// bytes are the buffer's contents. Returning the streams value
+// alone would force the caller to type-assert the io.Writer fields
+// back to *bytes.Buffer, which is verbose and error-prone.
+// Returning the two buffers directly keeps the tests' assertions
+// on strings simple.
+func newTestOptions(t *testing.T) (opts options, stdout, stderr *bytes.Buffer) {
+	t.Helper()
+
+	stdout = &bytes.Buffer{}
+	stderr = &bytes.Buffer{}
+	opts = options{
+		streams: streams.Streams{
+			In:  strings.NewReader(""),
+			Out: stdout,
+			Err: stderr,
+		},
+		env:      func(string) string { return "" },
+		rootPath: t.TempDir(),
+	}
+	return opts, stdout, stderr
+}
 
 // =============================================================================
 // Tests — the public Execute function
@@ -175,19 +244,9 @@ func TestExecute_IsCallable(t *testing.T) {
 // does not change the exported signature: callers see an int.
 // This is a compile-time check; if the signature changes, the
 // assignment below fails to compile.
-//
-// # Relationship to Run
-//
-// WBS 11.3.1 added Run(ctx) (int, error) as the primary entry
-// point. Execute is preserved as a compatibility wrapper.
-// TestRun_HasExpectedSignature (below) asserts Run's signature;
-// this test asserts Execute's.
 func TestExecute_HasFrozenSignature(t *testing.T) {
 	t.Parallel()
 
-	// A typed assignment forces the compiler to verify the
-	// signature. If Execute's parameters or return type change,
-	// this line does not compile.
 	var _ func() int = Execute
 }
 
@@ -203,8 +262,6 @@ func TestExecute_HasFrozenSignature(t *testing.T) {
 func TestRun_HasExpectedSignature(t *testing.T) {
 	t.Parallel()
 
-	// A typed assignment forces the compiler to verify the
-	// signature.
 	var _ func(context.Context) (int, error) = Run
 }
 
@@ -220,11 +277,6 @@ func TestRun_HasExpectedSignature(t *testing.T) {
 //
 //	func newRootCmd(deps Dependencies) *cobra.Command
 //
-// Before WBS 4.2.2, the signature was func(options) *cobra.Command.
-// The refactor changed it to accept the command-boundary type so
-// that subcommand constructors added in later WBS items receive
-// resolved collaborators rather than raw process inputs.
-//
 // This is a compile-time check. If newRootCmd's parameter or return
 // type changes, this line does not compile.
 func TestNewRootCmd_AcceptsDependencies(t *testing.T) {
@@ -238,12 +290,8 @@ func TestNewRootCmd_AcceptsDependencies(t *testing.T) {
 func TestNewRootCmd_ConstructsFromDependencies(t *testing.T) {
 	t.Parallel()
 
-	deps := buildDependencies(options{
-		stdout:   &bytes.Buffer{},
-		stderr:   &bytes.Buffer{},
-		env:      func(string) string { return "" },
-		rootPath: t.TempDir(),
-	})
+	opts, _, _ := newTestOptions(t)
+	deps := buildDependencies(opts)
 
 	root := newRootCmd(deps)
 	if root == nil {
@@ -293,21 +341,6 @@ func TestExecuteWithOptions_GivenHelpFlag_ThenExitsSuccess(t *testing.T) {
 
 // TestExecuteWithOptions_GivenUnknownCommand_ThenExitsUsage verifies
 // that an unknown command produces ExitUsage.
-//
-// The error is written to the injected stderr. The stdout remains
-// empty.
-//
-// The unknown-command error is produced by the root command's RunE
-// handler, which constructs a *forgeerr.Error with category
-// CategoryCLI (WBS 10.4.2). The exit code is therefore the CLI
-// category's code, ExitUsage (64, BSD EX_USAGE).
-//
-// # The value changed in WBS 11.1.1
-//
-// Before the WBS 11.1.1 taxonomy, the CLI category's code was 2.
-// The taxonomy moved it to 64 (BSD sysexits.h EX_USAGE). The
-// assertion uses the named constant ExitUsage, so the test remains
-// correct regardless of the numeric value.
 func TestExecuteWithOptions_GivenUnknownCommand_ThenExitsUsage(t *testing.T) {
 	t.Parallel()
 
@@ -342,11 +375,6 @@ func TestExecuteWithOptions_GivenEmptyStringArg_ThenExitsUsage(t *testing.T) {
 
 // TestExecuteWithOptions_GivenUnknownFlag_ThenExitsUsage verifies
 // that an unknown flag produces ExitUsage.
-//
-// The error is produced by Cobra's parser and converted by
-// wrapCobraError (execute.go) into a *forgeerr.Error with category
-// CategoryCLI. The exit code is therefore the CLI category's code,
-// ExitUsage (64, BSD EX_USAGE).
 func TestExecuteWithOptions_GivenUnknownFlag_ThenExitsUsage(t *testing.T) {
 	t.Parallel()
 
@@ -392,6 +420,237 @@ func TestExecuteWithOptions_WritesNothingToStdoutOnFailure(t *testing.T) {
 	if got.stdout != "" {
 		t.Errorf("stdout should be empty on failure; got: %q",
 			got.stdout)
+	}
+}
+
+// =============================================================================
+// Tests — the logger wiring (WBS 12.5.1)
+// =============================================================================
+//
+// runWithOptions resolves the log level from the flags and the env
+// var before executing the command tree, then installs the process
+// logger via logger.SetDefault. The tests below pin both halves of
+// that wiring:
+//
+//   - The installation: after runWithOptions returns, the
+//     installed logger emits records at the resolved level, and
+//     the records reach the invocation's injected stderr.
+//   - The ordering: the resolution happens before the tree runs,
+//     so a conflicting invocation never executes a command.
+//
+// # How the level is observed
+//
+// logger.Logger is an interface whose method set is Debug, Info,
+// Warn, Error, and With. It does NOT expose a Level() method:
+// the interface's method set is a public contract (see the
+// package docstring), and the level is a property of the concrete
+// slogLogger type, not of the interface.
+//
+// A test therefore cannot ask the installed logger "what is your
+// level?". It must instead emit a record at a level that should
+// or should not pass the filter and observe whether the record
+// reaches the injected stderr. The tests below install the
+// production wiring by calling runWithOptions with an options
+// value whose stderr is a bytes.Buffer, then assert on the bytes
+// that reach the buffer.
+//
+// The "level is DEBUG" observable is the presence of a DEBUG
+// record in the buffer; the "level is INFO" observable is the
+// absence of a DEBUG record. Neither requires the Level() method.
+//
+// # Why the version command is the vehicle
+//
+// The version command emits a DEBUG record at its build-info
+// resolution point (see internal/cli/version.go and
+// docs/reference/verbose-mode.md §3). It is the only Phase 2
+// command with a DEBUG emission that a test can trigger without
+// setting up a config file. The tests therefore drive the wiring
+// through `version`.
+//
+// # Why the tests save and restore the default logger
+//
+// logger.SetDefault mutates process-global state. A test that
+// installs its own logger must restore the previous one, or a
+// later test in the same package that reads logger.Default()
+// observes the wrong value. The tests below save the previous
+// logger and restore it via t.Cleanup. They are NOT parallel:
+// parallel tests that share the global would race on the
+// mutation.
+
+// TestRunWithOptions_VerboseInstallsDebugLogger asserts that
+// `--verbose version` produces a DEBUG record on the invocation's
+// injected stderr.
+//
+// # What the test observes
+//
+// The version command emits at least one DEBUG record at its
+// build-info resolution point. Under `--verbose`, the installed
+// logger's level is DEBUG; the record passes the filter and
+// reaches the injected stderr. The test asserts the buffer
+// contains a DEBUG record.
+//
+// # Why the buffer, not a sink
+//
+// The wiring installs a logger with Writer: opts.streams.Err. The
+// injected buffer is where the records land. A capturing sink
+// installed on the default logger *before* runWithOptions would
+// be discarded when runWithOptions calls logger.SetDefault with
+// the production logger; the buffer is the only observable that
+// survives the replacement.
+func TestRunWithOptions_VerboseInstallsDebugLogger(t *testing.T) {
+	// Not parallel: the test mutates logger.SetDefault.
+	savedLogger := logger.Default()
+	t.Cleanup(func() { logger.SetDefault(savedLogger) })
+
+	opts, _, stderr := newTestOptions(t)
+	opts.args = []string{"--verbose", "version"}
+
+	code, err := runWithOptions(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("runWithOptions: %v", err)
+	}
+	if code != ExitSuccess {
+		t.Fatalf("code = %d; want %d (ExitSuccess)", code, ExitSuccess)
+	}
+	if stderr.Len() == 0 {
+		t.Fatal("injected stderr is empty; " +
+			"--verbose did not enable DEBUG records, or the " +
+			"logger did not write to the injected stderr")
+	}
+	if !strings.Contains(strings.ToLower(stderr.String()), "debug") {
+		t.Errorf("injected stderr does not contain a DEBUG record; "+
+			"--verbose did not install a DEBUG logger:\n%s",
+			stderr.String())
+	}
+}
+
+// TestRunWithOptions_DefaultLevelSuppressesDebug asserts the
+// inverse: without --verbose and without FORGE_LOG_LEVEL, the
+// installed logger is at the default level (INFO), so the version
+// command's DEBUG records do NOT reach the injected stderr.
+//
+// # Why absence is the observable
+//
+// At the default level, DEBUG records are filtered out. The
+// version command emits them, the sink drops them, and the
+// injected stderr contains no "debug" token. The absence is the
+// proof that the level filter is working.
+func TestRunWithOptions_DefaultLevelSuppressesDebug(t *testing.T) {
+	savedLogger := logger.Default()
+	t.Cleanup(func() { logger.SetDefault(savedLogger) })
+
+	opts, _, stderr := newTestOptions(t)
+	opts.args = []string{"version"}
+
+	code, err := runWithOptions(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("runWithOptions: %v", err)
+	}
+	if code != ExitSuccess {
+		t.Fatalf("code = %d; want %d (ExitSuccess)", code, ExitSuccess)
+	}
+	if strings.Contains(strings.ToLower(stderr.String()), "debug") {
+		t.Errorf("injected stderr contains a DEBUG record at the "+
+			"default level; the logger was not installed at INFO:\n%s",
+			stderr.String())
+	}
+}
+
+// TestRunWithOptions_EnvVarInstallsDebugLogger asserts that
+// FORGE_LOG_LEVEL=debug installs a DEBUG logger, mirroring the
+// --verbose path.
+//
+// The env lookup is injected via opts.env, not set process-wide.
+// The injected function returns "debug" for FORGE_LOG_LEVEL and
+// "" for every other key; the resolver reads the level via
+// logger.ReadEnv, which consults the injected lookup.
+func TestRunWithOptions_EnvVarInstallsDebugLogger(t *testing.T) {
+	savedLogger := logger.Default()
+	t.Cleanup(func() { logger.SetDefault(savedLogger) })
+
+	opts, _, stderr := newTestOptions(t)
+	opts.args = []string{"version"}
+	opts.env = func(name string) string {
+		if name == logger.EnvVar {
+			return "debug"
+		}
+		return ""
+	}
+
+	code, err := runWithOptions(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("runWithOptions: %v", err)
+	}
+	if code != ExitSuccess {
+		t.Fatalf("code = %d; want %d (ExitSuccess)", code, ExitSuccess)
+	}
+	if !strings.Contains(strings.ToLower(stderr.String()), "debug") {
+		t.Errorf("injected stderr does not contain a DEBUG record; "+
+			"FORGE_LOG_LEVEL=debug did not install a DEBUG logger:\n%s",
+			stderr.String())
+	}
+}
+
+// TestRunWithOptions_QuietVerboseConflictFailsBeforeTree asserts
+// that a conflicting invocation is rejected as a usage error
+// (exit 64) *before* the command tree runs.
+//
+// # What the test proves
+//
+// The resolution happens before root.ExecuteContext. If it did
+// not, a conflicting invocation of the `version` command would
+// produce version output on stdout before the conflict was
+// detected. The test asserts stdout is empty, which is only true
+// if no command ran.
+func TestRunWithOptions_QuietVerboseConflictFailsBeforeTree(t *testing.T) {
+	savedLogger := logger.Default()
+	t.Cleanup(func() { logger.SetDefault(savedLogger) })
+
+	opts, stdout, stderr := newTestOptions(t)
+	opts.args = []string{"--quiet", "--verbose", "version"}
+
+	code, err := runWithOptions(context.Background(), opts)
+	if code != ExitUsage {
+		t.Fatalf("code = %d; want %d (ExitUsage)", code, ExitUsage)
+	}
+	if err == nil {
+		t.Fatal("err = nil; want non-nil for a conflicting invocation")
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("stdout = %q; want empty "+
+			"(the conflict must be detected before the tree runs)",
+			stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "mutually exclusive") {
+		t.Errorf("stderr does not mention mutual exclusion:\n%s",
+			stderr.String())
+	}
+}
+
+// TestRunWithOptions_InvalidLogLevelFailsBeforeTree asserts that
+// an invalid --log-level value is rejected as a usage error
+// before the command tree runs.
+func TestRunWithOptions_InvalidLogLevelFailsBeforeTree(t *testing.T) {
+	savedLogger := logger.Default()
+	t.Cleanup(func() { logger.SetDefault(savedLogger) })
+
+	opts, stdout, stderr := newTestOptions(t)
+	opts.args = []string{"--log-level=trace", "version"}
+
+	code, err := runWithOptions(context.Background(), opts)
+	if code != ExitUsage {
+		t.Fatalf("code = %d; want %d (ExitUsage)", code, ExitUsage)
+	}
+	if err == nil {
+		t.Fatal("err = nil; want non-nil for an invalid --log-level")
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("stdout = %q; want empty "+
+			"(the invalid level must be detected before the tree runs)",
+			stdout.String())
+	}
+	if stderr.Len() == 0 {
+		t.Error("stderr is empty; want a diagnostic")
 	}
 }
 
@@ -459,16 +718,6 @@ func TestExecuteWithOptions_GivenNilEnv_StillRuns(t *testing.T) {
 // =============================================================================
 // Tests — the panic recovery (WBS 10.5.1)
 // =============================================================================
-//
-// The panic recovery lives in Execute, at the outermost point
-// before os.Exit. It cannot be exercised through the test helpers:
-// runCLI calls runWithOptions, which does not recover, and
-// calling Execute directly would require redirecting the process's
-// streams (os.Args and os.Stderr).
-//
-// The conversion — the part of the recovery with logic — is
-// extracted into recoveredPanicError and tested directly. The
-// placement of the deferred recovery is a matter of code review.
 
 // TestRecoveredPanicError asserts that a recovered panic value is
 // converted into a *forgeerr.Error with category
@@ -598,16 +847,6 @@ func TestWrappedUnexpectedError_ReachableThroughChain(t *testing.T) {
 // TestExecute_NonForgeErrorWrapped asserts that a non-*forgeerr.Error
 // error returned from a command is wrapped in a
 // FORGE_INTERNAL_UNEXPECTED error at the boundary.
-//
-// # The exit code
-//
-// The wrapped error's category is CategoryInternal, whose
-// ExitCode() is ExitInternal (70, BSD EX_SOFTWARE).
-//
-// # Why the test is serial
-//
-// The test installs a temporary registry entry via the test-only
-// hook. The registry is shared state; the hook mutates it.
 func TestExecute_NonForgeErrorWrapped(t *testing.T) {
 	restore := testOnlyRegisterPlainErrorCommand(errors.New("plain error"))
 	defer restore()
@@ -759,19 +998,23 @@ func TestExecute_UsesCategoryExitCode(t *testing.T) {
 
 // TestDefaultOptions_HasNonEmptyFields verifies that the default
 // options value has sensible values for every field.
+//
+// The three streams are asserted through the streams.Streams
+// value's three fields. The env function is asserted directly.
+// The verbose flag is asserted to be false.
 func TestDefaultOptions_HasNonEmptyFields(t *testing.T) {
 	t.Parallel()
 
 	opts := defaultOptions()
 
-	if opts.stdin == nil {
-		t.Error("stdin is nil")
+	if opts.streams.In == nil {
+		t.Error("streams.In is nil")
 	}
-	if opts.stdout == nil {
-		t.Error("stdout is nil")
+	if opts.streams.Out == nil {
+		t.Error("streams.Out is nil")
 	}
-	if opts.stderr == nil {
-		t.Error("stderr is nil")
+	if opts.streams.Err == nil {
+		t.Error("streams.Err is nil")
 	}
 	if opts.env == nil {
 		t.Error("env is nil")
@@ -907,9 +1150,13 @@ func TestExecuteWithOptions_UsesVerboseRequested(t *testing.T) {
 	content := readFile(t, "execute.go")
 	body := extractFuncBody(t, content, "runWithOptions")
 
-	if !strings.Contains(body, "verboseRequested(root)") {
-		t.Error("runWithOptions does not call verboseRequested(root); " +
-			"the verbose flag must be read from the command tree")
+	// The reader is called on the target command, not the root:
+	// the early flag parse populated the target's flag set, and
+	// the post-execution reads must observe the same values.
+	if !strings.Contains(body, "verboseRequested(target)") {
+		t.Error("runWithOptions does not call " +
+			"verboseRequested(target); the verbose flag must be " +
+			"read from the target command (WBS 12.5.1)")
 	}
 }
 
@@ -959,6 +1206,171 @@ func TestExecuteWithOptions_NoExitCodeFromError(t *testing.T) {
 	}
 }
 
+// TestExecuteWithOptions_CallsResolveLogLevel verifies that
+// runWithOptions resolves the log level (WBS 12.5.1). The
+// resolver is what detects the --quiet/--verbose conflict and
+// produces the Decision consumed by the logger installation.
+func TestExecuteWithOptions_CallsResolveLogLevel(t *testing.T) {
+	t.Parallel()
+
+	content := readFile(t, "execute.go")
+	body := extractFuncBody(t, content, "runWithOptions")
+
+	// The resolver is called with the target command (where the
+	// early flag parse populated the flags) and with opts.env (the
+	// injected environment lookup). Both are WBS 12.5.1 changes:
+	//
+	//   - The target, not the root: the early parse runs on the
+	//     command the invocation dispatches to, so the resolver
+	//     reads from the same site the parse wrote to.
+	//
+	//   - The injected env, not the process env: the resolver must
+	//     read FORGE_LOG_LEVEL through the options value so tests
+	//     can inject a value without mutating the process.
+	//
+	// A future change that returns to the process-env form (via
+	// the legacy resolveLogLevel wrapper) would remove the test's
+	// ability to observe the env injection; the assertion is
+	// deliberately specific.
+	if !strings.Contains(body, "resolveLogLevelWithEnv(target, ") {
+		t.Error("runWithOptions does not call " +
+			"resolveLogLevelWithEnv(target, ...); the log level " +
+			"must be resolved at the boundary with the injected " +
+			"env (WBS 12.5.1)")
+	}
+}
+
+// TestExecuteWithOptions_InstallsLoggerBeforeTree verifies that
+// the logger installation precedes the command tree's execution.
+//
+// # Why the ordering matters
+//
+// The command tree's RunE handlers call logger.Debug. If the
+// logger is installed after the tree runs, those calls route
+// through the previous default (Nop), and the DEBUG records are
+// dropped. The ordering is the whole point of the wiring.
+//
+// # How the test checks the ordering
+//
+// The test finds the byte offset of `logger.SetDefault(` and the
+// byte offset of `root.ExecuteContext(` in the body of
+// runWithOptions. It asserts the former is smaller. This is a
+// text-level check, not a compiler-level one, but it is precise
+// for the shape the wiring takes and catches the regression the
+// ordering guards against.
+// TestExecuteWithOptions_InstallsLoggerBeforeTree verifies that the
+// invocation's logger is installed before the command tree runs.
+//
+// # Why the test now inspects hooks.go and not execute.go
+//
+// The logger is no longer installed by runWithOptions. The
+// boundary (runWithOptions) resolves the log level and attaches
+// the Decision to the command's context via
+// logger.ContextWithDecision. The PersistentPreRunE hook
+// (initializeCommandEnvironment, hooks.go) reads the Decision
+// and constructs the invocation's logger, which Cobra's
+// ExecuteContext runs before the dispatched command's RunE.
+//
+// The property the test asserts is unchanged: the invocation's
+// logger exists before any command runs. The function whose body
+// realizes the property is now the hook.
+func TestExecuteWithOptions_InstallsLoggerBeforeTree(t *testing.T) {
+	t.Parallel()
+
+	// The boundary attaches the Decision to the context before
+	// ExecuteContext.
+	content := readFile(t, "execute.go")
+	body := extractFuncBody(t, content, "runWithOptions")
+
+	attachIdx := strings.Index(body, "logger.ContextWithDecision(")
+	if attachIdx < 0 {
+		t.Fatal("runWithOptions does not call " +
+			"logger.ContextWithDecision; the resolved level " +
+			"does not reach the hook (WBS 12.5.1)")
+	}
+	executeIdx := strings.Index(body, "root.ExecuteContext(")
+	if executeIdx < 0 {
+		t.Fatal("runWithOptions does not call root.ExecuteContext; " +
+			"the command tree is not executed")
+	}
+	if attachIdx >= executeIdx {
+		t.Error("logger.ContextWithDecision appears after " +
+			"root.ExecuteContext in runWithOptions; the Decision " +
+			"must reach the context before the tree runs " +
+			"(WBS 12.5.1)")
+	}
+
+	// The hook constructs the logger. Cobra invokes the hook
+	// (PersistentPreRunE) before any subcommand's RunE.
+	hooksContent := readFile(t, "hooks.go")
+	hooksBody := extractFuncBody(t, hooksContent, "initializeCommandEnvironment")
+
+	if !strings.Contains(hooksBody, "logger.IntoContext(") {
+		t.Error("initializeCommandEnvironment does not call " +
+			"logger.IntoContext; the invocation's logger is not " +
+			"attached to the context (WBS 12.5.1)")
+	}
+	if !strings.Contains(hooksBody, "logger.NewCorrelationID()") {
+		t.Error("initializeCommandEnvironment does not call " +
+			"logger.NewCorrelationID; the invocation's logger " +
+			"carries no correlation ID (WBS 12.2.1)")
+	}
+}
+
+// TestExecuteWithOptions_LoggerHasComponent verifies that the
+// invocation's logger is constructed with a non-zero Component.
+//
+// # Why the test now inspects hooks.go and not execute.go
+//
+// The logger's construction moved from the boundary to the hook.
+// The hook supplies Component: logger.ComponentCLI; without a
+// non-zero Component, logger.New panics (see logger.New's
+// docstring).
+func TestExecuteWithOptions_LoggerHasComponent(t *testing.T) {
+	t.Parallel()
+
+	content := readFile(t, "hooks.go")
+	body := extractFuncBody(t, content, "initializeCommandEnvironment")
+
+	if !strings.Contains(body, "Component:") {
+		t.Error("initializeCommandEnvironment does not set a " +
+			"Component on the logger; logger.New panics when " +
+			"Component is zero at non-debug levels " +
+			"(see internal/logger/logger.go)")
+	}
+	if !strings.Contains(body, "logger.ComponentCLI") {
+		t.Error("initializeCommandEnvironment does not use " +
+			"logger.ComponentCLI as the component; the CLI layer " +
+			"should tag its records with the CLI component")
+	}
+}
+
+// TestExecuteWithOptions_LoggerHasWriter verifies that the
+// invocation's logger writes to the invocation's injected stderr.
+//
+// # Why the test now inspects hooks.go and not execute.go
+//
+// The logger's construction moved from the boundary to the hook.
+// The hook supplies Writer: deps.Streams.Err; without this, the
+// logger would default to os.Stderr and bypass the injection.
+func TestExecuteWithOptions_LoggerHasWriter(t *testing.T) {
+	t.Parallel()
+
+	content := readFile(t, "hooks.go")
+	body := extractFuncBody(t, content, "initializeCommandEnvironment")
+
+	if !strings.Contains(body, "Writer:") {
+		t.Error("initializeCommandEnvironment does not set a " +
+			"Writer on the logger; the logger bypasses the " +
+			"injected stderr (WBS 12.5.1)")
+	}
+	if !strings.Contains(body, "deps.Streams.Err") {
+		t.Error("initializeCommandEnvironment does not use " +
+			"deps.Streams.Err as the logger's Writer; the logger " +
+			"must write to the process boundary's injected stderr")
+	}
+}
+
 // =============================================================================
 // Tests — the exit boundary (WBS 11.3.1, ADR-020)
 // =============================================================================
@@ -968,15 +1380,8 @@ func TestExecuteWithOptions_NoExitCodeFromError(t *testing.T) {
 func TestRun_ReturnsCodeAndNilErrorOnSuccess(t *testing.T) {
 	t.Parallel()
 
-	var stdout, stderr bytes.Buffer
-	opts := options{
-		args:     []string{"--help"},
-		stdin:    strings.NewReader(""),
-		stdout:   &stdout,
-		stderr:   &stderr,
-		env:      func(string) string { return "" },
-		rootPath: t.TempDir(),
-	}
+	opts, _, stderr := newTestOptions(t)
+	opts.args = []string{"--help"}
 
 	code, err := runWithOptions(context.Background(), opts)
 	if code != ExitSuccess {
@@ -995,15 +1400,8 @@ func TestRun_ReturnsCodeAndNilErrorOnSuccess(t *testing.T) {
 func TestRun_ReturnsCodeAndErrorOnFailure(t *testing.T) {
 	t.Parallel()
 
-	var stdout, stderr bytes.Buffer
-	opts := options{
-		args:     []string{"unknown-command"},
-		stdin:    strings.NewReader(""),
-		stdout:   &stdout,
-		stderr:   &stderr,
-		env:      func(string) string { return "" },
-		rootPath: t.TempDir(),
-	}
+	opts, _, stderr := newTestOptions(t)
+	opts.args = []string{"unknown-command"}
 
 	code, err := runWithOptions(context.Background(), opts)
 	if code != ExitUsage {
@@ -1023,30 +1421,35 @@ func TestRun_ReturnsCodeAndErrorOnFailure(t *testing.T) {
 
 // TestRun_ContextCancelled_ReturnsSIGINT asserts the WBS 11.3.1
 // acceptance criterion "SIGINT produces exit 130".
-//
-// The test cancels the context before running the CLI. The
-// boundary's fast-path check returns ExitSIGINT without running
-// the command tree.
 func TestRun_ContextCancelled_ReturnsSIGINT(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	var stdout, stderr bytes.Buffer
-	opts := options{
-		args:     []string{"--help"},
-		stdin:    strings.NewReader(""),
-		stdout:   &stdout,
-		stderr:   &stderr,
-		env:      func(string) string { return "" },
-		rootPath: t.TempDir(),
-	}
+	opts, _, _ := newTestOptions(t)
+	opts.args = []string{"--help"}
 
 	code, _ := runWithOptions(ctx, opts)
 	if code != ExitSIGINT {
 		t.Errorf("code = %d; want %d (ExitSIGINT)", code, ExitSIGINT)
 	}
+}
+
+func TestProbeResolver(t *testing.T) {
+	cmd := newFlagTestCmd()
+	if err := cmd.ParseFlags([]string{"--quiet", "--verbose"}); err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	d, err := resolveLogLevel(cmd, "")
+	t.Logf("conflict case: decision=%+v err=%v", d, err)
+
+	cmd2 := newFlagTestCmd()
+	if err := cmd2.ParseFlags([]string{"--log-level=trace"}); err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	d2, err2 := resolveLogLevel(cmd2, "")
+	t.Logf("invalid case:  decision=%+v err=%v", d2, err2)
 }
 
 // signalError wraps an os.Signal so that it satisfies the error
@@ -1067,13 +1470,6 @@ func TestRun_ContextCancelled_ReturnsSIGINT(t *testing.T) {
 // named field of interface type, so its methods are not promoted
 // to the outer type; the outer type declares String and Signal
 // explicitly to satisfy os.Signal, and Error to satisfy error.
-//
-// # Why the methods are explicit
-//
-// A named field of interface type contributes no methods to the
-// outer struct's method set. The three methods are therefore
-// declared by hand. The bodies are one-liners; their purpose is
-// to make the wrapper satisfy both interfaces.
 type signalError struct {
 	sig os.Signal
 }
@@ -1106,32 +1502,6 @@ func (e signalError) Signal() {}
 // which attaches the received signal as the context's Cause; the
 // test simulates the same shape with context.WithCancelCause and
 // the signalError wrapper.
-//
-// # Why the test asserts on the cause first
-//
-// The test asserts that context.Cause(ctx) returns the wrapper the
-// test installed, before it exercises the production code. The
-// assertion pins the test's own setup: if a future Go version
-// changes context.WithCancelCause's behaviour, or if the test's
-// construction is edited incorrectly, the failure surfaces as a
-// setup problem, not as a confusing "code = 130" from
-// runWithOptions.
-//
-// # What the test exercises
-//
-// runWithOptions's fast-path check sees the cancelled context and
-// calls signalExitCode. The production function inspects the
-// cause's shape:
-//
-//   - The cause satisfies os.Signal (via the wrapper's embedded
-//     field).
-//   - The direct comparison `sig == syscall.SIGTERM` is false
-//     because the wrapper's dynamic type is not syscall.Signal.
-//   - The string comparison `sig.String() == syscall.SIGTERM.String()`
-//     is true because both return "terminated".
-//
-// The function therefore returns ExitSIGTERM (143). The test
-// asserts that value.
 func TestRun_ContextCancelled_ReturnsSIGTERM(t *testing.T) {
 	t.Parallel()
 
@@ -1139,8 +1509,6 @@ func TestRun_ContextCancelled_ReturnsSIGTERM(t *testing.T) {
 	cancel(signalError{sig: syscall.SIGTERM})
 
 	// Pin the test's setup before exercising the production code.
-	// If context.Cause does not return the wrapper, the failure
-	// is a setup problem, not a production bug.
 	cause := context.Cause(ctx)
 	if cause == nil {
 		t.Fatal("context.Cause returned nil; the context is not cancelled")
@@ -1154,15 +1522,8 @@ func TestRun_ContextCancelled_ReturnsSIGTERM(t *testing.T) {
 			got, syscall.SIGTERM.String())
 	}
 
-	var stdout, stderr bytes.Buffer
-	opts := options{
-		args:     []string{"--help"},
-		stdin:    strings.NewReader(""),
-		stdout:   &stdout,
-		stderr:   &stderr,
-		env:      func(string) string { return "" },
-		rootPath: t.TempDir(),
-	}
+	opts, _, _ := newTestOptions(t)
+	opts.args = []string{"--help"}
 
 	code, _ := runWithOptions(ctx, opts)
 	if code != ExitSIGTERM {

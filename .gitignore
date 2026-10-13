@@ -63,5 +63,5 @@ vendor/
 # get committed.
 forge-repro-*/
 forge-resolution-*/
-forge
+/forge
 .task/

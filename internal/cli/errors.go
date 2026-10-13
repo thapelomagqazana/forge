@@ -1,7 +1,9 @@
 // Package cli defines the Forge command-line interface.
 //
 // This file holds the constants and helpers that the invalid-
-// command contract (WBS 7.3.1) enforces.
+// command contract (WBS 7.3.1) enforces, plus the package-local
+// predicates that the boundary uses to classify errors without
+// importing the libraries that produce them.
 //
 // The user-facing error format itself lives in
 // internal/forgeerr/format.go (WBS 10.4.1). The CLI does not
@@ -9,14 +11,35 @@
 // user is a *forgeerr.Error, and every rendering is performed by
 // forgeerr.Format. This file's job is to construct the
 // *forgeerr.Error for the one case the CLI is responsible for —
-// an unknown command typed at the root — and to expose the
+// an unknown command typed at the root — to expose the
 // suggestion-distance constant that governs Cobra's suggestion
-// mechanism.
+// mechanism, and to declare the predicates the boundary uses.
 //
 // # No package-level mutable state
 //
 // The CLI package's contract test forbids package-level
-// variables. This file declares only constants and functions.
+// variables. The file declares only constants and functions. A
+// predicate (a function that inspects an error's message) is
+// preferred over a sentinel `var` for the reason documented on
+// isPflagHelpRequested: errors.Is compares by identity, and two
+// errors.New calls with the same message are distinct values, so
+// a sentinel comparison across packages silently fails.
+//
+// # Why predicates live in errors.go
+//
+// The boundary (execute.go) classifies errors. Two categories
+// exist:
+//
+//   - Errors that originate in the CLI's own code or in a Forge
+//     package. These are already *forgeerr.Error values, or they
+//     are wrapped by wrapCobraError.
+//   - Errors that originate in a third-party package and that the
+//     boundary must recognize by value or message. These are
+//     recognized by a predicate function that does not import the
+//     third-party package.
+//
+// isPflagHelpRequested is the second kind. Its docstring records
+// the coupling and the rationale.
 package cli
 
 import (
@@ -26,6 +49,93 @@ import (
 
 	"github.com/thapelomagqazana/forge/internal/forgeerr"
 )
+
+// errPflagHelpRequestedMsg is the message pflag uses for its
+// ErrHelp sentinel.
+//
+// # What pflag.ErrHelp is
+//
+// pflag's FlagSet.Parse returns a sentinel error (pflag.ErrHelp,
+// whose message is "pflag: help requested") when the --help flag
+// is set. The error is not a failure: it is pflag's signal that
+// the caller should print help and exit. Cobra intercepts the
+// signal in its own ExecuteContext and produces the help output.
+//
+// # Why a message constant and not a sentinel error
+//
+// execute.go is subject to a stdlib-only import policy (enforced
+// by TestStdlibOnlyForExecuteImports). Importing
+// github.com/spf13/pflag to reference pflag.ErrHelp directly
+// would violate the policy. The natural alternative — declaring a
+// package-local sentinel via
+//
+//	var errPflagHelpRequested = errors.New("pflag: help requested")
+//
+// and comparing with errors.Is — does not work: errors.Is
+// compares errors by identity (the == operator on the error
+// values) or by an explicit Is method on either error. It does
+// not compare messages. Two calls to errors.New with the same
+// string produce two distinct *errors.errorString values, and
+// errors.Is on the two returns false.
+//
+// The correct check is therefore a string comparison of the
+// messages. The constant holds pflag's message; isPflagHelpRequested
+// performs the comparison.
+//
+// # Coupling to pflag's message
+//
+// The constant's value is pflag's, verbatim. If a future pflag
+// version changes the message, isPflagHelpRequested will return
+// false and the early parse will classify the help signal as an
+// error. The failure is loud (a --help invocation would exit 70
+// rather than 0), and the fix is a one-line change to the
+// constant. The coupling is documented here so the fix is not a
+// mystery to a future contributor.
+const errPflagHelpRequestedMsg = "pflag: help requested"
+
+// isPflagHelpRequested reports whether err is pflag's ErrHelp
+// signal, recognized by its message.
+//
+// # What the function does
+//
+// The function returns true when err is non-nil and its message
+// equals errPflagHelpRequestedMsg. It is the boundary's only
+// consumer of the message constant.
+//
+// # Why a message comparison and not errors.Is
+//
+// errors.Is compares errors by identity. Two errors created by
+// separate errors.New calls with the same message are distinct
+// values; errors.Is(err, localSentinel) returns false even when
+// err.Error() == localSentinel.Error(). The check the boundary
+// needs is "does this error carry pflag's help message?", and the
+// correct implementation is a string comparison.
+//
+// The alternative — importing pflag and comparing with
+// errors.Is(err, pflag.ErrHelp) — would succeed (the comparison
+// would match the same pointer), but violates the stdlib-only
+// import policy on execute.go.
+//
+// # Why the helper exists
+//
+// The check is used by execute.go's early flag parse. Extracting
+// it into a named function makes the boundary's call site read as
+// a question ("is this pflag's help signal?") rather than as a
+// string comparison whose intent is less obvious. The helper is
+// also the single place the message constant is referenced, so a
+// future pflag message change is one edit.
+//
+// # Why not a typed error with an Is method
+//
+// A custom error type implementing Is(error) bool would let the
+// boundary keep using errors.Is. But the type would have to be
+// constructed somewhere, and the error it compares against is
+// pflag's, not the CLI's. The type would need a wrapper, or
+// errors.As, or an Unwrap; each of those is more code than the
+// string comparison for the same result.
+func isPflagHelpRequested(err error) bool {
+	return err != nil && err.Error() == errPflagHelpRequestedMsg
+}
 
 // suggestionsMinimumDistance is the maximum edit distance at which
 // Cobra's suggestion mechanism fires.

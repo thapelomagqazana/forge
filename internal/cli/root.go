@@ -165,10 +165,10 @@ Run 'forge <command> --help' for details on any command.`
 // # Why the constructor accepts Dependencies
 //
 // Subcommands added in later WBS items need access to the injectable
-// collaborators: the resolved config, the logger, the filesystem
-// abstraction, the output streams, and the environment lookup. The
-// cleanest way to provide that access is to pass a single
-// Dependencies value down the command tree at construction time.
+// collaborators: the resolved config, the filesystem abstraction, the
+// output streams, and the environment lookup. The cleanest way to
+// provide that access is to pass a single Dependencies value down the
+// command tree at construction time.
 //
 // Before WBS 4.2.2, this constructor accepted the raw options struct.
 // That worked while there were no subcommands, but it coupled every
@@ -182,6 +182,18 @@ Run 'forge <command> --help' for details on any command.`
 // through the registry (see the "Subcommand registration" section
 // below). Each subcommand's constructor captures deps in its
 // handler closure and never reaches for a global.
+//
+// The Logger is not a field on Dependencies. After WBS 12.3.1, the
+// invocation's logger is constructed by the PersistentPreRunE hook
+// and stored on the command's context; handlers read it with
+// logger.FromContext(cmd.Context()). The root command does not
+// carry the logger itself.
+//
+// The three standard streams are carried together in a single
+// streams.Streams value on Dependencies (WBS 12.4.1). The product
+// output stream is deps.Streams.Out; the diagnostic stream is
+// deps.Streams.Err. The root command does not write to either; the
+// dispatched subcommand and the boundary do.
 //
 // # Why the root command has a RunE handler
 //
@@ -220,12 +232,22 @@ Run 'forge <command> --help' for details on any command.`
 // subcommand's RunE. It is reserved for the cross-cutting concerns
 // that must initialize uniformly across every command:
 //
-//   - Configuration loading (WBS 8.0).
-//   - Logger initialization (WBS 12.0).
+//   - Logger construction and correlation-ID generation
+//     (WBS 12.2.1, WBS 12.3.1).
+//   - Configuration loading (WBS 8.4.5).
 //
-// In Phase 2 the hook is a no-op stub. The hook point is claimed
-// before any subcommand might be tempted to use it for a local
-// purpose.
+// The hook builds the invocation's Logger, bound to a fresh
+// correlation ID, and stores it on the command's context via
+// logger.IntoContext. It then resolves the configuration and
+// stores the resolved Config on the same context. The two
+// transports are independent; see hooks.go for the ordering
+// rationale.
+//
+// The hook also builds the invocation's Logger with its Writer
+// field set to deps.Streams.Err, the diagnostic stream under the
+// stream contract (ADR-022). Product output goes to
+// deps.Streams.Out and is the responsibility of the dispatched
+// command.
 //
 // No subcommand may define its own PersistentPreRunE. A
 // subcommand-level hook would override the root's hook for that
@@ -238,12 +260,12 @@ Run 'forge <command> --help' for details on any command.`
 //
 // # Global flags
 //
-// The three persistent global flags (--verbose, --quiet, --config)
-// are registered by registerGlobalFlags, called below. The
-// registration, the flag-name constants, and the helpers that read
-// the parsed values live in flags.go. The inventory is frozen for
-// Phase 2; adding a fourth flag requires an ADR. See
-// docs/cli-ux-spec.md § 4.12 for the semantics and precedence.
+// The five persistent global flags (--verbose, --quiet, --log-level,
+// --config, --format) are registered by registerGlobalFlags, called
+// below. The registration, the flag-name constants, and the helpers
+// that read the parsed values live in flags.go. The inventory is
+// documented in docs/reference/log-levels.md and in
+// docs/cli-ux-spec.md § 4.12; adding a flag requires an ADR.
 //
 // # Where malformed invocations are rejected
 //
@@ -291,6 +313,20 @@ Run 'forge <command> --help' for details on any command.`
 // internal/cli/root_test.go for the test that enforces the two
 // invocations' output being byte-identical.
 //
+// # What version.Raw is, and why the pure path
+//
+// version.Raw returns the version block as a string. Internally it
+// calls version.Get (the pure path), not version.GetContext (the
+// record-emitting path). The choice is deliberate: this function
+// runs once per process, at command-tree construction time, before
+// the invocation's context exists. Calling GetContext would require
+// a context argument, and the DEBUG records it emits would carry the
+// zero correlation ID. Calling Get keeps the construction path free
+// of any dependency on the logging configuration; the records a
+// `forge version` invocation emits come from the CLI handler
+// (internal/cli/version.go), which calls version.GetContext with the
+// invocation's context.
+//
 // TraverseChildren is left at its default (false). If the command
 // tree ever requires traversal before dispatch, this is the field
 // to revisit; the default is correct for a tree whose subcommands
@@ -301,12 +337,13 @@ Run 'forge <command> --help' for details on any command.`
 // The function performs no I/O of its own. It does not read os.Args,
 // does not write to any stream, and does not touch the filesystem.
 // The handler is delegated to Cobra, which uses the streams bound by
-// runWithOptions from the Dependencies value.
+// runWithOptions from the Dependencies value: deps.Streams.In,
+// deps.Streams.Out, and deps.Streams.Err.
 //
 // # Relationship to options
 //
 // The options struct (execute.go) is the process boundary: it is the
-// only place os.Args, os.Stdin, os.Stdout, os.Stderr, os.Getenv, and
+// only place os.Args, the three standard streams, os.Getenv, and
 // os.Getwd are read. The Dependencies struct is the command boundary:
 // it is the resolved, injectable set of collaborators that commands
 // consume. runWithOptions is the single transformation point
@@ -353,13 +390,26 @@ func newRootCmd(deps Dependencies) *cobra.Command {
 		// # Why the value is computed here and not in
 		// # buildDependencies
 		//
-		// The value depends on deps, which is threaded into this
-		// function. Computing it here keeps the two-boundary model
+		// The value depends on the version package, which is not
+		// a collaborator: it reads package-level variables set by
+		// ldflags. Computing it here keeps the two-boundary model
 		// intact: buildDependencies constructs the collaborators;
 		// newRootCmd assembles the command tree. Adding a
 		// pre-computed Version to Dependencies would make the
 		// struct carry a derived value, which is a category error
 		// — the struct holds collaborators, not their outputs.
+		//
+		// # Why version.Raw and not version.GetContext
+		//
+		// This function runs once per process, at command-tree
+		// construction time, before any invocation's context
+		// exists. version.Raw calls version.Get (the pure path),
+		// which does not require a context and does not emit
+		// DEBUG records. Calling version.GetContext would require
+		// a context argument, and its records would carry the
+		// zero correlation ID — a record about a call that is not
+		// part of any invocation. The pure path is the correct
+		// choice at this site.
 		//
 		// # Why version.Raw and not version.Format
 		//
@@ -392,9 +442,11 @@ func newRootCmd(deps Dependencies) *cobra.Command {
 
 		// PersistentPreRunE is the root command's pre-run hook.
 		// It runs after Cobra parses the arguments and before the
-		// dispatched subcommand's RunE. The hook loads the CLI's
-		// configuration (WBS 8.4.5) and stores the resolved Config
-		// for the dispatched command to read.
+		// dispatched subcommand's RunE. The hook builds the
+		// invocation's Logger (WBS 12.3.1, bound to a fresh
+		// correlation ID from WBS 12.2.1) and loads the CLI's
+		// configuration (WBS 8.4.5). Both are stored on the
+		// command's context.
 		//
 		// # Why the assignment is a call
 		//
@@ -408,19 +460,18 @@ func newRootCmd(deps Dependencies) *cobra.Command {
 		// Cobra requires — would have no access to deps. The hook
 		// needs deps.Env (the environment lookup), deps.RootPath
 		// (the working directory for config discovery), and
-		// deps.Config (the pointer the resolved config is written
-		// through). The constructor is the mechanism that supplies
+		// deps.Streams.Err (the writer for the invocation's
+		// Logger). The constructor is the mechanism that supplies
 		// them.
 		//
 		// # What the hook does
 		//
-		// The hook applies the four configuration layers in order:
-		// defaults, config file, environment variables, CLI flags.
-		// The resolved Config is stored in the command's context
-		// (the primary transport, read by RunE with
-		// ConfigFromContext(cmd.Context())) and in the pointer
-		// deps.Config (a secondary store, visible only inside the
-		// closure).
+		// The hook attaches the invocation's Logger to the
+		// context first, so that any record emitted during
+		// configuration loading carries the invocation's
+		// correlation ID. It then applies the four configuration
+		// layers in order (defaults, file, env, flags) and stores
+		// the resolved Config on the same context.
 		//
 		// The full documentation is in hooks.go.
 		//
@@ -428,10 +479,10 @@ func newRootCmd(deps Dependencies) *cobra.Command {
 		//
 		// No subcommand may define its own PersistentPreRunE; a
 		// subcommand-level hook would override the root's hook for
-		// that subcommand's subtree, and the configuration would
-		// not be loaded. The rule is enforced by
-		// TestHooks_NoSubcommandOverrides in hooks_test.go and by
-		// the Taskfile target verify:hooks.
+		// that subcommand's subtree, and the logger and
+		// configuration would not be initialized. The rule is
+		// enforced by TestHooks_NoSubcommandOverrides in
+		// hooks_test.go and by the Taskfile target verify:hooks.
 		PersistentPreRunE: initializeCommandEnvironment(deps),
 
 		// The handler runs only when Cobra has not dispatched to a
@@ -499,9 +550,10 @@ func newRootCmd(deps Dependencies) *cobra.Command {
 		Args: cobra.ArbitraryArgs,
 	}
 
-	// Register the three persistent global flags. The registration
-	// lives in flags.go; the inventory and semantics are documented
-	// in docs/cli-ux-spec.md § 4.11.
+	// Register the persistent global flags. The registration lives
+	// in flags.go; the inventory and semantics are documented in
+	// docs/reference/log-levels.md and in docs/cli-ux-spec.md
+	// § 4.11.
 	//
 	// The flags are persistent, so every subcommand inherits them.
 	// `forge --verbose version` and `forge version --verbose` are
@@ -516,6 +568,20 @@ func newRootCmd(deps Dependencies) *cobra.Command {
 	// verbatim. The template "{{.Version}}" produces the verbatim
 	// output, so that `forge --version` and `forge version` are
 	// byte-identical. See docs/cli-ux-spec.md § 4.8.
+	//
+	// # Why the template and the Version field work together
+	//
+	// The Version field carries the string (produced by
+	// version.Raw). The template controls how Cobra renders that
+	// string when the --version flag is invoked. The two are
+	// paired: a change to the field's value (for example, adding
+	// a prefix inside version.Raw) would still produce verbatim
+	// output, because the template passes the field through
+	// unchanged. A change to the template would alter the
+	// rendering without changing the field. The pair is pinned
+	// by TestRootVersion_FlagMatchesSubcommand, which asserts
+	// that `forge --version` and `forge version` produce
+	// byte-identical output.
 	root.SetVersionTemplate("{{.Version}}")
 
 	// Register every subcommand in the central registry. See the
@@ -523,6 +589,38 @@ func newRootCmd(deps Dependencies) *cobra.Command {
 	for _, ctor := range registry {
 		root.AddCommand(ctor(deps))
 	}
+
+	// Register the test-only subcommands when the test
+	// environment variable is set. The registration is a no-op in
+	// production: the variable is unset, and the function returns
+	// immediately. See testcmd.go for the subcommand and the
+	// rationale for the env-var gate.
+	registerTestCommands(root, deps)
+
+	// Register Cobra's built-in --version and --help flags eagerly.
+	//
+	// Cobra registers these lazily inside ExecuteC. The boundary
+	// (runWithOptions) parses flags on the target command *before*
+	// ExecuteC runs, so the flags must be registered at that point.
+	// Without the eager initialization, --version is treated as an
+	// unknown flag and the invocation exits with ExitUsage (64).
+	//
+	// # Why both
+	//
+	// InitDefaultVersionFlag registers --version and its -v
+	// shorthand when root.Version is non-empty.
+	//
+	// InitDefaultHelpFlag registers --help and its -h shorthand.
+	// Cobra also registers help lazily; the early parse has the
+	// same problem for --help as for --version.
+	//
+	// # Why the calls are safe to make here
+	//
+	// Both functions are idempotent. Cobra's ExecuteC will call
+	// them again; the second call is a no-op because the flags
+	// are already registered.
+	root.InitDefaultVersionFlag()
+	root.InitDefaultHelpFlag()
 
 	return root
 }
