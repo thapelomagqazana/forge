@@ -56,6 +56,7 @@ package main_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -666,10 +667,20 @@ func TestIntegration_ShortMode(t *testing.T) {
 //
 // The test runs each scenario twice (with and without --quiet)
 // and asserts the exit codes match. The scenarios cover every
-// exit-code category the CLI can produce: success, usage, config,
-// internal. The list is exhaustive over the codes that a
-// reasonable invocation can reach; a future code added to the
-// taxonomy should be added here.
+// exit-code category the CLI can produce: success, usage, config.
+// The list is exhaustive over the codes that a reasonable
+// invocation can reach; a future code added to the taxonomy
+// should be added here.
+//
+// # Why the binary path is fetched inside the loop
+//
+// buildBinary returns a cached path: the first call builds the
+// binary, subsequent calls return the same path. Fetching it
+// inside the loop keeps the test's dependency on the binary
+// explicit and avoids a package-level variable that would be
+// visible to every test in this file. The cost is a single
+// sync.Once call per iteration; the benefit is that the test's
+// data flow is visible from its body alone.
 func TestQuiet_PreservesExitCode(t *testing.T) {
 	t.Parallel()
 
@@ -686,8 +697,11 @@ func TestQuiet_PreservesExitCode(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			plain := runBinary(t, tc.args...)
-			quiet := runBinary(t, append([]string{"--quiet"}, tc.args...)...)
+			binary := buildBinary(t)
+
+			plain := runBinary(t, binary, tc.args...)
+			quiet := runBinary(t, binary,
+				append([]string{"--quiet"}, tc.args...)...)
 
 			if plain.exitCode != quiet.exitCode {
 				t.Fatalf("exit codes differ: plain=%d quiet=%d",
@@ -699,13 +713,21 @@ func TestQuiet_PreservesExitCode(t *testing.T) {
 
 // TestQuiet_FormatJSON_ProducesValidJSON asserts that
 // --quiet --format json produces a valid JSON document.
+//
+// The JSON error envelope (ADR-021) is the command's result in
+// JSON mode; --quiet must not suppress it. The test asserts the
+// document is present, decodes as a single JSON value, and has
+// no trailing data.
 func TestQuiet_FormatJSON_ProducesValidJSON(t *testing.T) {
 	t.Parallel()
 
-	got := runBinary(t, "--quiet", "--format", "json", "version")
+	binary := buildBinary(t)
+	got := runBinary(t, binary,
+		"--quiet", "--format", "json", "version")
 
 	if got.exitCode != 0 {
-		t.Fatalf("exit code: got %d, want 0", got.exitCode)
+		t.Fatalf("exit code: got %d, want 0\nstderr: %q",
+			got.exitCode, got.stderr)
 	}
 	dec := json.NewDecoder(strings.NewReader(got.stdout))
 	var v any
@@ -723,7 +745,8 @@ func TestQuiet_FormatJSON_ProducesValidJSON(t *testing.T) {
 func TestQuiet_ErrorStillOnStderr(t *testing.T) {
 	t.Parallel()
 
-	got := runBinary(t, "--quiet", "unknown-command")
+	binary := buildBinary(t)
+	got := runBinary(t, binary, "--quiet", "unknown-command")
 
 	if got.exitCode == 0 {
 		t.Fatalf("exit code: got 0, want non-success")
@@ -738,7 +761,9 @@ func TestQuiet_ErrorStillOnStderr(t *testing.T) {
 func TestQuiet_VerboseConflict(t *testing.T) {
 	t.Parallel()
 
-	got := runBinary(t, "--quiet", "--verbose", "version")
+	binary := buildBinary(t)
+	got := runBinary(t, binary,
+		"--quiet", "--verbose", "version")
 
 	if got.exitCode != 64 {
 		t.Fatalf("exit code: got %d, want 64 (usage error)\nstderr: %q",
@@ -758,8 +783,9 @@ func TestQuiet_VerboseConflict(t *testing.T) {
 func TestQuiet_ShortFormMatchesLongForm(t *testing.T) {
 	t.Parallel()
 
-	long := runBinary(t, "--quiet", "version")
-	short := runBinary(t, "-q", "version")
+	binary := buildBinary(t)
+	long := runBinary(t, binary, "--quiet", "version")
+	short := runBinary(t, binary, "-q", "version")
 
 	if long.exitCode != short.exitCode {
 		t.Fatalf("exit codes differ: --quiet=%d -q=%d",
