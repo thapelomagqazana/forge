@@ -565,9 +565,26 @@ func commandName(use string) string {
 //
 // The value is used only to call a command constructor and read
 // its Use field; the constructed command is never executed. The
-// value therefore does not need a real logger, filesystem, or
-// config. A value with a no-op logger and nil writers is
-// sufficient.
+// value therefore does not need a real logger, filesystem, config,
+// or streams.
+//
+// # Why the value is the zero value
+//
+// After WBS 12.3.1, the invocation's logger is not a field on
+// Dependencies: it is constructed by the PersistentPreRunE hook
+// and stored on the command's context. After WBS 12.4.1, the
+// three streams travel in a streams.Streams value. Neither the
+// logger nor the streams are read during construction: a command
+// constructor records its Use, Short, Long, and RunE fields and
+// returns; the RunE closure captures the Dependencies value by
+// value, but it is not called.
+//
+// The zero Dependencies value is therefore sufficient for the
+// narrow purpose this helper serves. A future command constructor
+// that reads a field during construction (rather than inside its
+// RunE closure) would need that field to be non-nil; the helper
+// should be updated at that point. In Phase 2, no constructor
+// reads a field during construction.
 //
 // # Why a separate helper and not testDependencies
 //
@@ -575,28 +592,29 @@ func commandName(use string) string {
 // available in production code. This function is the production
 // equivalent: it returns a value that is safe to use for the
 // narrow purpose of constructing a command and reading its name.
-// It does not need to be as complete as the test helper, because
-// the constructed command is never executed and its fields are
-// only inspected, not used.
 //
-// # Why the value has a no-op logger
+// The two helpers exist for the same reason but are kept separate
+// because test helpers are not part of the production build. A
+// future refactor that moved both into a shared non-test file
+// would obscure the fact that production code and test code have
+// different requirements: production code needs a value that
+// satisfies the constructors it calls; test code needs a value
+// that supports assertions on every field.
 //
-// Every command constructor that reads deps.Logger (none in Phase
-// 2, but possible in a future phase) receives a logger that
-// discards its messages. The no-op logger is the correct choice
-// for a value that exists only to satisfy a constructor's
-// signature.
+// # Why the value is not the zero value of a *test* helper
 //
-// # Why the writers are nil
-//
-// The writers are not used during construction. A command's RunE
-// closure captures deps.Stdout and deps.Stderr, but the closure is
-// not called; only the command's metadata (Use, Short, Long) is
-// read. Nil writers are therefore safe.
+// A caller might be tempted to invoke the test helper from
+// production code by exporting it. That would couple production
+// to the test surface and would expose a constructor with no
+// real dependencies. The zero value is the correct production
+// shape: it says, in the type, that this value has no
+// collaborators, which is the truth for the read-only use this
+// helper supports.
 func validationDependencies() Dependencies {
-	return Dependencies{
-		Logger: newNoopLogger(),
-	}
+	// The zero Dependencies value. No field is read during the
+	// construction of the commands the caller iterates. See the
+	// docstring for the rationale.
+	return Dependencies{}
 }
 
 // invalidFlagValue constructs a temporary error that the caller

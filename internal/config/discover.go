@@ -83,14 +83,76 @@
 //
 // This file declares functions and constants. It declares no
 // package-level variables.
+//
+// # DEBUG records (WBS 12.5.1)
+//
+// The discovery algorithm emits one DEBUG record per candidate it
+// evaluates. The records are the config subsystem's contribution
+// to docs/reference/verbose-mode.md §3, which lists
+// "Config discovery" as emitting "each candidate path considered"
+// with fields `path`, `exists`, `readable`.
+//
+// # What "considered" means
+//
+// The algorithm stops at the first candidate that exists. Every
+// candidate evaluated before the winner is "considered" and
+// produces a record with `exists: false`. The winner produces a
+// record with `exists: true` and `readable: true` (the discovery
+// algorithm only checks existence; the loader checks readability
+// when it opens the file, and a read failure produces an error
+// from the loader, not a different value here).
+//
+// The candidates after the winner are NOT considered; the
+// algorithm short-circuits, and no record is emitted for them.
+//
+// # What "readable" means
+//
+// The field is reported as `true` for every candidate that
+// exists, because `os.Stat` succeeds on a file the current process
+// may not be able to read. The field is present because the
+// reference doc lists it as a typical field, and a future change
+// that adds a readability check to discovery (rather than to the
+// loader) would populate it meaningfully. For now, the field
+// reports the same information as `exists`; the duplication is
+// deliberate and documented.
+//
+// # The explicit sources
+//
+// The explicit sources (--config and FORGE_CONFIG) produce the
+// same shape of record as the optional sources. When the explicit
+// source names a missing file, the record reports
+// `exists: false`, and the algorithm returns the E1 error. When
+// the explicit source names an existing file, the record reports
+// `exists: true` and the algorithm returns the path.
+//
+// # No summary record
+//
+// The algorithm does not emit a summary record at the end
+// ("resolved to X" or "no candidate found"). The winning
+// candidate's record already reports the path, and the
+// CLI handler's record (`config: resolved path` in
+// internal/cli/config.go) reports the same path from the
+// handler's perspective. A third summary record would be a third
+// copy of the same value.
+//
+// # Context
+//
+// The records carry the context passed to DiscoverContext. A
+// caller that uses Discover (the legacy entry point) gets records
+// with a background context, which means they carry the zero
+// correlation ID. A caller that wants the records to carry an
+// invocation's correlation ID uses DiscoverContext.
 package config
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/thapelomagqazana/forge/internal/logger"
 )
 
 // ErrExplicitConfigMissing is the sentinel error returned when an
@@ -192,6 +254,23 @@ const appDataConfigRelPath = "forge/config.yaml"
 // Discover returns the path to the config file to load, or the
 // empty string if no config file is found.
 //
+// Discover is the legacy entry point. It calls DiscoverContext
+// with a background context, which means the DEBUG records it
+// emits carry the zero correlation ID.
+//
+// New callers that have an invocation's context (the CLI's
+// hooks, for example) should use DiscoverContext directly. The
+// two functions share the same algorithm; Discover is a one-line
+// wrapper.
+//
+// The full docstring for the algorithm is on DiscoverContext.
+func Discover(explicit string, env func(string) string, cwd string) (string, error) {
+	return DiscoverContext(context.Background(), explicit, env, cwd)
+}
+
+// DiscoverContext returns the path to the config file to load, or
+// the empty string if no config file is found.
+//
 // # The algorithm
 //
 // The function tries the following paths in order, stopping at
@@ -257,24 +336,39 @@ const appDataConfigRelPath = "forge/config.yaml"
 //
 // The function reads only its three arguments and calls os.Stat
 // on each candidate. It does not read os.Getenv, os.Getwd, or
-// os.Args.
-func Discover(explicit string, env func(string) string, cwd string) (string, error) {
+// os.Args. The context is used solely for the DEBUG records; the
+// algorithm's behavior does not depend on it.
+//
+// # Nil context
+//
+// A nil context is replaced by context.Background(). The
+// substitution keeps the DEBUG records' emission unconditional
+// without requiring every caller to pass a non-nil context.
+// Callers that pass a real context (the CLI's hooks) get records
+// that carry the invocation's correlation ID.
+func DiscoverContext(ctx context.Context, explicit string, env func(string) string, cwd string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	// Explicit source 1: the --config flag.
 	if explicit != "" {
-		return checkExplicit(explicit)
+		return evaluateExplicit(ctx, "flag", explicit)
 	}
 
 	// Explicit source 2: the FORGE_CONFIG environment variable.
 	if env != nil {
 		if envPath := env(EnvVarConfigPath); envPath != "" {
-			return checkExplicit(envPath)
+			return evaluateExplicit(ctx, "env", envPath)
 		}
 	}
 
 	// Optional source 3: the canonical project-local path.
 	if cwd != "" {
 		candidate := filepath.Join(cwd, filepath.FromSlash(projectLocalRelPath))
-		if isExistingFile(candidate) {
+		exists := isExistingFile(candidate)
+		emitCandidateRecord(ctx, "project-local", candidate, exists)
+		if exists {
 			return candidate, nil
 		}
 	}
@@ -284,7 +378,9 @@ func Discover(explicit string, env func(string) string, cwd string) (string, err
 	// loads the canonical one.
 	if cwd != "" {
 		candidate := filepath.Join(cwd, filepath.FromSlash(projectLocalLegacyRelPath))
-		if isExistingFile(candidate) {
+		exists := isExistingFile(candidate)
+		emitCandidateRecord(ctx, "project-local-legacy", candidate, exists)
+		if exists {
 			return candidate, nil
 		}
 	}
@@ -293,7 +389,9 @@ func Discover(explicit string, env func(string) string, cwd string) (string, err
 	if env != nil {
 		if xdg := env("XDG_CONFIG_HOME"); xdg != "" {
 			candidate := filepath.Join(xdg, filepath.FromSlash(xdgConfigRelPath))
-			if isExistingFile(candidate) {
+			exists := isExistingFile(candidate)
+			emitCandidateRecord(ctx, "xdg", candidate, exists)
+			if exists {
 				return candidate, nil
 			}
 		}
@@ -303,7 +401,9 @@ func Discover(explicit string, env func(string) string, cwd string) (string, err
 	if env != nil {
 		if home := env("HOME"); home != "" {
 			candidate := filepath.Join(home, filepath.FromSlash(homeConfigRelPath))
-			if isExistingFile(candidate) {
+			exists := isExistingFile(candidate)
+			emitCandidateRecord(ctx, "home", candidate, exists)
+			if exists {
 				return candidate, nil
 			}
 		}
@@ -317,7 +417,9 @@ func Discover(explicit string, env func(string) string, cwd string) (string, err
 	if runtime.GOOS == "windows" && env != nil {
 		if appData := env("APPDATA"); appData != "" {
 			candidate := filepath.Join(appData, filepath.FromSlash(appDataConfigRelPath))
-			if isExistingFile(candidate) {
+			exists := isExistingFile(candidate)
+			emitCandidateRecord(ctx, "appdata", candidate, exists)
+			if exists {
 				return candidate, nil
 			}
 		}
@@ -326,6 +428,64 @@ func Discover(explicit string, env func(string) string, cwd string) (string, err
 	// No candidate exists. The loader falls back to the
 	// built-in defaults (WBS 8.3.1).
 	return "", nil
+}
+
+// evaluateExplicit evaluates an explicit source (the --config flag
+// or the FORGE_CONFIG environment variable).
+//
+// # What the function does
+//
+// The function checks whether path names an existing file. It
+// emits a DEBUG record for the candidate, then returns the path
+// and a nil error on success, or the empty string and an E1
+// error on failure.
+//
+// # Why the source parameter
+//
+// The DEBUG record's `source` field names which explicit source
+// was consulted ("flag" or "env"). The two sources have the same
+// precedence in the algorithm (both are explicit), but a reader
+// of the DEBUG output distinguishes them: "the user passed
+// --config" and "the user set FORGE_CONFIG" are different facts,
+// and a user diagnosing discovery wants to know which one fired.
+func evaluateExplicit(ctx context.Context, source, path string) (string, error) {
+	exists := isExistingFile(path)
+	logger.Debug(ctx, "config discovery: explicit candidate",
+		"source", source,
+		"path", path,
+		"exists", exists,
+		"readable", exists,
+	)
+	if !exists {
+		return "", NewConfigNotFound(path)
+	}
+	return path, nil
+}
+
+// emitCandidateRecord emits a DEBUG record for an optional
+// candidate.
+//
+// # What the record reports
+//
+// The record names the candidate's source (project-local, xdg,
+// home, appdata), the candidate path, and whether it exists. The
+// `readable` field reports the same value as `exists`; see the
+// package docstring's "What 'readable' means" section for the
+// rationale.
+//
+// # Why the function exists
+//
+// The function is called once per optional candidate. Extracting
+// it keeps the algorithm's structure (one `if exists { return }`
+// block per source) visually clear, and centralizes the record's
+// schema so a future field addition touches one function.
+func emitCandidateRecord(ctx context.Context, source, path string, exists bool) {
+	logger.Debug(ctx, "config discovery: candidate",
+		"source", source,
+		"path", path,
+		"exists", exists,
+		"readable", exists,
+	)
 }
 
 // checkExplicit verifies that an explicit path names an existing

@@ -16,20 +16,41 @@
 // refactoring applied preemptively, before the parameter lists grow
 // long enough to hurt.
 //
+// # What is NOT a field
+//
+// Two collaborators that existed as fields in earlier phases are
+// no longer here, and their absence is deliberate:
+//
+//   - The Logger. The invocation's logger is bound to a fresh
+//     correlation ID in the PersistentPreRunE hook (see
+//     hooks.go) and stored on the command's context. Handlers
+//     read it with logger.FromContext(ctx). Carrying a Logger
+//     field would let a handler bypass the context and emit
+//     records without the invocation's correlation ID, which
+//     defeats the purpose of the ID. WBS 12.3.1 and WBS 12.3.2
+//     established the context-based transport.
+//
+//   - The individual Stdout and Stderr writers. The three
+//     standard streams are carried together by a
+//     streams.Streams value (WBS 12.4.1). A single field means a
+//     caller that wants to redirect the streams redirects all
+//     three, and a command that receives the value cannot
+//     accidentally read a different stream.
+//
 // # Import direction
 //
-// This file imports internal/config and internal/filesystem. It
-// must not import any command package. Command packages import cli
-// (or, more precisely, receive a Dependencies value from cli). The
+// This file imports internal/config, internal/filesystem,
+// internal/logger, and internal/streams. It must not import any
+// command package. Command packages import cli (or, more
+// precisely, receive a Dependencies value from cli). The
 // dependency graph is acyclic and one-directional.
 package cli
 
 import (
-	"io"
-	"log/slog"
-
 	"github.com/thapelomagqazana/forge/internal/config"
 	"github.com/thapelomagqazana/forge/internal/filesystem"
+	"github.com/thapelomagqazana/forge/internal/logger"
+	"github.com/thapelomagqazana/forge/internal/streams"
 )
 
 // Dependencies is the set of collaborators a command may use.
@@ -37,12 +58,15 @@ import (
 // It is the injection boundary between the CLI layer and the command
 // handlers. Every command receives a Dependencies value at
 // construction time and uses it for every side effect: reading
-// configuration, writing output, accessing the filesystem, logging.
+// configuration, accessing the filesystem, reading the three
+// standard streams, reading the environment, and (through the
+// command's context) logging.
 //
 // A command must never reach for a global. It must not read
 // os.Args, must not call os.Getenv, must not write to os.Stdout or
 // os.Stderr, and must not call os.ReadFile or os.WriteFile. Every
-// effect flows through this struct.
+// effect flows through this struct or through the command's
+// context.
 //
 // # Why a struct and not individual parameters
 //
@@ -54,312 +78,270 @@ import (
 // means the constructor signature is stable, and new collaborators
 // appear as new fields.
 //
-// # Why the fields are interfaces
+// # Why the fields are interfaces or value types
 //
-// Config is a concrete type because it is a value object with no
-// behaviour. The other fields are interfaces: Logger, FS, io.Writer,
-// and func(string) string. Interfaces allow tests to substitute
-// lightweight implementations without touching the real subsystems.
+// Config is a pointer to a value object: commands read its fields
+// and never call methods on it. Streams is a value type carrying
+// three io.Reader/io.Writer fields; it is passed by value and
+// copied on read. FS is an interface so tests can substitute a
+// fixture filesystem. Env is a function so tests can substitute an
+// environment map.
+//
+// The Logger is not a field. See the package docstring
+// §"What is NOT a field".
 //
 // # Mutability
 //
 // Commands must not mutate the Dependencies value. The struct is
-// passed by value, so mutation would not affect the caller; but the
-// fields it contains (Config, Logger, FS) are shared. A command that
-// mutates its Config would be observing a change that other commands
-// do not see. Treat every field as read-only.
+// passed by value, so mutation of its fields would not affect the
+// caller; but the fields it contains (Config, Streams, FS, Env)
+// are shared. A command that mutates the pointee of Config would
+// be observing a change that other commands do not see. Treat
+// every field as read-only.
 //
 // # Zero value
 //
 // The zero value of Dependencies is valid but not useful. It has a
-// nil Config (which is an empty struct, so reads are safe), a nil
-// Logger (which would panic on use), a nil FS (which would panic on
-// use), nil writers (which would panic on use), and a nil Env (which
-// would panic on call). Tests should construct Dependencies via
-// buildDependencies or testDependencies, not via the zero value.
+// nil Config (which reads return the zero Config), nil Streams
+// (which reads return nil writers, and writes panic), a nil FS
+// (which panics on use), and a nil Env (which panics on call).
+// Tests should construct Dependencies via buildDependencies or
+// testDependencies, not via the zero value.
 //
 // # Extending this struct
 //
 // Adding a field to Dependencies is the intended mechanism for
 // introducing a new collaborator. The field is added, the builder
-// in buildDependencies is updated to construct it, and every command
-// that wants to use the new collaborator reads it from the struct.
-// No command constructor signature changes.
+// in buildDependencies is updated to construct it, and every
+// command that wants to use the new collaborator reads it from
+// the struct. No command constructor signature changes.
 //
 // Because the struct is small, the addition is a two-line change.
 // Because commands receive the struct by value, the addition does
 // not break any existing caller.
+//
+// The Logger is the deliberate exception: it is not a field, and a
+// future collaborator that is per-invocation (like the logger)
+// should also travel on the context rather than on this struct.
+// The rule of thumb: a collaborator that is the same for every
+// command in a process lives here; a collaborator that is bound to
+// one invocation (a correlation ID, a trace span, a cancellation
+// signal) travels on the context.
 type Dependencies struct {
 	// Config is the resolved configuration for this invocation.
 	//
-	// The value is never nil. In Phase 2 it is the zero value of
-	// config.Config, which is an empty struct. WBS 8.2.1 populates
-	// the struct with fields; commands that read those fields will
-	// see the resolved values.
+	// The value is never nil. It is resolved by the CLI's
+	// PersistentPreRunE hook (see hooks.go), which applies the
+	// four precedence layers (defaults, file, environment, flags)
+	// and stores the result on the command's context. A command's
+	// RunE handler reads it with ConfigFromContext(ctx).
 	//
-	// The value comes from one of two sources, decided by
-	// buildDependencies:
+	// The struct field is retained for the CLI's own internal use
+	// (the boundary's error rendering, the hook's idempotence
+	// check). Handlers should read the resolved Config from the
+	// context, not from this field, so that a future change to
+	// the resolution's timing does not surprise them.
 	//
-	//   - opts.config, when the caller set it (the test-injection
-	//     path).
-	//   - The zero value of config.Config, when opts.config is
-	//     nil (the production placeholder path, until WBS 8.4
-	//     replaces it with the loader).
+	// # Test injection
+	//
+	// buildDependencies copies opts.config into this field when
+	// the caller set it. The hook sees a non-zero Config and
+	// treats it as pre-resolved, skipping the loader. This is how
+	// a test injects a specific Config.
 	Config *config.Config
-
-	// Logger is the diagnostic logger.
-	//
-	// The value is never nil. In Phase 2 it is a logger backed by
-	// log/slog writing to the injected stderr. WBS 12.0 refines
-	// the logger's behaviour (levels, structured fields, redaction)
-	// without changing the interface commands use.
-	Logger Logger
 
 	// FS is the filesystem abstraction.
 	//
-	// The value is never nil. In Phase 2 it is an OS-backed
-	// implementation bound to the rootPath from the options struct.
-	// WBS 13.0 completes the abstraction's boundary enforcement
-	// without changing the interface.
+	// The value is never nil. It is an OS-backed implementation
+	// bound to the rootPath from the options struct. WBS 13.0
+	// completes the abstraction's boundary enforcement without
+	// changing the interface.
+	//
+	// Commands read and write files through this field. They must
+	// not call os.ReadFile, os.WriteFile, os.Open, or any other
+	// os.* filesystem function directly. The Rule 6 contract test
+	// enforces the restriction.
 	FS filesystem.FS
 
-	// Stdout is the destination for successful command output.
+	// Streams carries the process's three standard streams:
+	// stdin, stdout, and stderr.
 	//
-	// The value is never nil. In Phase 2 it is the writer from the
-	// options struct. Commands write their primary output here.
-	Stdout io.Writer
-
-	// Stderr is the destination for diagnostics and errors.
+	// The value is copied from opts.streams by
+	// buildDependencies, unchanged. In production it is
+	// streams.Default(), the three os.File globals. In tests it
+	// is a Streams whose Out and Err are bytes.Buffers and whose
+	// In is a strings.Reader.
 	//
-	// The value is never nil. In Phase 2 it is the writer from the
-	// options struct. Commands write warnings, progress, and error
-	// messages here.
-	Stderr io.Writer
+	// # Why one field instead of three
+	//
+	// The three streams are used together: a command that reads
+	// from stdin and writes to stdout wants both from the same
+	// source. Carrying them as one value means an injection
+	// replaces all three at once, and a command cannot
+	// accidentally read a different stream than the one the test
+	// provided. See WBS 12.4.1 for the streams package's design.
+	//
+	// # Stream contract
+	//
+	// Product output goes to Streams.Out. Diagnostics go to
+	// Streams.Err. The Logger (bound to the context in the hook)
+	// writes to Streams.Err as well; the two share the diagnostic
+	// stream but not the logger's per-invocation state.
+	Streams streams.Streams
 
 	// Env reads environment variables by name.
 	//
-	// The value is never nil. In Phase 2 it is the lookup function
-	// from the options struct. Commands that need to read an
-	// environment variable call this function rather than calling
-	// os.Getenv directly.
+	// The value is never nil. It is the lookup function from the
+	// options struct. Commands that need to read an environment
+	// variable call this function rather than calling os.Getenv
+	// directly.
 	Env func(string) string
 
 	// RootPath is the directory against which relative paths are
 	// resolved.
 	//
-	// The value is normally the process's current working directory.
-	// Tests set it to a temporary directory so that path resolution
-	// is deterministic.
+	// The value is normally the process's current working
+	// directory. Tests set it to a temporary directory so that
+	// path resolution is deterministic.
 	//
-	// The field is a collaborator, not a derived value: it is read
-	// from the process boundary (options.rootPath) by
+	// The field is a collaborator, not a derived value: it is
+	// read from the process boundary (options.rootPath) by
 	// buildDependencies and passed through to commands unchanged.
-	// The config loader (WBS 8.4.1) reads it to discover the
-	// configuration file when the --config flag is not set.
+	// The config loader reads it to discover the configuration
+	// file when the --config flag is not set.
 	//
 	// The empty string means "use the process's current working
-	// directory". A caller that wants the default behaviour sets
+	// directory". A caller that wants the default behavior sets
 	// the field to the empty string.
 	RootPath string
-}
 
-// Logger is the diagnostic logging interface used by commands.
-//
-// The interface is deliberately minimal. It has five methods, each
-// corresponding to a log level or a scope extension. Commands do not
-// need more.
-//
-// # Why not use log/slog directly
-//
-// Commands could receive a *slog.Logger and call its methods
-// directly. That works today, but it couples every command to the
-// slog package. If WBS 12.0 replaces slog with a different logging
-// library, every command that calls slog directly would need to be
-// updated. The Logger interface decouples commands from the
-// implementation.
-//
-// # Why these five methods
-//
-// The four level methods (Debug, Info, Warn, Error) correspond to
-// the four levels the CLI UX specification defines. The With method
-// returns a logger with additional structured fields, so that a
-// command can attach context (for example, a project name) once and
-// have it appear on every subsequent log message.
-//
-// # Structured fields
-//
-// The level methods take a variadic list of key-value pairs rather
-// than a formatted string. This is deliberate: structured logging is
-// the CLI UX specification's policy, and the interface enforces it.
-type Logger interface {
-	// Debug logs a message at the debug level.
+	// LogLevel is the log-level decision resolved by the CLI's
+	// boundary (resolveLogLevelWithEnv in execute.go) before the
+	// command tree runs.
 	//
-	// Debug messages are emitted only when the user has requested
-	// verbose output (--verbose or --debug).
-	Debug(msg string, args ...any)
-
-	// Info logs a message at the info level.
+	// # What the field carries
 	//
-	// Info messages are the default level. They are suppressed by
-	// --quiet.
-	Info(msg string, args ...any)
-
-	// Warn logs a message at the warning level.
+	// The value is a logger.Decision: the resolved Level and the
+	// Source that produced it. The Source is diagnostic (a record
+	// that reports "log level: debug (source: --verbose)"), and
+	// the Level is what the hook needs to construct the
+	// invocation's logger.
 	//
-	// Warn messages indicate potential issues. They are suppressed
-	// by --quiet.
-	Warn(msg string, args ...any)
-
-	// Error logs a message at the error level.
+	// # Who consumes the field
 	//
-	// Error messages indicate failures. They are never suppressed.
-	Error(msg string, args ...any)
-
-	// With returns a logger that includes the given key-value pairs
-	// on every subsequent message.
+	// The PersistentPreRunE hook (initializeCommandEnvironment in
+	// hooks.go) reads this field to construct the invocation's
+	// logger at the resolved level. The logger is stored on the
+	// command's context, not on the Dependencies struct; see the
+	// package docstring §"What is NOT a field".
 	//
-	// The returned logger is independent of the receiver; adding
-	// fields to one does not affect the other.
-	With(args ...any) Logger
-}
-
-// slogLogger adapts a *slog.Logger to the Logger interface.
-//
-// The adapter is unexported because no package outside internal/cli
-// needs to construct it. Tests that want a Logger use newNoopLogger
-// or the adapter constructed by buildDependencies.
-type slogLogger struct {
-	inner *slog.Logger
-}
-
-// Debug logs a message at the debug level.
-func (l *slogLogger) Debug(msg string, args ...any) {
-	l.inner.Debug(msg, args...)
-}
-
-// Info logs a message at the info level.
-func (l *slogLogger) Info(msg string, args ...any) {
-	l.inner.Info(msg, args...)
-}
-
-// Warn logs a message at the warning level.
-func (l *slogLogger) Warn(msg string, args ...any) {
-	l.inner.Warn(msg, args...)
-}
-
-// Error logs a message at the error level.
-func (l *slogLogger) Error(msg string, args ...any) {
-	l.inner.Error(msg, args...)
-}
-
-// With returns a logger that includes the given fields.
-func (l *slogLogger) With(args ...any) Logger {
-	return &slogLogger{inner: l.inner.With(args...)}
-}
-
-// noopLogger is a Logger implementation that discards every message.
-//
-// It is used in tests that do not care about log output, and it is
-// the default logger for a Dependencies value that has not been
-// configured with a real logger.
-//
-// The implementation is deliberately trivial: every method is a
-// no-op, and With returns the receiver.
-type noopLogger struct{}
-
-// Debug discards the message.
-func (noopLogger) Debug(string, ...any) {}
-
-// Info discards the message.
-func (noopLogger) Info(string, ...any) {}
-
-// Warn discards the message.
-func (noopLogger) Warn(string, ...any) {}
-
-// Error discards the message.
-func (noopLogger) Error(string, ...any) {}
-
-// With returns the receiver.
-func (l noopLogger) With(...any) Logger { return l }
-
-// newNoopLogger returns a Logger that discards every message.
-//
-// It is exported for use by tests in other packages that need a
-// Logger without constructing a real one. Production code should
-// use the Logger from buildDependencies.
-func newNoopLogger() Logger { return noopLogger{} }
-
-// newLogger returns a Logger writing to the given writer.
-//
-// The returned logger is a slogLogger wrapped around a slog.Logger
-// configured with a text handler. The text handler writes structured
-// key-value pairs, matching the CLI UX specification's policy for
-// human-readable log output.
-//
-// In Phase 2, the logger's level is fixed at Debug. WBS 12.0 wires
-// the level to the --verbose and --quiet flags.
-func newLogger(w io.Writer) Logger {
-	handler := slog.NewTextHandler(w, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
-	})
-	return &slogLogger{inner: slog.New(handler)}
+	// # Why the field is on Dependencies and not on options
+	//
+	// The resolution runs after buildDependencies (it needs the
+	// constructed command tree to read the flags). Threading the
+	// decision through options would require either re-running
+	// the resolution or storing it on a struct that is passed by
+	// value and already gone by the time the decision exists.
+	// The Dependencies struct is captured by the
+	// PersistentPreRunE closure; storing the decision there is the
+	// smallest transport that survives until the hook runs.
+	//
+	// # Zero value
+	//
+	// The zero value is Decision{Level: LevelDebug, Source:
+	// SourceDefault}. LevelDebug is the zero value of
+	// logger.Level (the constant that starts the iota). A hook
+	// that receives a zero-valued LogLevel constructs the
+	// logger at DEBUG, which is wrong for a default invocation.
+	//
+	// To avoid the zero-value trap, buildDependencies normalizes
+	// a zero Level (which is indistinguishable from an
+	// uninitialized field) to a nonzero "unset" sentinel. See
+	// buildDependencies' docstring §"LogLevel field resolution".
+	LogLevel logger.Decision
 }
 
 // buildDependencies constructs a Dependencies value from the
 // injectable options.
 //
-// It is called exactly once per invocation, from executeWithOptions.
+// It is called exactly once per invocation, from runWithOptions.
 // Every field of the returned value is non-nil.
 //
 // # The construction order
 //
-// The order in which the fields are constructed matters in two
-// cases:
+// The order in which the fields are constructed matters in one
+// case:
 //
-//  1. The logger needs the stderr writer. The writer must be
-//     captured before the logger is constructed.
+//   - The filesystem needs the rootPath. The path must be
+//     resolved before the filesystem is constructed.
 //
-//  2. The filesystem needs the rootPath. The path must be resolved
-//     before the filesystem is constructed.
-//
-// The order below reflects these dependencies. Every field is
+// The order below reflects that dependency. Every field is
 // constructed from either the options value or from a value
 // constructed earlier in the function.
 //
 // # Why not construct Dependencies in newRootCmd
 //
 // The construction could live in newRootCmd instead of here. It is
-// placed here because executeWithOptions owns the options value, and
-// the construction is a pure transformation of that value. Keeping
-// the transformation next to the value it transforms makes the
-// boundary explicit.
+// placed here because runWithOptions owns the options value, and
+// the construction is a pure transformation of that value.
+// Keeping the transformation next to the value it transforms
+// makes the boundary explicit.
 //
 // # Config field resolution
 //
 // The Config field has two sources, decided here:
 //
-//   - If opts.config is non-nil, it is used directly. This is the
-//     test-injection path: a test sets opts.config to a pre-built
-//     *config.Config, and the command tree sees that value.
+//   - If opts.config is non-nil, it is used directly. This is
+//     the test-injection path: a test sets opts.config to a
+//     pre-built *config.Config, and the hook sees the value and
+//     skips the loader.
 //
 //   - If opts.config is nil, the zero value of config.Config is
-//     used. This is the production placeholder: the loader has
-//     not been wired in yet (WBS 8.4.x), and the zero value is
-//     the correct value. When the loader lands, this branch is
-//     replaced with a call to the loader.
+//     used. This is the production placeholder: the hook will
+//     replace it with the loader's output when the loader runs.
 //
 // The nil-check is the only place in buildDependencies where a
 // field's value depends on whether the caller set it. Every other
-// field either has a default that is unconditionally used (Logger,
-// FS) or is passed through unchanged (Stdout, Stderr, Env,
-// RootPath).
+// field either has a default that is unconditionally used (FS
+// from opts.rootPath) or is passed through unchanged (Streams,
+// Env, RootPath).
+//
+// # Streams field resolution
+//
+// The Streams field is copied from opts.streams, unchanged. The
+// caller (defaultOptions or its test) supplies the streams it
+// wants: streams.Default() for the process's standard streams, or
+// a Streams value with buffers for a test. buildDependencies does
+// not call streams.Default() on the caller's behalf; the choice
+// belongs to the caller, and the field is a faithful copy.
+//
+// # LogLevel field resolution
+//
+// The LogLevel field is initialized to a well-defined sentinel
+// that the hook can recognize as "not yet resolved". The
+// resolution runs after buildDependencies returns; the hook
+// replaces the sentinel with the resolved Decision before
+// constructing the logger.
+//
+// The sentinel is Decision{Level: LevelInfo, Source:
+// SourceDefault} — the same values the resolver would produce
+// for an invocation with no flags, no env var, and no config
+// file. It is a valid "default level" answer, not a "not set"
+// marker. The hook does not distinguish the two: a
+// buildDependencies that runs in a code path that never calls
+// the resolver (a future test helper, for example) still gets a
+// logger at INFO, which is the correct default for the CLI.
+//
+// A caller that wants a different level attaches the resolved
+// decision to the context via logger.ContextWithDecision; the
+// hook reads the context first and falls back to the
+// LogLevel field when the context is absent. See hooks.go.
 //
 // # Phase 2 placeholders
 //
 // FS is an OS-backed implementation bound to rootPath; WBS 13.0
-// completes boundary enforcement. Logger is a slog-backed
-// implementation; WBS 12.0 wires levels to flags. Neither change
-// alters the interface commands use.
+// completes boundary enforcement. Neither change alters the
+// interface commands use.
 func buildDependencies(opts options) Dependencies {
 	// Config: prefer the injected value; fall back to the zero
 	// value. See the docstring's "Config field resolution"
@@ -377,20 +359,36 @@ func buildDependencies(opts options) Dependencies {
 	return Dependencies{
 		Config: cfg,
 
-		// Logger writes to stderr, so that stdout remains clean
-		// for command output.
-		Logger: newLogger(opts.stderr),
-
 		// FS is bound to the rootPath from the options. In Phase
 		// 2, boundary enforcement is not yet implemented; WBS
 		// 13.0 completes it.
 		FS: filesystem.NewOSFS(opts.rootPath),
 
-		// The output streams are passed through unchanged.
-		Stdout: opts.stdout,
-		Stderr: opts.stderr,
+		// Streams is copied from the options unchanged. The
+		// options value already carries the three streams in a
+		// streams.Streams value; buildDependencies does not
+		// reassemble them from individual fields (there are
+		// none). The copy is a value copy: the three
+		// io.Reader/io.Writer fields are shared with the
+		// options value, which is the intended behaviour (a
+		// test that injects a buffer expects the buffer to
+		// receive the CLI's output).
+		Streams: opts.streams,
 
 		// The environment lookup is passed through unchanged.
 		Env: opts.env,
+
+		// RootPath is passed through unchanged.
+		RootPath: opts.rootPath,
+
+		// LogLevel is initialized to the default-level sentinel.
+		// The resolver runs after this function returns; the
+		// hook replaces the sentinel with the resolved Decision
+		// when it constructs the invocation's logger. See the
+		// docstring's "LogLevel field resolution" section.
+		LogLevel: logger.Decision{
+			Level:  logger.LevelInfo,
+			Source: logger.SourceDefault,
+		},
 	}
 }

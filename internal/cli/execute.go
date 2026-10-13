@@ -10,14 +10,16 @@
 // and they serve different purposes:
 //
 //   - options (this file) is the process boundary. It holds raw
-//     os.* values: os.Args[1:], os.Stdin, os.Stdout, os.Stderr,
-//     os.Getenv, and the working directory. It is constructed by
-//     defaultOptions in production, or by a test.
+//     os.* values: os.Args[1:], the three standard streams
+//     (os.Stdin, os.Stdout, os.Stderr), os.Getenv, and the working
+//     directory. It is constructed by defaultOptions in production,
+//     or by a test.
 //
 //   - Dependencies (deps.go) is the command boundary. It holds
-//     resolved collaborators: a *config.Config, a Logger, a
-//     filesystem.FS, two io.Writers, and an env lookup function.
-//     It is constructed by buildDependencies from an options value.
+//     resolved collaborators: a *config.Config, a filesystem.FS, a
+//     streams.Streams value carrying the three streams, and an env
+//     lookup function. It is constructed by buildDependencies from
+//     an options value.
 //
 // The transformation is one-directional and pure:
 //
@@ -26,6 +28,17 @@
 // There is no path from Dependencies back to options, and no path
 // from a command back to the process. This is what makes every
 // command testable in-process.
+//
+// # The three streams
+//
+// The three standard streams (stdin, stdout, stderr) travel
+// together through the streams.Streams value. The options struct
+// holds one; the Dependencies struct holds one; the two are the
+// same value passed through unchanged. Commands read the three
+// streams from deps.Streams, not from deps.Stdout or deps.Stderr
+// (those fields do not exist). See WBS 12.4.1 for the streams
+// package's design and the stream contract in
+// docs/reference/output-streams.md.
 //
 // # The single construction site
 //
@@ -58,6 +71,22 @@
 // the command tree, so a malformed `--help <cmd>` invocation is
 // unobservable from inside the tree.
 //
+// # The flag-parsing stage (WBS 12.5.1)
+//
+// After constructing the command tree and before resolving the log
+// level, runWithOptions calls root.Find(opts.args) to locate the
+// target command and target.ParseFlags(remaining) to populate the
+// flag values. The parse must happen before the resolver, because
+// the resolver reads the flags (via verboseRequested,
+// quietRequested, logLevelRequested) and the flags would otherwise
+// be at their registered defaults.
+//
+// The Find + ParseFlags sequence mirrors what Cobra's
+// ExecuteContext does internally. The explicit call here lets the
+// resolver see the same values the tree will see when it runs. The
+// subsequent ExecuteContext re-parses the arguments; the second
+// parse is idempotent.
+//
 // # The error boundary (WBS 10.5.1)
 //
 // The CLI's error handling is split across two functions, and the
@@ -73,10 +102,10 @@
 //     ensures every error that reaches it is a *forgeerr.Error
 //     (wrapping non-*Error errors as FORGE_INTERNAL_UNEXPECTED),
 //     renders the error with forgeerr.Format, writes the rendered
-//     string to the injected stderr (unless --quiet suppresses
-//     it), writes the JSON error envelope to the injected stdout
-//     when --format json is set, and returns the error's
-//     Category().ExitCode() together with the error itself.
+//     string to the injected stderr, writes the JSON error envelope
+//     to the injected stdout when --format json is set, and returns
+//     the error's Category().ExitCode() together with the error
+//     itself.
 //
 // The split is forced by the code's shape: the wrapping must run
 // in the same function as the rendering, and the recovery must
@@ -93,10 +122,14 @@
 //     envelope on success, an error envelope on failure.
 //
 //   - stderr carries diagnostics: the human error block on
-//     failure, rendered by forgeerr.Format. --quiet suppresses
-//     the diagnostic; it does not suppress the JSON envelope on
-//     stdout, because the envelope is the command's result in
-//     JSON mode.
+//     failure, rendered by forgeerr.Format, and any log records
+//     emitted by internal/logger. --quiet suppresses the
+//     informational log records at INFO and DEBUG levels; it does
+//     not suppress the error block and does not suppress the JSON
+//     envelope on stdout. The envelope is the command's result in
+//     JSON mode; the error block is the user-facing explanation of
+//     a failure. See docs/reference/output-streams.md and
+//     docs/reference/log-levels.md §4.3.
 //
 // The contract is documented in docs/reference/output-streams.md
 // and enforced by the tests in error_envelope_test.go and
@@ -158,8 +191,10 @@
 // Three further codes are emitted by this boundary directly:
 //
 //   - ExitUsage (64, BSD EX_USAGE): a usage error produced by the
-//     pre-parse validator or by wrapCobraError's conversion of a
-//     Cobra parser error.
+//     pre-parse validator, by resolveLogLevelWithEnv (the --quiet /
+//     --verbose conflict, or an invalid level name), by the
+//     Find/ParseFlags stage (an unrecognized command or flag), or
+//     by wrapCobraError's conversion of a Cobra parser error.
 //   - ExitInternal (70, BSD EX_SOFTWARE): a panic recovered by
 //     Execute, or a non-*forgeerr.Error wrapped by
 //     wrappedUnexpectedError. Both are classified as internal
@@ -173,32 +208,94 @@
 // and are never reassigned. See ADR-018 for the decision and
 // exitcodes.go for the constants.
 //
-// # Verbose mode
+// # Verbose mode (WBS 12.5.1)
 //
-// When the user passes --verbose, the CLI's error path sets
-// forgeerr.Options.Verbose, which enables the verbose rendering
-// frozen in WBS 10.4.4: the cause chain, the stack trace (when a
-// stack is available), the internal_-prefixed context keys, and
-// full home-directory paths. Secret redaction is unchanged; the
-// rule "Secrets are never shown" is absolute.
+// The --verbose flag has two effects, both on stderr:
 //
-// The verbose flag is read from the command tree after Cobra has
-// parsed the arguments. It is not read from the process
-// environment; the flag is the only source. The JSON envelope is
-// not affected by --verbose; it carries the same fields regardless.
+//  1. It configures the invocation's logger to DEBUG level. DEBUG
+//     records emitted by the command tree reach stderr in the
+//     format selected by FORGE_LOG_FORMAT (default: human). The
+//     records name the decision points the command reached:
+//     config discovery, version resolution, format selection,
+//     and so on. See docs/reference/verbose-mode.md §3 for the
+//     subsystem list.
+//
+//  2. It sets forgeerr.Options.Verbose for the error rendering.
+//     The verbose error format includes the cause chain, the
+//     stack trace when available, the internal_-prefixed context
+//     keys, and full home-directory paths. Secret redaction is
+//     unchanged; the rule "Secrets are never shown" is absolute.
+//
+// The two effects share the same flag but are otherwise
+// independent: a run with --verbose --format json emits DEBUG
+// records on stderr and a pure JSON envelope on stdout; a run
+// with --verbose and no error emits DEBUG records only.
+//
+// The flag is read twice, at two points in the invocation:
+//
+//   - The log level is resolved from the flag *before* the
+//     command tree runs, so the tree executes with the correct
+//     level. The resolution is performed by
+//     resolveLogLevelWithEnv (flags.go); the resulting Decision
+//     is attached to the command's context via
+//     logger.ContextWithDecision. The PersistentPreRunE hook
+//     (initializeCommandEnvironment) reads the Decision and
+//     constructs the invocation's logger at that level. The
+//     logger is stored on the same context via
+//     logger.IntoContext; commands read it with
+//     logger.FromContext.
+//
+//   - The error rendering reads the flag *after* the tree runs,
+//     from the target command's flag set. The two reads observe
+//     the same value; the flag is parsed once by the explicit
+//     Find/ParseFlags stage, and Cobra's ExecuteContext re-parses
+//     the same arguments.
+//
+// The flag is not read from the process environment; the flag
+// itself is the only source for its two effects. FORGE_LOG_LEVEL
+// is a separate input to the same logger configuration; it is
+// documented in docs/reference/log-levels.md §2.
+//
+// # The env lookup (WBS 12.5.1)
+//
+// The resolver consults FORGE_LOG_LEVEL through the injected env
+// function (opts.env), not through os.Getenv directly. This is what
+// makes the env var testable in-process: a test injects an
+// opts.env that returns "debug" for FORGE_LOG_LEVEL, and the
+// resolver sees the value without mutating the process's
+// environment.
+//
+// The production path is unchanged: defaultOptions sets opts.env
+// to os.Getenv, so a real invocation reads the real environment.
+//
+// # Why the pflag import is not used
+//
+// The early parse ignores pflag.ErrHelp (the "pflag: help
+// requested" signal). The check is performed against a package-
+// local sentinel (errPflagHelpRequested, defined in errors.go) so
+// that execute.go does not import github.com/spf13/pflag. The
+// package's import policy (TestStdlibOnlyForExecuteImports)
+// permits only the standard library and Forge's own packages.
+//
+// The sentinel's message matches pflag.ErrHelp's message exactly;
+// errors.Is compares the two by message when neither wraps the
+// other. A future pflag version that changes the message must be
+// matched by a change to the sentinel; the check is localized to
+// the one call site below.
 package cli
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 	"syscall"
 
 	"github.com/thapelomagqazana/forge/internal/config"
 	"github.com/thapelomagqazana/forge/internal/forgeerr"
+	"github.com/thapelomagqazana/forge/internal/logger"
+	"github.com/thapelomagqazana/forge/internal/streams"
 )
 
 // options captures the injectable environment of a CLI invocation.
@@ -243,22 +340,40 @@ type options struct {
 	// name. In a normal process invocation, this is os.Args[1:].
 	args []string
 
-	// stdin is the reader from which the CLI may read interactive
-	// input. In a normal process invocation, this is os.Stdin.
-	stdin io.Reader
-
-	// stdout is the writer to which the CLI writes successful
-	// output. In a normal process invocation, this is os.Stdout.
-	stdout io.Writer
-
-	// stderr is the writer to which the CLI writes diagnostics and
-	// errors. In a normal process invocation, this is os.Stderr.
-	stderr io.Writer
+	// streams carries the process's three standard streams.
+	//
+	// In a normal process invocation, it is streams.Default():
+	// the three os.File values os.Stdin, os.Stdout, os.Stderr.
+	// In tests, it is a Streams whose In is a strings.Reader and
+	// whose Out and Err are bytes.Buffers.
+	//
+	// The three streams travel together so that an injection
+	// replaces all three at once. A caller that wants to redirect
+	// only stdout supplies a Streams that shares the other two
+	// streams with the default.
+	//
+	// buildDependencies copies this field into the Dependencies
+	// value unchanged. The command tree reads the streams from
+	// deps.Streams; the error path reads them from opts.streams.
+	// The two references point at the same underlying streams.
+	streams streams.Streams
 
 	// env reads environment variables by name. It is a function
 	// rather than a map so that tests can inject a lookup without
 	// materialising the entire environment. In a normal process
 	// invocation, this is os.Getenv.
+	//
+	// # Where the function is consulted
+	//
+	// The resolver (resolveLogLevelWithEnv, flags.go) reads
+	// FORGE_LOG_LEVEL through this function. The function is
+	// threaded into the resolver by runWithOptions, so a test
+	// that injects an env sees the injected value without
+	// touching the process environment.
+	//
+	// A nil env means "no environment is available". The resolver
+	// treats a nil env as "no FORGE_LOG_LEVEL is set"; see
+	// resolveLogLevelWithEnv's docstring.
 	env func(string) string
 
 	// rootPath is the directory against which relative paths are
@@ -343,6 +458,16 @@ type options struct {
 	//
 	// The field's place is on the process boundary, alongside the
 	// other inputs the error path consults.
+	//
+	// # Relationship to the process logger (WBS 12.5.1)
+	//
+	// This field controls the *error rendering's* verbosity. The
+	// *logger's* level is a separate concern, resolved by
+	// resolveLogLevelWithEnv from the same --verbose flag plus
+	// --log-level and FORGE_LOG_LEVEL. The two are configured at
+	// different points in the invocation: the logger before the
+	// command tree runs, the error rendering after it returns.
+	// See the package docstring's "Verbose mode" section.
 	verbose bool
 }
 
@@ -383,6 +508,14 @@ type options struct {
 // testable: a test can inject a lookup that returns specific values
 // without constructing a full environment map.
 //
+// # Why the streams are one value
+//
+// The three standard streams travel together as a
+// streams.Streams value. The struct has one field for them, not
+// three, so that a caller cannot accidentally redirect stdout
+// without redirecting stderr. See the options.streams docstring
+// and WBS 12.4.1.
+//
 // # Why verbose is not set here
 //
 // The verbose flag is read from the command tree after Cobra has
@@ -398,9 +531,7 @@ func defaultOptions() options {
 
 	return options{
 		args:     os.Args[1:],
-		stdin:    os.Stdin,
-		stdout:   os.Stdout,
-		stderr:   os.Stderr,
+		streams:  streams.Default(),
 		env:      os.Getenv,
 		rootPath: rootPath,
 	}
@@ -520,7 +651,7 @@ func Run(ctx context.Context) (int, error) {
 // # Why the panic path writes directly to os.Stderr
 //
 // The panic recovery runs before runWithOptions, so the
-// injected stderr (opts.stderr) is not yet available. The
+// injected stderr (opts.streams.Err) is not yet available. The
 // boundary writes to os.Stderr directly. This is one of the
 // two places in the package that touch a process stream
 // directly; the other is defaultOptions, which reads them.
@@ -742,6 +873,60 @@ func hasVerboseArg(args []string) bool {
 	return false
 }
 
+// logFormatFromEnvOrText returns the log format selected by the
+// process environment.
+//
+// The function reads FORGE_LOG_FORMAT (via logger.ReadEnv) and
+// maps it to a logger.Format. An unset, empty, or unrecognized
+// value returns logger.FormatHuman, the default.
+//
+// # Why no --log-format flag
+//
+// WBS 12.5.1 does not introduce a --log-format flag. The env var
+// is the only selector today. A future WBS that adds the flag
+// will extend this function to read the flag first, with the env
+// var as the fallback (matching the log-level precedence order
+// documented in docs/reference/log-levels.md §2).
+//
+// # Why an unrecognized value defaults rather than errors
+//
+// The alternative — treating an unrecognized FORGE_LOG_FORMAT as
+// a usage error — would make the CLI refuse to run because of a
+// cosmetic env-var setting. The log format is a diagnostic
+// concern; a malformed value should not block the invocation.
+// The default (human) is the safe choice.
+//
+// # Why the format is read here and not from the command tree
+//
+// The log format, like the log level, must be known before the
+// command tree runs. The command tree's flags are parsed during
+// its execution; a --log-format flag would be unreadable at the
+// point the logger is constructed. The env var is available
+// before the tree runs, which is why it is the only source
+// today. When a future WBS adds the flag, the flag will be
+// parsed by Cobra's pre-run machinery, which runs before RunE
+// handlers but after the tree is constructed; the logger
+// construction will move into a PreRunE hook at that time.
+//
+// # Why ParseFormat is not called here
+//
+// The function could delegate to logger.ParseFormat for the
+// parsing and then discard the error. That would couple the
+// caller to ParseFormat's value set (which may gain new values
+// in a future release) and to its error message. The current
+// implementation inlines the two-value mapping, so the
+// unrecognized-value case is provably a default and not a
+// silent accept-and-ignore of a parse error.
+func logFormatFromEnvOrText() logger.Format {
+	_, format := logger.ReadEnv()
+	switch format {
+	case "json":
+		return logger.FormatJSON
+	default:
+		return logger.FormatHuman
+	}
+}
+
 // runWithOptions runs the CLI with the given context and options
 // and returns the exit code and the rendered error.
 //
@@ -794,6 +979,65 @@ func hasVerboseArg(args []string) bool {
 // indistinguishable from an error produced by a command: same
 // stream, same message shape, same exit code.
 //
+// # The flag-parsing stage (WBS 12.5.1)
+//
+// After the validation stage and after constructing the command
+// tree, runWithOptions calls root.Find(opts.args) to locate the
+// target command, then target.ParseFlags(remaining) to populate
+// the flag values. This stage exists because the log-level
+// resolver (below) reads the flags before ExecuteContext runs;
+// without the parse, the flags would be at their registered
+// defaults.
+//
+// The Find + ParseFlags sequence mirrors Cobra's internal
+// ExecuteContext behavior: Find locates the command the invocation
+// dispatches to, and ParseFlags parses the arguments against that
+// command's flag set (which includes the inherited persistent
+// flags). The explicit call here is idempotent with the parse
+// Cobra performs inside ExecuteContext.
+//
+// # The log-level resolution stage (WBS 12.5.1)
+//
+// After the flag-parsing stage, runWithOptions calls
+// resolveLogLevelWithEnv (flags.go). The resolver reads the
+// flags from the target command, the env var through opts.env,
+// and the (currently empty) config-file value; it returns a
+// logger.Decision{Level, Source}.
+//
+// The resolution also detects the --quiet / --verbose conflict
+// and an invalid --log-level value. Because the resolution runs
+// before the tree, a conflicting or malformed invocation never
+// executes any command; it is rejected as a usage error (exit 64)
+// without side effects.
+//
+// # How the resolved Decision reaches the logger
+//
+// The Decision is attached to the command's context via
+// logger.ContextWithDecision. The PersistentPreRunE hook
+// (initializeCommandEnvironment, hooks.go) reads the Decision
+// with logger.DecisionFromContext and constructs the
+// invocation's logger at that level, storing it on the same
+// context via logger.IntoContext. Commands read the logger with
+// logger.FromContext(cmd.Context()); the library functions in
+// internal/config, internal/app/version, and elsewhere that call
+// logger.Debug(ctx, ...) do the same.
+//
+// # Why the decision travels on the context and not a global
+//
+// An earlier design installed the resolved logger via
+// logger.SetDefault, a process-global mutation. The mutation is
+// safe in a process with one invocation; it races in a process
+// with concurrent invocations (the parallel test suite), because
+// the global logger's sink points at whichever invocation's
+// stderr buffer was installed most recently. The context is
+// per-invocation, so it is the only transport that is safe under
+// concurrency.
+//
+// The Decision is the resolver's output; the logger is the
+// hook's output. Neither is a process-global value. Both travel
+// on the context, under separate keys (logger owns both), and
+// each has exactly one writer.
+//
 // # What the function does
 //
 //  1. Checks the context for cancellation. A cancelled context
@@ -803,29 +1047,36 @@ func hasVerboseArg(args []string) bool {
 //  3. Transforms options into Dependencies via buildDependencies.
 //  4. Constructs the root command, passing Dependencies to it.
 //  5. Binds the injectable inputs and outputs to the command tree.
-//  6. Executes the command tree with the context.
-//  7. Converts any Cobra-produced error (unknown flag, unknown
+//  6. Locates the target command and parses the flags (WBS 12.5.1).
+//  7. Resolves the log level (WBS 12.5.1). A usage error from
+//     the resolution is rendered and returned.
+//  8. Attaches the resolved Decision to the context via
+//     logger.ContextWithDecision.
+//  9. Executes the command tree with the context. The
+//     PersistentPreRunE hook reads the Decision, builds the
+//     invocation's logger, and stores it on the context.
+//  10. Converts any Cobra-produced error (unknown flag, unknown
 //     command) into a *forgeerr.Error with category CategoryCLI.
-//  8. Ensures the error is a *forgeerr.Error; a non-*Error error
+//  11. Ensures the error is a *forgeerr.Error; a non-*Error error
 //     is wrapped as FORGE_INTERNAL_UNEXPECTED.
-//  9. Reads the --verbose flag from the command tree.
-//  10. Reads the --format flag from the command tree.
-//  11. Reads the --quiet flag from the command tree.
-//  12. Renders the error with forgeerr.Format, in verbose mode if
+//  12. Reads the --verbose flag from the target command.
+//  13. Reads the --format flag from the target command.
+//  14. Renders the error with forgeerr.Format, in verbose mode if
 //     the --verbose flag was set.
-//  13. Writes the rendered error to the injected stderr, unless
-//     --quiet suppresses it.
-//  14. Writes the JSON error envelope to the injected stdout when
+//  15. Writes the rendered error to the injected stderr.
+//  16. Writes the JSON error envelope to the injected stdout when
 //     --format json is set (WBS 11.3.2).
-//  15. Returns the error's Category().ExitCode() and the error.
+//  17. Returns the error's Category().ExitCode() and the error.
 //
 // # What the function does not do
 //
 //   - It does not read os.Args, os.Stdin, os.Stdout, os.Stderr, or
-//     os.Getenv. Every input is read from the options value.
+//     os.Getenv. Every input is read from the options value. The
+//     env function is threaded into the resolver; the resolver's
+//     read is through opts.env, not through os.Getenv.
 //   - It does not perform I/O of its own beyond writing the
-//     rendered error to opts.stderr and the JSON envelope to
-//     opts.stdout. The command tree performs the rest.
+//     rendered error to opts.streams.Err and the JSON envelope to
+//     opts.streams.Out. The command tree performs the rest.
 //   - It does not recover panics. The recovery is in Execute, at
 //     the outermost point; see Execute's docstring for the
 //     rationale.
@@ -856,10 +1107,10 @@ func hasVerboseArg(args []string) bool {
 // wrapped by the second step as internal (ExitInternal, 70).
 //
 // The function then renders the (possibly wrapped) error with
-// forgeerr.Format, writes the rendered string to opts.stderr
-// (unless --quiet suppresses it), writes the JSON envelope to
-// opts.stdout when --format json is set, and returns the error's
-// Category().ExitCode() together with the error itself.
+// forgeerr.Format, writes the rendered string to opts.streams.Err,
+// writes the JSON envelope to opts.streams.Out when --format json
+// is set, and returns the error's Category().ExitCode() together
+// with the error itself.
 //
 // When the command tree returns a nil error, the function returns
 // (ExitSuccess, nil) without writing anything.
@@ -888,12 +1139,12 @@ func hasVerboseArg(args []string) bool {
 // # The output path
 //
 // Successful output is written by the command tree itself, to
-// opts.stdout (which is deps.Stdout). The function does not write
-// to opts.stdout on success; it only wires it to the command
-// tree.
+// opts.streams.Out (which is deps.Streams.Out). The function does
+// not write to opts.streams.Out on success; it only wires it to
+// the command tree.
 //
 // On failure, the function may write the JSON error envelope to
-// opts.stdout. The write is performed by writeFailure
+// opts.streams.Out. The write is performed by writeFailure
 // (output.go), which is a no-op in text mode. The two modes'
 // behaviors are documented in docs/reference/output-streams.md.
 //
@@ -906,27 +1157,30 @@ func hasVerboseArg(args []string) bool {
 // in a test helper outside this package, would violate it and
 // break the single source of truth for command collaborators.
 //
-// # Why the writers are bound twice
+// # Why the streams are bound twice
 //
-// The writers appear in two places: deps.Stdout / deps.Stderr (for
-// commands that read them from the Dependencies struct) and
-// root.SetOut / root.SetErr (for Cobra's internal use, such as
-// printing help text). Both must point to the same underlying
-// writer, or help output would go to one stream and command output
-// to another.
+// The streams appear in two places: deps.Streams (for commands
+// that read them from the Dependencies struct) and
+// root.SetIn/root.SetOut/root.SetErr (for Cobra's internal use,
+// such as printing help text). Both must point to the same
+// underlying streams, or help output would go to one stream and
+// command output to another.
 //
-// The binding below uses opts.stdout and opts.stderr directly, not
-// deps.Stdout and deps.Stderr. This is safe because
-// buildDependencies passes the same writers through unchanged.
-// Using opts.* makes the equivalence explicit and avoids a
-// spurious dependency on deps for the Cobra binding.
+// The binding below uses opts.streams.In, opts.streams.Out, and
+// opts.streams.Err directly, not deps.Streams.In,
+// deps.Streams.Out, and deps.Streams.Err. This is safe because
+// buildDependencies passes the same streams through unchanged.
+// Using opts.streams.* makes the equivalence explicit and avoids
+// a spurious dependency on deps for the Cobra binding.
 //
 // # Why a nil error is not written
 //
 // When the command tree succeeds, nothing is written to stderr.
 // This is the CLI UX contract: a successful invocation produces no
-// diagnostic output. The function returns (ExitSuccess, nil)
-// immediately, without touching opts.stderr.
+// diagnostic output (beyond the logger records that --verbose or
+// FORGE_LOG_LEVEL=debug may enable). The function returns
+// (ExitSuccess, nil) immediately, without touching
+// opts.streams.Err.
 //
 // # Why verbose is read after the command tree runs
 //
@@ -938,14 +1192,21 @@ func hasVerboseArg(args []string) bool {
 // natural: execute the tree, read the flag from the tree, render
 // any error with the flag's value.
 //
-// # Why format and quiet are read after the command tree runs
+// The logger's level is resolved from the same flag earlier in
+// the function (before the tree runs), because the logger must
+// be configured before any command runs. The two reads observe
+// the same flag value; the explicit parse at the flag-parsing
+// stage and Cobra's internal parse both populate the same
+// underlying flag value.
 //
-// The --format and --quiet flags are properties of the invocation,
-// parsed by Cobra during the tree's execution. The error path
-// reads them after the tree returns, in the same way it reads
-// --verbose. The three flags are read together so that a reader
-// sees them as a group: the flags that modify the error path's
-// output.
+// # Why format is read after the command tree runs
+//
+// The --format flag is a property of the invocation, parsed by
+// Cobra during the tree's execution. The error path reads it
+// after the tree returns, in the same way it reads --verbose. The
+// flag determines whether the JSON error envelope is written to
+// stdout; the decision is made after the tree returns, when the
+// error (if any) is available.
 //
 // # The exit-code taxonomy
 //
@@ -964,8 +1225,11 @@ func hasVerboseArg(args []string) bool {
 //     e.g. a config, template, filesystem, or security error.
 //     These are tool malfunctions from the caller's perspective.
 //   - ExitUsage (64): the pre-parse validator rejected the
-//     invocation, or wrapCobraError classified a Cobra parser
-//     error as a usage error.
+//     invocation, the flag-parsing stage rejected the invocation
+//     (an unrecognized command or flag), the log-level resolution
+//     rejected the invocation (--quiet and --verbose together, or
+//     an invalid level name), or wrapCobraError classified a
+//     Cobra parser error as a usage error.
 //   - ExitInternal (70): the boundary wrapped a non-*forgeerr.Error
 //     as FORGE_INTERNAL_UNEXPECTED, or a panic was recovered by
 //     Execute (in which case Execute returns the code, not this
@@ -998,7 +1262,7 @@ func runWithOptions(ctx context.Context, opts options) (int, error) {
 	// forgeerr.Format already includes the trailing newline
 	// (rule F10 of the frozen format).
 	if err := validateArgs(opts.args); err != nil {
-		fmt.Fprint(opts.stderr, forgeerr.Format(err, forgeerr.Options{
+		fmt.Fprint(opts.streams.ErrOrEmpty(), forgeerr.Format(err, forgeerr.Options{
 			Verbose: opts.verbose,
 		}))
 		return exitCodeOf(err), err
@@ -1014,18 +1278,179 @@ func runWithOptions(ctx context.Context, opts options) (int, error) {
 
 	// Bind the injectable inputs and outputs to the command tree.
 	root.SetArgs(opts.args)
-	root.SetIn(opts.stdin)
-	root.SetOut(opts.stdout)
-	root.SetErr(opts.stderr)
+	root.SetIn(opts.streams.In)
+	root.SetOut(opts.streams.Out)
+	root.SetErr(opts.streams.Err)
+
+	// Locate the target command and parse the flags against it
+	// so the log-level resolver can read them (WBS 12.5.1).
+	//
+	// # Why an explicit parse is needed
+	//
+	// Cobra parses flags during ExecuteContext, but the log-level
+	// resolver runs *before* ExecuteContext (it must, because the
+	// logger is installed before the tree runs). Without an
+	// explicit parse here, the resolver would see the flags'
+	// registered defaults (empty string, false, false) and could
+	// not detect a --quiet/--verbose conflict or an invalid
+	// --log-level value.
+	//
+	// # Why Find + ParseFlags
+	//
+	// Cobra's ExecuteContext performs the same two steps
+	// internally: it locates the target command (Find) and
+	// parses the remaining args against that command's flag set
+	// (which includes the inherited persistent flags). Doing the
+	// same here produces the same flag values the resolver
+	// would see if it ran after ExecuteContext.
+	//
+	// The two-step form also handles the "flag after subcommand"
+	// case: `forge version --verbose` produces a `remaining` of
+	// `["--verbose"]` for `versionCmd`, and the parse sets
+	// --verbose on versionCmd's flag set (which shares the
+	// persistent flag's value with root).
+	//
+	// # The help-requested signal
+	//
+	// pflag's Parse returns its ErrHelp sentinel ("pflag: help
+	// requested") when the --help flag is set. This is pflag's
+	// "print help and exit" signal; Cobra intercepts it in
+	// ExecuteContext and produces the help output. Our early
+	// parse runs before ExecuteContext, so the signal surfaces
+	// here. It is not an error: the subsequent ExecuteContext
+	// will produce the help output and exit 0. The early parse
+	// therefore ignores the sentinel and continues, so the
+	// resolver can read the log-level flags (which were parsed
+	// before the help flag fired).
+	//
+	// The comparison uses errPflagHelpRequested, a package-local
+	// sentinel whose message matches pflag's. The sentinel
+	// exists because execute.go is subject to a stdlib-only
+	// import policy (TestStdlibOnlyForExecuteImports); the
+	// alternative — importing github.com/spf13/pflag and
+	// comparing with errors.Is(err, pflag.ErrHelp) — would
+	// violate the policy. See errPflagHelpRequested's docstring
+	// in errors.go for the rationale and the coupling to pflag's
+	// message.
+	//
+	// # Error handling for everything else
+	//
+	// Find and ParseFlags return Cobra parser errors for
+	// unrecognized commands and unrecognized flags. The errors
+	// are classified through wrapCobraError, the same helper the
+	// error path uses, so both early and late parse failures
+	// converge on the same usage-error classification (exit 64).
+	target, remaining, err := root.Find(opts.args)
+	if err != nil {
+		err = wrapCobraError(err)
+		fmt.Fprint(opts.streams.ErrOrEmpty(), forgeerr.Format(err, forgeerr.Options{
+			Verbose: opts.verbose,
+		}))
+		return exitCodeOf(err), err
+	}
+	if err := target.ParseFlags(remaining); err != nil && !isPflagHelpRequested(err) {
+		err = wrapCobraError(err)
+		fmt.Fprint(opts.streams.ErrOrEmpty(), forgeerr.Format(err, forgeerr.Options{
+			Verbose: opts.verbose,
+		}))
+		return exitCodeOf(err), err
+	}
+
+	// Resolve the log level (WBS 12.5.1).
+	//
+	// The resolver reads the flags from `target`, not from
+	// `root`. The target is where the parse above set the flag
+	// values; the root's persistent flag set sees the same
+	// values through Cobra's flag sharing, but reading from the
+	// target is more direct and mirrors Cobra's own read site.
+	//
+	// The resolver also reads FORGE_LOG_LEVEL through opts.env,
+	// not through os.Getenv. This is what makes the env var
+	// testable in-process: a test that injects opts.env sees its
+	// value; a production run sees os.Getenv through the same
+	// path.
+	//
+	// # Why the config-file contribution is empty
+	//
+	// The config file's log.level field is not yet available at
+	// this point: the config file is loaded by the config
+	// command (or by a future command that loads it), and the
+	// tree has not run yet. The resolver is called with "" for
+	// the config value, which the resolver treats as "not
+	// specified".
+	//
+	// A future WBS that changes the config load order (reading
+	// the config file before the tree runs) will pass the loaded
+	// value here. Until then, the config-file field does not
+	// affect the CLI's own log level; the flag and the env var
+	// are the sources.
+	//
+	// # Errors
+	//
+	// resolveLogLevelWithEnv returns a *forgeerr.Error for the
+	// two cases WBS 12.1.2 defines: --quiet and --verbose
+	// together, or an invalid --log-level / FORGE_LOG_LEVEL
+	// value. Both are usage errors (exit 64) and both are
+	// rendered through the same error path as every other
+	// failure.
+	decision, err := resolveLogLevelWithEnv(target, opts.env, "")
+	if err != nil {
+		fmt.Fprint(opts.streams.ErrOrEmpty(), forgeerr.Format(err, forgeerr.Options{
+			Verbose: opts.verbose,
+		}))
+		return exitCodeOf(err), err
+	}
+
+	// Attach the resolved Decision to the context. The
+	// PersistentPreRunE hook (initializeCommandEnvironment) reads
+	// the Decision via logger.DecisionFromContext and constructs
+	// the invocation's logger at that level, storing it on the
+	// same context via logger.IntoContext. Commands and the
+	// library functions read the logger via logger.FromContext.
+	//
+	// # Why the Decision travels on the context
+	//
+	// An earlier design installed the resolved logger via
+	// logger.SetDefault, a process-global mutation. The mutation
+	// is safe in a process with one invocation; it races in a
+	// process with concurrent invocations (the parallel test
+	// suite), because the global logger's sink points at
+	// whichever invocation's stderr buffer was installed most
+	// recently. The context is per-invocation, so it is the only
+	// transport that is safe under concurrency.
+	//
+	// # Why the hook reads the Decision and not the raw flags
+	//
+	// The resolver already applied the precedence chain and
+	// detected the conflict. Re-deriving the level in the hook
+	// would duplicate the chain and risk drift. The Decision is
+	// the resolver's output; the hook is a consumer.
+	//
+	// # Why the Decision is attached here and not in
+	// # buildDependencies
+	//
+	// buildDependencies runs before the resolver (it constructs
+	// the command tree the resolver reads flags from). Attaching
+	// the Decision at that point would capture the zero value.
+	// The correct site is here, after the resolver and before
+	// ExecuteContext.
+	ctx = logger.ContextWithDecision(ctx, decision)
 
 	// Execute the command tree with the context. The tree's
 	// RunE handlers receive the context via cmd.Context() and
 	// may return early if it is cancelled.
-	err := root.ExecuteContext(ctx)
+	//
+	// The tree re-parses the arguments against the target
+	// command's flag set. The re-parse is idempotent with the
+	// explicit parse above; the values the resolver read are the
+	// same values the tree sees.
+	err = root.ExecuteContext(ctx)
 	if err == nil {
-		// Success. No diagnostic output is written. The command
-		// tree has already written any successful output to
-		// opts.stdout. Return (ExitSuccess, nil).
+		// Success. No diagnostic output is written by this
+		// function. The command tree has already written any
+		// successful output to opts.streams.Out. The logger
+		// may have written DEBUG or INFO records to stderr;
+		// those are not this function's concern.
 		return ExitSuccess, nil
 	}
 
@@ -1055,17 +1480,19 @@ func runWithOptions(ctx context.Context, opts options) (int, error) {
 		_ = errors.As(err, &ferr)
 	}
 
-	// Read the invocation flags from the command tree. The flags
-	// are properties of the invocation; they are parsed by Cobra
-	// during the tree's execution, so they are not available
-	// before root.ExecuteContext().
+	// Read the invocation flags from the target command. The
+	// flags are properties of the invocation; they were parsed
+	// at the flag-parsing stage and re-parsed by Cobra during
+	// ExecuteContext, so their values are the same at both read
+	// sites.
 	//
 	// Only --verbose and --format are read here. --quiet is
 	// deliberately NOT read: the flag suppresses informational
-	// log lines (a WBS 12.0 concern), not the error block. See
-	// the comment on the error write below.
-	verbose := verboseRequested(root)
-	format := formatRequested(root)
+	// log lines (WBS 12.0's concern, handled by the logger's
+	// level), not the error block. See the comment on the error
+	// write below.
+	verbose := verboseRequested(target)
+	format := formatRequested(target)
 
 	// Render the error and write it to the injected stderr. The
 	// write is unconditional.
@@ -1074,14 +1501,12 @@ func runWithOptions(ctx context.Context, opts options) (int, error) {
 	//
 	// WBS 7.4.3's flag-interaction contract states explicitly
 	// that errors are never suppressed by --quiet. The flag's
-	// semantics in Phase 2 are "suppress informational log
-	// lines"; Phase 2 emits none, so the flag has no effect on
-	// any Phase 2 output. The error block is not an
-	// informational log line; it is the user-facing explanation
-	// of a failure, and hiding it would make the CLI's failure
-	// modes invisible in the very scenarios (quiet CI runs,
-	// scripted invocations) where the flag is most likely to be
-	// used.
+	// semantics are "suppress informational log lines"; the
+	// error block is not an informational log line; it is the
+	// user-facing explanation of a failure, and hiding it would
+	// make the CLI's failure modes invisible in the very
+	// scenarios (quiet CI runs, scripted invocations) where the
+	// flag is most likely to be used.
 	//
 	// WBS 11.3.2's "suppresses diagnostics" refers to
 	// informational diagnostics, not to the error block. The
@@ -1096,7 +1521,7 @@ func runWithOptions(ctx context.Context, opts options) (int, error) {
 	// The write uses fmt.Fprint, not fmt.Fprintln, because
 	// forgeerr.Format produces the complete byte-exact string
 	// including the trailing newline (rule F10).
-	fmt.Fprint(opts.stderr, forgeerr.Format(err, forgeerr.Options{
+	fmt.Fprint(opts.streams.ErrOrEmpty(), forgeerr.Format(err, forgeerr.Options{
 		Verbose: verbose,
 	}))
 
@@ -1110,7 +1535,7 @@ func runWithOptions(ctx context.Context, opts options) (int, error) {
 	// *forgeerr.Error; a write error here would be a broken pipe
 	// or a closed stream, neither of which the CLI can act on.
 	if ferr != nil {
-		_, _ = writeFailure(opts.stdout, format, ferr)
+		_, _ = writeFailure(opts.streams.OutOrEmpty(), format, ferr)
 	}
 
 	// Map the error to an exit code. The mapping is defined by
@@ -1430,4 +1855,65 @@ func parseUnknownCommandMessage(msg string) (name, parent string) {
 	}
 	parent = rest[parentStart+1 : parentStart+1+parentEnd]
 	return name, parent
+}
+
+// TestOptions is the test-only mirror of the unexported options
+// struct. It is exported so that tests in other packages can
+// construct an invocation without importing the CLI package's
+// internals.
+//
+// # Why a mirror and not the options struct
+//
+// options is unexported; a test outside internal/cli cannot name
+// it. The mirror is a deliberate duplication: a change to options
+// must be reflected here. The compiler enforces the reflection
+// because RunWithOptionsForTest converts the mirror to options.
+//
+// # Why the struct is deliberately narrow
+//
+// The mirror exposes only the process boundary's inputs: the
+// arguments, the three streams, and the environment lookup. It
+// does not expose the injected Config (that lives on the unexported
+// options struct and is exercised by the config command's own
+// tests) or the verbose flag (that is derived from the args).
+//
+// # Stability
+//
+// The type is test-only. It is not part of the public API. A
+// future WBS that removes the seam moves the test/security tests
+// into internal/cli and deletes the type.
+type TestOptions struct {
+	// Args are the command-line arguments, excluding the program
+	// name.
+	Args []string
+
+	// Streams carries the three standard streams.
+	Streams streams.Streams
+
+	// Env reads environment variables by name. A nil function is
+	// treated as "no environment is available"; the resolver and
+	// the config loader see empty strings for every lookup.
+	Env func(string) string
+}
+
+// RunWithOptionsForTest is the test-only entry point. It converts
+// TestOptions to the unexported options and calls runWithOptions.
+//
+// # Why the function exists
+//
+// The internal/cli package's own tests use the unexported runCLI
+// helper. Tests in other packages (test/security, for example)
+// need the same capability. The function is the seam.
+//
+// # What the function does not expose
+//
+// The function does not expose the Dependencies struct, the
+// resolver, or the command tree. It accepts the process boundary's
+// inputs and returns the process boundary's outputs.
+func RunWithOptionsForTest(ctx context.Context, opts TestOptions) (int, error) {
+	return runWithOptions(ctx, options{
+		args:    opts.Args,
+		streams: opts.Streams,
+		env:     opts.Env,
+	})
 }

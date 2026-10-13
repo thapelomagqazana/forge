@@ -205,8 +205,9 @@ var expectedSourceFiles = map[string]string{
 	"validate.go": "WBS 5.2.2 — pre-parse argument validator",
 
 	// WBS 5.3.1 adds the global flag registration and the helpers
-	// that read the parsed values. The three Phase 2 global flags
-	// are documented in docs/cli-ux-spec.md § 4.12.
+	// that read the parsed values. The Phase 2 global flags are
+	// documented in docs/cli-ux-spec.md § 4.12; --log-level was
+	// added by WBS 12.1.2.
 	"flags.go":            "WBS 5.3.1 — global flag registration and readers",
 	"hooks.go":            "WBS 5.3.2 — PersistentPreRunE hook",
 	"help_content.go":     "WBS 7.1.3 — per-command help content contract constants and helpers",
@@ -237,6 +238,18 @@ var expectedSourceFiles = map[string]string{
 	// writeSuccessResult functions, and the successEnvelope type.
 	"error_envelope.go": "WBS 11.3.2 — JSON error envelope encoder",
 	"output.go":         "WBS 11.3.2 — format-aware stdout/stderr writers",
+
+	// WBS 12.4.1 adds the test-only command that the broken-pipe
+	// integration tests invoke. The command is registered
+	// conditionally by registerTestCommands, gated by the
+	// FORGE_TEST environment variable; it is not part of the
+	// production registry and does not appear in production help
+	// output. The file is a source file (not a test file) because
+	// it uses the same *cobra.Command construction pattern as the
+	// production commands; it lives in package cli and is
+	// excluded from the registry bijection by name (see
+	// contract_test.go).
+	"testcmd.go": "WBS 12.4.1 — test-only command for broken-pipe integration tests",
 }
 
 // TestExpectedFilesExist verifies that every file this WBS expects is
@@ -590,6 +603,25 @@ func TestStdlibOnlyForVersionImports(t *testing.T) {
 var expectedExportedFunctions = map[string]string{
 	"Execute":           "WBS 4.1.1 — the CLI's process entry point",
 	"ConfigFromContext": "WBS 8.4.5 — accessor for the resolved configuration",
+	// WBS 12.4.1 — the in-process test seam.
+	//
+	// RunWithOptionsForTest is the injection seam the end-to-end
+	// tests use to run the CLI without spawning a subprocess. It
+	// takes a TestOptions value (arguments, streams, environment
+	// lookup) and returns the same (int, error) shape as Run.
+	//
+	// The function is exported because test/security (a separate
+	// package, black-box with respect to internal/cli) needs to
+	// invoke the CLI's full path. An unexported helper would force
+	// the security tests to spawn the built binary, which would
+	// break their cross-platform guarantee (see the package
+	// docstring of test/security/redaction_test.go).
+	//
+	// The name carries the "ForTest" suffix as a signal to a
+	// reader: this function exists for tests, is not part of the
+	// CLI's process boundary, and should not be called from
+	// production code. cmd/forge/main.go calls Run.
+	"RunWithOptionsForTest": "WBS 12.4.1 — in-process test seam for the end-to-end security tests",
 
 	// WBS 11.2.1 — the error-to-exit-code mapping contract.
 	//
@@ -892,10 +924,20 @@ var expectedConstants = map[string]string{
 	"ExitUsage":           "WBS 11.1.1, ADR-018 — usage error (64, BSD EX_USAGE)",
 	"ExitInvalidArgument": "WBS 11.1.1, ADR-018 — invalid exit argument (128)",
 
-	// Signal codes.
+	// Signal codes. WBS 11.1.1 named the three canonical signals;
+	// WBS 12.4.1 added ExitBrokenPipe in the same range for the
+	// broken-pipe condition.
 	"ExitSIGHUP":  "WBS 11.1.1, ADR-018 — SIGHUP termination (129)",
 	"ExitSIGINT":  "WBS 11.1.1, ADR-018 — SIGINT termination (130)",
 	"ExitSIGTERM": "WBS 11.1.1, ADR-018 — SIGTERM termination (143)",
+
+	// WBS 12.4.1 — the broken-pipe exit code. The value is 141
+	// (128 + SIGPIPE); on Windows, where SIGPIPE does not exist,
+	// the value is a Forge convention that lets a cross-platform
+	// consumer use one exit-code check. The write-site
+	// classification (streams.HandleWriteError) produces the
+	// sentinel; the exit boundary maps the sentinel to this code.
+	"ExitBrokenPipe": "WBS 12.4.1, ADR-022 — broken pipe (141, 128 + SIGPIPE)",
 
 	// Named codes in the findings range.
 	"ExitDriftDetected": "WBS 11.1.1, ADR-018 — drift detected (1, finding)",
@@ -967,10 +1009,12 @@ var expectedConstants = map[string]string{
 	"RootShortDesc": "WBS 5.1.1 — frozen short description (<= 80 chars)",
 	"RootLongDesc":  "WBS 5.1.1 — frozen long description (raw string)",
 
-	// --- WBS 5.3.1 — global flag names ----------------------------
+	// --- WBS 5.3.1 / WBS 9.4.1 / WBS 12.1.2 — global flag names --
 	"FlagVerbose": "WBS 5.3.1 — name of the --verbose global flag",
 	"FlagQuiet":   "WBS 5.3.1 — name of the --quiet global flag",
 	"FlagConfig":  "WBS 5.3.1 — name of the --config global flag",
+	"FlagLogLevel": "WBS 12.1.2 — name of the --log-level global flag " +
+		"(explicit level selector; see ADR-022)",
 
 	// --- WBS 9.4.1 — --format flag --------------------------------
 	"FlagFormat":     "WBS 9.4.1 — name of the --format global flag",

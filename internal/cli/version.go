@@ -9,7 +9,8 @@
 //   - Parses flags.
 //   - Collects arguments (there are none; the command is arg-free).
 //   - Calls the application service.
-//   - Writes the result to deps.Stdout, never to a process-global.
+//   - Writes the result to deps.Streams.Out, never to a
+//     process-global.
 //   - Returns an error on failure; never calls os.Exit.
 //
 // The handler does not:
@@ -33,8 +34,8 @@
 //
 // An unknown value produces a *forgeerr.Error with category
 // CategoryCLI and code CodeCLIUnknownFormat. The handler
-// constructs the error; executeWithOptions renders it and maps
-// its category to the exit code (2, ExitUsage).
+// constructs the error; runWithOptions renders it and maps its
+// category to the exit code (ExitUsage, 64).
 //
 // # Why the error is a *forgeerr.Error
 //
@@ -43,7 +44,7 @@
 // handler returned a plain error wrapped around the service's
 // sentinel; the boundary classified the plain error as
 // FORGE_INTERNAL_UNEXPECTED, and the exit code was
-// ExitFailure (1) instead of ExitUsage (2).
+// ExitInternal (70) instead of ExitUsage (64).
 //
 // The handler now constructs a *forgeerr.Error directly. The
 // category is CategoryCLI, because the failure is a usage error
@@ -68,14 +69,14 @@
 // Two error paths exist:
 //
 //  1. Unknown format — the handler constructs a *forgeerr.Error
-//     with code CodeCLIUnknownFormat. Exit code ExitUsage (2).
+//     with code CodeCLIUnknownFormat. Exit code ExitUsage (64).
 //  2. Write error — the service returns the writer's error,
-//     wrapped by the service. Exit code depends on the service's
-//     category; for a write failure it is ExitFailure (1).
+//     wrapped by the handler as FORGE_INTERNAL_UNEXPECTED. Exit
+//     code is the internal-error code (ExitInternal, 70).
 //
 // Both are returned by the handler; neither is written to stderr
 // by the handler. The error-to-message and error-to-exit-code
-// mapping is done one layer up, in executeWithOptions.
+// mapping is done one layer up, in runWithOptions.
 //
 // # The Example field (WBS 7.1.3)
 //
@@ -100,13 +101,49 @@
 // change to the field's content changes the rendered output and
 // fails TestHelpGolden_Subcommands/version until the golden file
 // is regenerated.
+//
+// # The output stream (WBS 12.4.1)
+//
+// The handler writes product output to deps.Streams.Out. Under
+// the stream contract (ADR-022), product output goes to stdout;
+// diagnostics go to stderr. The version command produces no
+// diagnostics of its own; a failure is returned as an error and
+// the boundary renders it on stderr.
+//
+// # DEBUG records (WBS 12.5.1)
+//
+// The command emits two DEBUG records, both to the process
+// logger (which writes to stderr):
+//
+//  1. "version: resolved build info" — after appversion.Get()
+//     returns, with the version, commit, dirty flag, and the
+//     source the version came from.
+//  2. "version: selected format" — after the format switch
+//     resolves, with the requested format and whether it was
+//     accepted.
+//
+// The two records are the version subsystem's contribution to
+// docs/reference/verbose-mode.md §3. They are emitted through the
+// package-level logger, which the process boundary configures
+// from --verbose / FORGE_LOG_LEVEL before the command tree runs
+// (see internal/cli/execute.go).
+//
+// The records are subject to the same rules as every other DEBUG
+// record: they never carry secrets, they never write to stdout,
+// and they are subject to the redaction policy from ADR-016. The
+// version command's fields (version, commit, dirty, format) are
+// not secrets; a future field that is a secret must be added in
+// the same change as a redaction test.
 package cli
 
 import (
+	"context"
+
 	"github.com/spf13/cobra"
 
 	appversion "github.com/thapelomagqazana/forge/internal/app/version"
 	"github.com/thapelomagqazana/forge/internal/forgeerr"
+	"github.com/thapelomagqazana/forge/internal/logger"
 )
 
 // newVersionCmd constructs the `forge version` command.
@@ -136,21 +173,99 @@ See the CLI UX specification for the frozen format of each.`,
   forge version --format json`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// The dispatch is delegated to the application
-			// service. The service returns a plain error when
-			// the writer fails; the handler wraps it as a
-			// *forgeerr.Error if it is not one.
+			// The context is threaded through for the DEBUG
+			// records (WBS 12.5.1). The records carry the
+			// invocation's correlation ID if one is bound
+			// (see internal/logger's FromContext). When the
+			// command runs outside an invocation — a unit
+			// test that calls RunE directly, for example —
+			// the records carry the zero ID, which a
+			// consumer can filter out.
+			ctx := cmd.Context()
+			if ctx == nil {
+				// Defensive: cobra guarantees a non-nil
+				// context when RunE is invoked through
+				// ExecuteContext, but a caller that invokes
+				// RunE directly may pass nil. A Background
+				// context is the correct fallback; the
+				// logger tolerates it.
+				ctx = context.Background()
+			}
+
+			// Resolve the build info once. The result is used
+			// both by the DEBUG record and by the format
+			// dispatch, so a test that asserts on the record's
+			// fields and a test that asserts on the output
+			// observe the same values.
+			info := appversion.Get()
+
+			// WBS 12.5.1: the build-info resolution record.
 			//
-			// The unknown-format error is constructed below,
-			// before the call, because the service's sentinel
-			// (ErrUnknownFormat) is not a *forgeerr.Error.
-			// Pre-checking the format keeps the handler's
-			// error path uniform: every error the handler
-			// returns is a *forgeerr.Error.
+			// # Why these fields
+			//
+			// version, commit, buildDate, and dirty are the four
+			// fields the version service produces (see the Info
+			// struct's docstring). They are the values a
+			// developer needs to know when diagnosing "which
+			// build is this?". The four fields together are the
+			// minimum for reproducing a build.
+			//
+			// # Why no "source" field
+			//
+			// The Info struct does not carry a source indicator.
+			// An earlier draft of this record included a
+			// "source" field (ldflags / debug.ReadBuildInfo /
+			// fallback), but that information is not exposed by
+			// the version service. Adding it would be a change
+			// to the service's public API, which is outside
+			// WBS 12.5.1's scope. A future WBS that adds a
+			// Source field to Info can extend this record.
+			//
+			// # Why not the full Info struct
+			//
+			// Logging the whole struct would produce a record
+			// whose shape depends on the struct's field set. A
+			// future field addition would silently change the
+			// record's shape. Naming the four fields explicitly
+			// keeps the record's shape stable and documents the
+			// fields a consumer can rely on.
+			logger.Debug(ctx, "version: resolved build info",
+				"version", info.Version,
+				"commit", info.Commit,
+				"build_date", info.BuildDate,
+				"dirty", info.Dirty,
+			)
+
+			// WBS 12.5.1: the format-selection record.
+			//
+			// # What the record reports
+			//
+			// The record names the requested format and whether
+			// it was accepted. A future contributor who reads
+			// the DEBUG output for a failing invocation sees
+			// the format value that caused the failure, without
+			// re-running the command.
+			//
+			// # Why the record is emitted before the error is
+			// # constructed
+			//
+			// The unknown-format branch returns an error. The
+			// DEBUG record is the diagnostic surface for that
+			// branch; emitting it before the error means a user
+			// running with --verbose sees both the DEBUG record
+			// and the rendered error, and can correlate them by
+			// timestamp.
 			switch format {
 			case appversion.FormatText, appversion.FormatJSON:
-				// The value is supported; proceed.
+				logger.Debug(ctx, "version: selected format",
+					"format", format,
+					"accepted", true,
+				)
 			default:
+				logger.Debug(ctx, "version: selected format",
+					"format", format,
+					"accepted", false,
+				)
 				return forgeerr.New(
 					forgeerr.CategoryCLI,
 					string(forgeerr.CodeCLIUnknownFormat),
@@ -160,7 +275,7 @@ See the CLI UX specification for the frozen format of each.`,
 					WithRemediation("Use '--format text' or '--format json'.")
 			}
 
-			if err := appversion.FormatAs(deps.Stdout, appversion.Get(), format); err != nil {
+			if err := appversion.FormatAs(deps.Streams.Out, info, format); err != nil {
 				// The service returned a writer error. Wrap
 				// it as an INTERNAL error, so the invariant
 				// "every error reaching the boundary is a

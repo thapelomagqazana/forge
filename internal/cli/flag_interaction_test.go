@@ -1,9 +1,10 @@
 // Package cli contains white-box tests for the CLI package.
 //
-// This file pins the global flag interaction contract (WBS 7.4.3).
-// The contract specifies how --quiet, --verbose, and --config
-// interact with help output, version output, and error output.
-// Each test asserts one row of the matrix.
+// This file pins the global flag interaction contract (WBS 7.4.3,
+// amended by WBS 12.1.2 and WBS 12.5.1). The contract specifies how
+// --quiet, --verbose, and --config interact with help output,
+// version output, and error output. Each test asserts one row of
+// the matrix.
 //
 // # How the tests invoke the CLI
 //
@@ -18,6 +19,25 @@
 // result (help, version) is asserted on stdout; a diagnostic
 // (error) is asserted on stderr. The flags do not change the
 // boundary; the tests verify that.
+//
+// # The --quiet / --verbose interaction (WBS 12.1.2)
+//
+// Before WBS 12.1.2, --quiet won over --verbose. After WBS 12.1.2,
+// the two flags are mutually exclusive: passing both is a usage
+// error (exit 64). The test that exercises the combination asserts
+// the new behaviour (see TestFlagInteraction_QuietVerboseConflict
+// below). The change is documented in docs/reference/log-levels.md
+// §4.5.
+//
+// # The --verbose DEBUG records (WBS 12.5.1)
+//
+// Under --verbose, the config loader and version service emit
+// DEBUG records to stderr. The tests in this file that exercise
+// --verbose must therefore tolerate the records (or assert their
+// presence), and must not run in parallel with other tests that
+// write to the same stderr buffer. The tests that exercise
+// --verbose are marked as non-parallel where the DEBUG records
+// could race with a concurrently running test.
 //
 // # The --config tests and WBS 8.4.5
 //
@@ -35,6 +55,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -74,9 +95,19 @@ func TestFlagInteraction_QuietHelpPrintsHelp(t *testing.T) {
 //
 // Help is a result; --verbose adds diagnostics to stderr, not
 // content to stdout. The help text is unchanged by --verbose.
+//
+// # Why this test is not parallel
+//
+// --verbose enables DEBUG records on stderr. The records are
+// written through the shared test helper's stderr buffer. A
+// parallel test that reads the same buffer would race. The test
+// is therefore serial with respect to other --verbose tests, but
+// the two runCLI calls within the test are sequential (plain then
+// verbose), so the comparison is stable.
+//
+// The race trace from an earlier run identified this test as one
+// of the racers. Serializing it (removing t.Parallel) is the fix.
 func TestFlagInteraction_VerboseHelpPrintsHelp(t *testing.T) {
-	t.Parallel()
-
 	plain := runCLI(t, []string{"--help"}, nil)
 	verbose := runCLI(t, []string{verboseFlagName, "--help"}, nil)
 
@@ -123,9 +154,23 @@ func TestFlagInteraction_QuietVersionPrintsVersion(t *testing.T) {
 //
 // Version is a result; --verbose adds diagnostics to stderr, not
 // content to stdout. The version output is unchanged by --verbose.
+//
+// # Why this test is not parallel
+//
+// --verbose enables DEBUG records on stderr. The records are
+// written through the shared test helper's stderr buffer. A
+// parallel test that reads the same buffer would race. The test
+// is therefore serial.
+//
+// # What the test does not assert about stderr
+//
+// The test does not assert that stderr is empty. Under --verbose,
+// the config loader and version service emit DEBUG records. The
+// records are correct behaviour (WBS 12.5.1) and the test must
+// not forbid them. A test that wants to assert "no stderr on
+// success" runs without --verbose (see
+// TestFlagInteraction_QuietVersionPrintsVersion).
 func TestFlagInteraction_VerboseVersionPrintsVersion(t *testing.T) {
-	t.Parallel()
-
 	plain := runCLI(t, []string{"version"}, nil)
 	verbose := runCLI(t, []string{verboseFlagName, "version"}, nil)
 
@@ -138,6 +183,9 @@ func TestFlagInteraction_VerboseVersionPrintsVersion(t *testing.T) {
 			"plain:   %q\nverbose: %q",
 			plain.stdout, verbose.stdout)
 	}
+	// stderr is not asserted. Under --verbose, the config loader
+	// and version service emit DEBUG records; their presence is
+	// correct (see the package docstring).
 }
 
 // =============================================================================
@@ -193,9 +241,12 @@ func TestFlagInteraction_QuietUnknownCommandPrintsError(t *testing.T) {
 // in Phase 2. The Phase 2 behaviour is that --verbose does not
 // change the error output; a future WBS item adds the
 // stack-trace mode and amends this test.
+//
+// # Why this test is not parallel
+//
+// --verbose enables DEBUG records on stderr. A parallel test that
+// reads the same buffer would race.
 func TestFlagInteraction_VerboseUnknownCommandPrintsError(t *testing.T) {
-	t.Parallel()
-
 	got := runCLI(t, []string{verboseFlagName, boundaryFixtureUnknownCommand}, nil)
 
 	if got.exitCode != ExitUsage {
@@ -211,30 +262,48 @@ func TestFlagInteraction_VerboseUnknownCommandPrintsError(t *testing.T) {
 }
 
 // =============================================================================
-// --quiet wins over --verbose
+// --quiet and --verbose are mutually exclusive (WBS 12.1.2)
 // =============================================================================
 
-// TestFlagInteraction_QuietWinsOverVerbose verifies that when both
-// --quiet and --verbose are set, --quiet wins.
+// TestFlagInteraction_QuietVerboseConflict verifies that when both
+// --quiet and --verbose are set, the invocation fails with a usage
+// error (exit 64).
 //
-// The rule is documented in the CLI UX spec § 4.11. The test
-// asserts that a successful command produces the same output as
-// without either flag; the two flags cancel each other out, and
-// the effective behaviour is "quiet".
-func TestFlagInteraction_QuietWinsOverVerbose(t *testing.T) {
+// # The rule (WBS 12.1.2)
+//
+// Before WBS 12.1.2, the rule was "--quiet wins": the two flags
+// cancelled each other out, and the invocation succeeded. WBS
+// 12.1.2 made the flags mutually exclusive: they express opposite
+// intents, and silently picking one hides a user error. Passing
+// both is a usage error.
+//
+// The rule is documented in docs/reference/log-levels.md §4.5.
+// The error's message is the sentinel's message ("--quiet and
+// --verbose are mutually exclusive"); the exit code is
+// ExitUsage (64).
+//
+// # What the test asserts
+//
+//   - The exit code is ExitUsage (64), not ExitSuccess.
+//   - stdout is empty: no command runs.
+//   - stderr contains the conflict message.
+func TestFlagInteraction_QuietVerboseConflict(t *testing.T) {
 	t.Parallel()
 
-	plain := runCLI(t, []string{"version"}, nil)
-	both := runCLI(t, []string{quietFlagName, verboseFlagName, "version"}, nil)
+	got := runCLI(t, []string{quietFlagName, verboseFlagName, "version"}, nil)
 
-	if plain.exitCode != ExitSuccess || both.exitCode != ExitSuccess {
-		t.Fatalf("exit codes: plain=%d both=%d",
-			plain.exitCode, both.exitCode)
+	if got.exitCode != ExitUsage {
+		t.Fatalf("exit code: got %d, want %d (ExitUsage)\nstderr: %s",
+			got.exitCode, ExitUsage, got.stderr)
 	}
-	if plain.stdout != both.stdout {
-		t.Errorf("version output differs with both flags:\n"+
-			"plain: %q\nboth:  %q",
-			plain.stdout, both.stdout)
+	if got.stdout != "" {
+		t.Errorf("stdout is non-empty; want nothing\nstdout: %q", got.stdout)
+	}
+	if got.stderr == "" {
+		t.Fatal("stderr is empty; want the conflict message")
+	}
+	if !strings.Contains(got.stderr, "mutually exclusive") {
+		t.Errorf("stderr does not mention mutual exclusion:\n%s", got.stderr)
 	}
 }
 
@@ -288,9 +357,21 @@ func TestFlagInteraction_QuietDoesNotSuppressStdout(t *testing.T) {
 // affect the boundary: no flag, --quiet, --verbose, both. For
 // each combination, an unknown command's error is asserted on
 // stderr, with stdout empty.
+//
+// # The "--quiet --verbose" row (WBS 12.1.2)
+//
+// The combination is a usage error: the flags are mutually
+// exclusive (see TestFlagInteraction_QuietVerboseConflict). The
+// error for this combination is the conflict message, not the
+// unknown-command message. The test asserts that the error still
+// goes to stderr with stdout empty; the message's identity is
+// asserted by the conflict test, not here.
+//
+// # Why the "--verbose" rows are not parallel
+//
+// --verbose enables DEBUG records on stderr. A parallel test that
+// reads the same buffer would race.
 func TestFlagInteraction_ErrorsAlwaysGoToStderr(t *testing.T) {
-	t.Parallel()
-
 	combinations := []struct {
 		name string
 		args []string
@@ -304,7 +385,9 @@ func TestFlagInteraction_ErrorsAlwaysGoToStderr(t *testing.T) {
 	for _, combo := range combinations {
 		combo := combo
 		t.Run(combo.name, func(t *testing.T) {
-			t.Parallel()
+			// The subtests are serial: the --verbose combinations
+			// write DEBUG records to the shared stderr buffer, and
+			// a parallel reader would race.
 
 			args := append([]string{}, combo.args...)
 			args = append(args, boundaryFixtureUnknownCommand)
@@ -465,9 +548,21 @@ func TestFlagInteraction_ConfigMissingHelpPrintsHelp(t *testing.T) {
 //   - stdout is non-empty: the version command produced its
 //     output.
 //   - stderr is empty: the hook succeeded silently.
+//
+// # Why the test is not parallel
+//
+// The test is serial with respect to the other tests in this file
+// because the config loader's DEBUG records (when --verbose is not
+// set, the records are filtered out; when --verbose is set, they
+// are emitted) share the test helper's stderr buffer. This test
+// does not pass --verbose, so no records are emitted, but the
+// helper's buffer is shared across the package's tests and the
+// config loader runs on every invocation. Serializing the test is
+// the safe default.
+//
+// The earlier run's race trace identified this test as one of the
+// racers; serializing it is the fix.
 func TestFlagInteraction_ConfigExistingVersionPrintsVersion(t *testing.T) {
-	t.Parallel()
-
 	// Write a minimal valid config file into a temp directory.
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "forge.yaml")
@@ -491,5 +586,131 @@ func TestFlagInteraction_ConfigExistingVersionPrintsVersion(t *testing.T) {
 	}
 	if got.stderr != "" {
 		t.Errorf("stderr should be empty on success: %q", got.stderr)
+	}
+}
+
+// =============================================================================
+// Quiet mode (WBS 12.6.1)
+// =============================================================================
+
+// TestQuietMode_VersionOutputUnchanged asserts that --quiet does
+// not change the version command's stdout.
+//
+// The version block is product output; --quiet does not suppress
+// it. The test compares the two outputs byte-for-byte.
+func TestQuietMode_VersionOutputUnchanged(t *testing.T) {
+	t.Parallel()
+
+	plain := runCLI(t, []string{"version"}, nil)
+	quiet := runCLI(t, []string{"--quiet", "version"}, nil)
+
+	if plain.exitCode != quiet.exitCode {
+		t.Fatalf("exit codes differ: plain=%d quiet=%d",
+			plain.exitCode, quiet.exitCode)
+	}
+	if plain.stdout != quiet.stdout {
+		t.Fatalf("stdout differs:\nplain: %q\nquiet: %q",
+			plain.stdout, quiet.stdout)
+	}
+}
+
+// TestQuietMode_ConfigOutputUnchanged asserts that --quiet does
+// not change the config command's stdout.
+func TestQuietMode_ConfigOutputUnchanged(t *testing.T) {
+	t.Parallel()
+
+	plain := runCLI(t, []string{"config"}, nil)
+	quiet := runCLI(t, []string{"--quiet", "config"}, nil)
+
+	if plain.exitCode != quiet.exitCode {
+		t.Fatalf("exit codes differ: plain=%d quiet=%d",
+			plain.exitCode, quiet.exitCode)
+	}
+	if plain.stdout != quiet.stdout {
+		t.Fatalf("stdout differs:\nplain: %q\nquiet: %q",
+			plain.stdout, quiet.stdout)
+	}
+}
+
+// TestQuietMode_FormatJSON_StdoutIsValidJSON asserts that
+// --quiet --format json produces a valid JSON document on stdout.
+//
+// The envelope is the command's result in JSON mode; --quiet does
+// not suppress it. The test does not assert on the envelope's
+// contents (those are the command's own tests' concern); it
+// asserts that stdout parses as exactly one JSON document.
+func TestQuietMode_FormatJSON_StdoutIsValidJSON(t *testing.T) {
+	t.Parallel()
+
+	got := runCLI(t, []string{"--quiet", "--format", "json", "config"}, nil)
+
+	if got.exitCode != ExitSuccess {
+		t.Fatalf("exit code: got %d, want %d\nstderr: %s",
+			got.exitCode, ExitSuccess, got.stderr)
+	}
+
+	// The output must decode as exactly one JSON document. A
+	// decoder that finds trailing data after the first document
+	// reports dec.More() == true; the test rejects that.
+	dec := json.NewDecoder(strings.NewReader(got.stdout))
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\nstdout: %q",
+			err, got.stdout)
+	}
+	if dec.More() {
+		t.Fatalf("stdout contains trailing data: %q", got.stdout)
+	}
+}
+
+// TestQuietMode_ErrorStillGoesToStderr asserts that an error's
+// diagnostic reaches stderr under --quiet.
+//
+// The flag sets the log level to ERROR; the error block is not a
+// log record and is not suppressed.
+func TestQuietMode_ErrorStillGoesToStderr(t *testing.T) {
+	t.Parallel()
+
+	got := runCLI(t, []string{"--quiet", "unknown-command"}, nil)
+
+	if got.exitCode != ExitUsage {
+		t.Fatalf("exit code: got %d, want %d",
+			got.exitCode, ExitUsage)
+	}
+	if got.stderr == "" {
+		t.Fatal("stderr is empty; --quiet must not suppress " +
+			"the error block")
+	}
+	if got.stdout != "" {
+		t.Fatalf("stdout is not empty: %q", got.stdout)
+	}
+}
+
+// TestQuietMode_ErrorFormatJSON_ErrorEnvelopeOnStdout asserts
+// that --quiet --format json on failure produces the JSON error
+// envelope on stdout.
+func TestQuietMode_ErrorFormatJSON_ErrorEnvelopeOnStdout(t *testing.T) {
+	t.Parallel()
+
+	got := runCLI(t,
+		[]string{"--quiet", "--format", "json", "unknown-command"}, nil)
+
+	if got.exitCode != ExitUsage {
+		t.Fatalf("exit code: got %d, want %d",
+			got.exitCode, ExitUsage)
+	}
+
+	// The envelope must decode as JSON.
+	dec := json.NewDecoder(strings.NewReader(got.stdout))
+	var env map[string]any
+	if err := dec.Decode(&env); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\nstdout: %q",
+			err, got.stdout)
+	}
+	if env["schemaVersion"] == nil {
+		t.Fatalf("envelope missing schemaVersion: %q", got.stdout)
+	}
+	if env["exitCode"] == nil {
+		t.Fatalf("envelope missing exitCode: %q", got.stdout)
 	}
 }

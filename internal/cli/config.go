@@ -1,14 +1,17 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/thapelomagqazana/forge/internal/config"
+	"github.com/thapelomagqazana/forge/internal/logger"
 )
 
 // =============================================================================
@@ -284,8 +287,8 @@ const configJSONKeyOutputFormatSource = "output_format_source"
 // # Field types
 //
 //   - ConfigPath is *string because the value is nullable: when no
-//     file was resolved, the JSON value is null, not "".
-//   - The other fields are string. LogLevel and OutputFormat are the
+//     file was resolved, the JSON value is null, not "". The other
+//     fields are string. LogLevel and OutputFormat are the
 //     effective values; the *_source fields are the vocabulary
 //     frozen by WBS 9.2.1, rule F6.
 //
@@ -467,7 +470,39 @@ const configDefaultFormat = "text"
 //
 // The handler follows the handler / service boundary (WBS 4.3.1):
 // it is a thin closure, it returns an error (never calls os.Exit),
-// and it writes only through deps.Stdout.
+// and it writes only through deps.Streams.Out.
+//
+// # DEBUG records (WBS 12.5.1)
+//
+// The handler emits three DEBUG records, all to the process logger
+// (which writes to stderr):
+//
+//  1. "config: resolving invocation" — before any resolution, with
+//     the path-mode flag and the requested format. This record
+//     names the two decisions the handler makes.
+//  2. "config: resolved path" — after the resolved Config is
+//     obtained, with the resolved source path (or "(none)"), its
+//     existence on disk, and the resolution mode. This record is
+//     the diagnostic surface for "which file did Forge choose?".
+//  3. "config: selected format" — after the format dispatch, with
+//     the requested format and whether it was accepted. This is the
+//     same shape as the version command's format record.
+//
+// The three records are the config subsystem's contribution to
+// docs/reference/verbose-mode.md §3. The records at deeper layers
+// (discovery candidates, precedence per field) are emitted by
+// internal/config, not by this file; see that package for its
+// records.
+//
+// # Streams (WBS 12.4.1)
+//
+// The handler writes product output to deps.Streams.Out, the
+// process's stdout under the stream contract (ADR-022). It does
+// not write to Streams.Err: `forge config` produces no diagnostics
+// of its own; a failure is returned as an error and the boundary
+// renders it on stderr. The DEBUG records go through the logger,
+// which writes to the process's stderr independently of the
+// injected streams.
 func newConfigCmd(deps Dependencies) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     configCommandUse,
@@ -531,6 +566,14 @@ func newConfigCmd(deps Dependencies) *cobra.Command {
 // therefore the hook). In production, the hook always runs, so the
 // fallback is dormant.
 //
+// # Streams (WBS 12.4.1)
+//
+// The handler writes product output to deps.Streams.Out, the
+// process's stdout under the stream contract (ADR-022). It does
+// not write to Streams.Err: `forge config` produces no diagnostics
+// of its own; a failure is returned as an error and the boundary
+// renders it on stderr.
+//
 // # Format resolution
 //
 // The handler reads --format via a two-step lookup:
@@ -576,6 +619,16 @@ func newConfigCmd(deps Dependencies) *cobra.Command {
 // boundary in execute.go converts the returned error into a stderr
 // diagnostic and a non-success exit code.
 func runConfig(cmd *cobra.Command, deps Dependencies) error {
+	// Resolve the context once. The DEBUG records need it; a
+	// caller that invokes RunE directly (a metadata test, for
+	// example) may pass a nil context, in which case the records
+	// carry the zero correlation ID. See the package docstring's
+	// "DEBUG records" section.
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	// Resolve the effective --format. See the docstring's
 	// "Format resolution" section for why the lookup is
 	// two-step.
@@ -598,14 +651,86 @@ func runConfig(cmd *cobra.Command, deps Dependencies) error {
 			configFlagPath, err)
 	}
 
+	// WBS 12.5.1: the invocation record.
+	//
+	// # Why this record
+	//
+	// The two inputs that determine the handler's dispatch are
+	// the --path flag (which selects the renderer) and the
+	// --format value (which selects the encoding). Recording
+	// them once, before dispatch, gives a reader of the DEBUG
+	// output the answer to "what was this invocation asked to
+	// do?" without descending into the renderer.
+	//
+	// # Why "path_mode" and not "path"
+	//
+	// The key "path" is used by the next record for the
+	// *resolved* path. Using the same key for the flag would
+	// make the two records' "path" fields mean different things,
+	// which is the kind of ambiguity a schema-aware consumer
+	// cannot resolve. "path_mode" names the flag's value (true
+	// or false) and is distinct from "path".
+	logger.Debug(ctx, "config: resolving invocation",
+		"path_mode", showPath,
+		"format", format,
+	)
+
 	// Resolve the Config. Prefer the context transport (the
 	// hook's path); fall back to deps.Config for the isolated
 	// case where the hook did not run. See the docstring's
 	// "Where the resolved Config comes from" section.
 	resolvedCfg := configForDisplay(cmd, deps)
 
+	// WBS 12.5.1: the resolution record.
+	//
+	// # What the record reports
+	//
+	// path is the resolved config file path, or "(none)" when
+	// discovery found nothing. exists distinguishes the two
+	// sub-cases of a non-empty path: a path that names an
+	// existing file and a path that names a file that is no
+	// longer on disk (which can happen if the file was removed
+	// between discovery and this record). mode names the branch
+	// the handler is about to take.
+	//
+	// The record is emitted before the renderer runs, so a
+	// reader sees it even when the renderer fails. The renderer's
+	// own error is reported by the boundary; this record is the
+	// diagnostic context for that error.
+	{
+		path := resolvedCfg.SourcePath
+		displayPath := path
+		if displayPath == "" {
+			displayPath = "(none)"
+		}
+		exists := false
+		if path != "" {
+			if _, statErr := os.Stat(path); statErr == nil {
+				exists = true
+			}
+		}
+		mode := "full"
+		if showPath {
+			mode = "path"
+		}
+		logger.Debug(ctx, "config: resolved path",
+			"path", displayPath,
+			"exists", exists,
+			"mode", mode,
+		)
+	}
+
 	if showPath {
-		if err := writeConfigPath(deps.Stdout, resolvedCfg.SourcePath, format); err != nil {
+		// WBS 12.5.1: the format-selection record for the
+		// --path mode. The path-mode renderer has its own
+		// dispatch on --format; the record names the branch it
+		// takes.
+		logger.Debug(ctx, "config: selected format",
+			"format", format,
+			"mode", "path",
+		)
+
+		if err := writeConfigPath(deps.Streams.Out, resolvedCfg.SourcePath, format); err != nil {
 			return fmt.Errorf("forge config: %w", err)
 		}
 		return nil
@@ -616,13 +741,28 @@ func runConfig(cmd *cobra.Command, deps Dependencies) error {
 	// separate renderers; the shared vocabulary is enforced by
 	// the switch below and the one in writeConfigPath.
 	resolved := resolveForDisplay(resolvedCfg)
+
+	// WBS 12.5.1: the format-selection record for the full
+	// output mode. The record is emitted before the switch so a
+	// reader sees the requested value even when the switch
+	// rejects it; the "accepted" field is computed from the
+	// same value the switch dispatches on.
+	{
+		accepted := format == "json" || format == "text" || format == ""
+		logger.Debug(ctx, "config: selected format",
+			"format", format,
+			"mode", "full",
+			"accepted", accepted,
+		)
+	}
+
 	switch format {
 	case "json":
-		if err := writeConfigJSON(deps.Stdout, resolved); err != nil {
+		if err := writeConfigJSON(deps.Streams.Out, resolved); err != nil {
 			return fmt.Errorf("forge config: %w", err)
 		}
 	case "text", "":
-		if err := printConfig(deps.Stdout, resolved); err != nil {
+		if err := printConfig(deps.Streams.Out, resolved); err != nil {
 			return fmt.Errorf("forge config: %w", err)
 		}
 	default:

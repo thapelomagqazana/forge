@@ -7,15 +7,32 @@
 //
 // # The schema
 //
+// Scalar value fields:
+//
 //	Field         Go name        YAML key        Env var              Flag
 //	LogLevel      LogLevel       log_level       FORGE_LOG_LEVEL      --log-level
 //	OutputFormat  OutputFormat   output_format   FORGE_OUTPUT_FORMAT  --output-format
 //	SourcePath    SourcePath     (metadata)      (metadata)           (metadata)
 //
-// The first two fields are configuration values; the third is
-// metadata. The metadata field has no YAML key, no environment
-// variable, and no flag; the schema's FieldMapping for SourcePath
-// leaves those three fields empty.
+// The first two scalar value fields are configuration values; the
+// third is metadata. The metadata field has no YAML key, no
+// environment variable, and no flag; the schema's FieldMapping for
+// SourcePath leaves those three fields empty.
+//
+// Sections (WBS 12.7.1, recognized by ADR-022):
+//
+//	Field      Go name    YAML key   Env var     Flag
+//	Registry   Registry   registry   (none)      (none)
+//	Telemetry  Telemetry  telemetry  (none)      (none)
+//
+// A section is an exported Config field whose type is a pointer to
+// a struct defined in this package. The section's own YAML key
+// names the nested mapping; the members inside the section
+// (Registry.URL, Registry.Token, ...) have their own YAML tags and
+// are not declared here. Sections are file-only: neither the
+// section itself nor its members has an environment variable or a
+// flag, because the sensitive members are declared `sensitive:
+// true` in the schema and are read from the file only.
 //
 // # Why the mapping is derived, not declared
 //
@@ -51,6 +68,15 @@ import "strings"
 // The field's value is the flag's long name, including the "--"
 // prefix. The field's name (FlagName) matches the schema's
 // vocabulary.
+//
+// # Sections
+//
+// A FieldMapping for a section (see SchemaSectionFields) uses the
+// same shape. The section's YAMLKey is the top-level key of the
+// nested mapping; the section's EnvVar and FlagName are empty
+// because sections are file-only. The struct is shared between
+// scalar value fields and sections so that a caller that walks
+// either list uses one type.
 type FieldMapping struct {
 	// GoName is the field's name in the Go source. It uses
 	// PascalCase.
@@ -72,13 +98,15 @@ type FieldMapping struct {
 	FlagName string
 }
 
-// SchemaFields returns the mappings for every field of the
-// Config type, in the order the fields appear in the type.
+// SchemaFields returns the mappings for every scalar value field
+// of the Config type, in the order the fields appear in the type.
+// It does not return sections; those are returned by
+// SchemaSectionFields.
 //
 // # What the function returns
 //
-// The function returns one FieldMapping per Config field. The
-// order matches the type's declaration order; a caller that
+// The function returns one FieldMapping per scalar value field.
+// The order matches the type's declaration order; a caller that
 // iterates the mappings gets a deterministic result.
 //
 // # How the mappings are derived
@@ -123,8 +151,51 @@ func SchemaFields() []FieldMapping {
 	}
 }
 
-// SchemaFieldCount returns the number of fields the schema
-// declares.
+// SchemaSectionFields returns the mappings for every section of
+// the Config type, in the order the fields appear in the type.
+//
+// # What the function returns
+//
+// The function returns one FieldMapping per section. A section is
+// an exported Config field whose type is a pointer to a struct
+// defined in this package (see scope.go's InScopeSectionNames).
+// The mapping's YAMLKey is the section's top-level YAML key
+// (derived from the Go field name by GoFieldToYAML). The mapping's
+// EnvVar and FlagName are empty: sections are file-only, because
+// their sensitive members are declared `sensitive: true` in the
+// schema and are read from the file only.
+//
+// # What the function does not return
+//
+// The function does not return mappings for the members inside a
+// section (Registry.Token, Telemetry.APIKey, ...). Those members
+// have their own YAML tags on the member fields of the section
+// structs (RegistryConfig, TelemetryConfig); the loader reads
+// them by reflection. Declaring them here would duplicate the
+// member tags and couple this list to the section structs' shapes.
+//
+// # Why a function, not a variable
+//
+// The CLI package's contract test forbids package-level
+// variables. A function that returns a fresh slice on each call
+// has no package-level state.
+func SchemaSectionFields() []FieldMapping {
+	return []FieldMapping{
+		{
+			GoName:  "Registry",
+			YAMLKey: GoFieldToYAML("Registry"),
+			// Sections are file-only: no env var, no flag.
+		},
+		{
+			GoName:  "Telemetry",
+			YAMLKey: GoFieldToYAML("Telemetry"),
+			// Sections are file-only: no env var, no flag.
+		},
+	}
+}
+
+// SchemaFieldCount returns the number of scalar value fields the
+// schema declares.
 //
 // # Why a function
 //
@@ -132,8 +203,10 @@ func SchemaFields() []FieldMapping {
 // that wants the count without the mappings reads the function.
 // A caller that wants the mappings reads SchemaFields.
 //
-// The count is used by the schema test; a future change to the
-// schema's field set updates the test's expectation.
+// The count does not include sections; see SchemaSectionFields
+// for those. The count is used by the schema test; a future
+// change to the schema's scalar value-field set updates the
+// test's expectation.
 func SchemaFieldCount() int {
 	return len(SchemaFields())
 }

@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forge.dev/schemas/log-record.schema.json",
+  "title": "Forge Log Record",
+  "description": "A single diagnostic record emitted to stderr. One JSON object per line (NDJSON). See docs/reference/log-record-format.md and ADR-022.",
+  "x-forge-schema-version": "1",
+  "type": "object",
+  "required": ["ts", "level", "component", "msg", "correlation_id"],
+  "additionalProperties": false,
+  "properties": {
+    "ts": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC3339 timestamp in UTC. Example: 2026-10-13T10:00:00.123456789Z",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    },
+    "level": {
+      "type": "string",
+      "description": "Severity. One of the four levels defined by docs/reference/log-levels.md.",
+      "enum": ["debug", "info", "warn", "error"]
+    },
+    "component": {
+      "type": "string",
+      "description": "Subsystem tag. Closed enumeration; adding a value requires an ADR.",
+      "enum": [
+        "cli",
+        "config",
+        "blueprint",
+        "template",
+        "renderer",
+        "filesystem",
+        "policy"
+      ]
+    },
+    "msg": {
+      "type": "string",
+      "description": "Human-readable summary. Not stable; use attrs for machine-readable values.",
+      "minLength": 1
+    },
+    "correlation_id": {
+      "type": "string",
+      "description": "UUID v4 identifying the invocation. Same value on every record of one invocation; zero UUID when not part of an invocation.",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "attrs": {
+      "type": "object",
+      "description": "Structured key-value data. Free-form; keys are strings, values are JSON-serializable.",
+      "additionalProperties": true,
+      "propertyNames": {
+        "not": {
+          "enum": ["ts", "level", "component", "msg", "correlation_id"]
+        }
+      }
+    }
+  }
+}

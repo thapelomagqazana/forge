@@ -369,6 +369,53 @@ const (
 	// range).
 	ExitSIGTERM = 143
 
+	// ExitBrokenPipe indicates the process wrote to a stream whose
+	// read end had closed, and no further output was possible.
+	//
+	// Trigger: a write to stdout (or stderr) fails with a
+	// broken-pipe error. On Unix, the error is EPIPE; on Windows,
+	// it is ERROR_BROKEN_PIPE. The detection and classification
+	// live in internal/streams (see streams.IsBrokenPipe and
+	// streams.HandleWriteError).
+	//
+	// Range:  Signals (129–255). The value is 128 + 13, the POSIX
+	//         convention for SIGPIPE (128 + N where SIGPIPE is 13).
+	//         Forge does not receive SIGPIPE; Go installs a handler
+	//         that ignores it, and the broken-pipe condition surfaces
+	//         as a write error instead. Forge maps the write error
+	//         to this code so that a cross-platform consumer sees
+	//         one exit code for the condition.
+	//
+	//         A consumer that branches on IsSignal (range 129–255)
+	//         treats this code as it would treat a signal
+	//         termination. That is the intended reading: the
+	//         process terminated because an external event closed
+	//         its stream, not because Forge failed.
+	//
+	// Severity: none. Signal-adjacent codes have no CI severity:
+	//           the termination is not Forge's failure, and the
+	//           record is not part of a successful or unsuccessful
+	//           command's output. A CI system that observes 141
+	//           should treat it as a non-Forge condition.
+	//
+	// Suppressible: no. The behavior is fixed: the process exits
+	//               141 and writes nothing to stderr for the
+	//               broken-pipe condition itself.
+	//
+	// stdout: empty (or truncated at the point the pipe closed).
+	// stderr: empty for the broken pipe; no error block, no stack
+	//         trace.
+	//
+	// Stability: Frozen (the code). The value is pinned by the
+	//            POSIX convention 128 + SIGPIPE and must not change.
+	//            The surrounding signals range is additive, but this
+	//            particular code is one of the named members whose
+	//            value is fixed by the convention.
+	//
+	// See also: docs/reference/output-streams.md §"Broken pipe"
+	//           and docs/reference/exit-codes.yaml.
+	ExitBrokenPipe = 141
+
 	// ExitRangeSignalsMax is the maximum exit code for signal
 	// terminations (128 + N) and reserved high codes.
 	//
@@ -382,7 +429,7 @@ const (
 )
 
 // ---------------------------------------------------------------------------
-// Named codes within the taxonomy (WBS 11.1.1 + WBS 11.1.2)
+// Named codes within the taxonomy (WBS 11.1.1 + WBS 11.1.2 + WBS 12.4.1)
 // ---------------------------------------------------------------------------
 //
 // These are the concrete code assignments. They are the values that
@@ -393,19 +440,28 @@ const (
 // who wants the WBS-item grouping should read the docstrings:
 // each names its trigger and its severity.
 //
-// # WBS 11.1.1 vs. WBS 11.1.2
+// # WBS 11.1.1 vs. WBS 11.1.2 vs. WBS 12.4.1
 //
 // WBS 11.1.1 introduced the taxonomy and a partial enumeration
 // (ExitDriftDetected, ExitValidation, ExitCheckFailed, ExitConfig,
 // ExitTemplate, ExitFilesystem, ExitSecurity, ExitConflict,
 // ExitInternal, ExitUsage, the signal codes). WBS 11.1.2 fills in
-// the remaining triggers and gives every code a severity.
+// the remaining triggers and gives every code a severity. WBS
+// 12.4.1 adds ExitBrokenPipe in the signals range.
 //
-// The WBS 11.1.2 enumeration is ADDITIVE. It does not reclassify,
-// rename, or renumber the codes WBS 11.1.1 already shipped. In
-// particular, ExitConflict stays at 14 (execution-failure range),
-// where WBS 11.1.1 placed it; the WBS 11.1.2 doc's description of
-// the conflict trigger does not move the code.
+// Each addition is ADDITIVE. None of the three renumbers,
+// reclassifies, or renames an existing code. In particular:
+//
+//   - ExitConflict stays at 14 (execution-failure range), where
+//     WBS 11.1.1 placed it.
+//   - The WBS 11.1.2 aliases (ExitUpdateConflict, ExitInternalError,
+//     ExitTemplateNotFound, ExitTemplateIncompatible,
+//     ExitRenderingFailed, ExitPathSafetyViolation,
+//     ExitSecurityPolicyViolation) share their canonical codes'
+//     values.
+//   - ExitBrokenPipe is a new code at 141, in the signals range.
+//     The range's membership was already additive; no boundary
+//     moves.
 //
 // The WBS 11.1.2 names for triggers that WBS 11.1.1 already named
 // are declared as aliases (const X = Y) immediately after the
@@ -704,7 +760,7 @@ const (
 //
 // The empty string is not a valid severity. It is the zero value
 // and is returned by severityOf for codes that have no severity
-// (the signal codes).
+// (the signal codes and the signal-adjacent broken-pipe code).
 type Severity string
 
 const (
@@ -725,9 +781,9 @@ const (
 )
 
 // severityOf returns the severity of a code, or ("", false) if the
-// code has no assigned severity. Signal codes have no severity: the
-// concept does not apply to a user- or supervisor-initiated
-// termination.
+// code has no assigned severity. Signal codes and the
+// signal-adjacent broken-pipe code have no severity: the concept
+// does not apply to a user- or supervisor-initiated termination.
 //
 // The mapping is the machine-readable form of the Severity column
 // in docs/reference/exit-codes.md and of the `severity` field in
@@ -792,8 +848,14 @@ func severityOf(code int) (Severity, bool) {
 	case ExitUsage:
 		return SeverityError, true
 
-	// Signals — no severity.
-	case ExitSIGHUP, ExitSIGINT, ExitSIGTERM:
+	// Signals and signal-adjacent codes — no severity.
+	//
+	// ExitBrokenPipe is grouped here even though Forge does not
+	// receive SIGPIPE: the exit code (141 = 128 + 13) is the
+	// POSIX convention for SIGPIPE, and a consumer that observes
+	// it should read it the same way as a signal termination.
+	// See the constant's docstring.
+	case ExitSIGHUP, ExitSIGINT, ExitSIGTERM, ExitBrokenPipe:
 		return "", false
 	}
 	return "", false
@@ -988,13 +1050,18 @@ var exitCodeRanges = []ExitCodeRange{
 		Name: "Signals (128 + N)",
 		Min:  ExitRangeSignalsMin,
 		Max:  ExitRangeSignalsMax,
-		Purpose: "Process terminated by signal N. The 128 + N mapping is " +
-			"fixed by POSIX; the range's membership is additive (Forge " +
-			"may handle more signals in a future phase). " +
-			"130 = SIGINT, 143 = SIGTERM.",
+		Purpose: "Process terminated by signal N, or by a " +
+			"signal-adjacent condition that the POSIX convention " +
+			"maps to 128 + N. The 128 + N mapping is fixed by " +
+			"POSIX; the range's membership is additive (Forge may " +
+			"handle more conditions in a future phase). " +
+			"130 = SIGINT, 141 = broken pipe (SIGPIPE), " +
+			"143 = SIGTERM.",
 		Stability: StabilityAdditive,
-		CallerGuide: "User or supervisor requested termination. Not a " +
-			"Forge failure. Branch on IsSignal, not on a specific N.",
+		CallerGuide: "User or supervisor requested termination, " +
+			"or the downstream consumer closed the output stream. " +
+			"Not a Forge failure. Branch on IsSignal, not on a " +
+			"specific N.",
 	},
 }
 
@@ -1101,16 +1168,27 @@ func IsInternalError(code int) bool {
 // IsSignal reports whether code is a signal termination (128 + N).
 //
 // The classifier is range-based, not set-based: it returns true for
-// every code in [129, 255], not only for the three named codes
-// (ExitSIGHUP, ExitSIGINT, ExitSIGTERM). The range-based form is the
-// contract: a future phase that handles SIGQUIT (131) or SIGKILL
-// (137) does not need to change the classifier, because the new
-// codes fall in the range the classifier already covers.
+// every code in [129, 255], not only for the named codes
+// (ExitSIGHUP, ExitSIGINT, ExitSIGTERM, ExitBrokenPipe). The
+// range-based form is the contract: a future phase that handles
+// SIGQUIT (131) or SIGKILL (137) does not need to change the
+// classifier, because the new codes fall in the range the classifier
+// already covers.
 //
 // This is the reason the signals range is StabilityAdditive rather
 // than StabilityFrozen: the classifier promises the range, not a
-// specific set of three codes. See the package docstring, section
-// "The two stability properties".
+// specific set of codes. See the package docstring, section "The
+// two stability properties".
+//
+// # ExitBrokenPipe and IsSignal
+//
+// ExitBrokenPipe (141) is returned by IsSignal because it falls in
+// the range. The classification is deliberate: the broken-pipe
+// condition is signal-adjacent (128 + SIGPIPE), and a consumer that
+// branches on IsSignal treats it the same way as a signal
+// termination. The constant's docstring explains the distinction
+// between "received a signal" and "mapped a write error to the
+// signal's conventional exit code".
 func IsSignal(code int) bool {
 	return code >= ExitRangeSignalsMin && code <= ExitRangeSignalsMax
 }
@@ -1171,6 +1249,14 @@ func init() {
 // declared code whose value was moved out of its range) went
 // undetected in an earlier draft. The list below is the
 // completeness check; it must include every distinct code.
+//
+// # WBS 12.4.1 addition
+//
+// ExitBrokenPipe is listed in the signals group. The init check
+// therefore asserts (a) 141 is within [129, 255] and (b) no other
+// distinct code shares the value. A future change that moved the
+// constant outside the signals range panics at program startup
+// with a message naming the constant.
 func checkRangeTableInvariants() error {
 	if len(exitCodeRanges) == 0 {
 		return fmt.Errorf("range table is empty")
@@ -1245,6 +1331,11 @@ func checkRangeTableInvariants() error {
 		{"ExitSIGHUP", ExitSIGHUP},
 		{"ExitSIGINT", ExitSIGINT},
 		{"ExitSIGTERM", ExitSIGTERM},
+
+		// Signal-adjacent, pinned by the POSIX 128 + N convention.
+		// See the constant's docstring and
+		// docs/reference/output-streams.md §"Broken pipe".
+		{"ExitBrokenPipe", ExitBrokenPipe},
 	}
 	for _, n := range named {
 		if err := VerifyExitCodeRange(n.code); err != nil {
@@ -1257,8 +1348,8 @@ func checkRangeTableInvariants() error {
 
 	// Invariant 4b: no two distinct constants share a value.
 	//
-	// The check is the compile-time equivalent of the init check:
-	// a duplicate value would mean a code is overloaded for two
+	// The check is the init-time equivalent of the alias check: a
+	// duplicate value would mean a code is overloaded for two
 	// triggers, which the WBS 11.1.2 acceptance criterion forbids.
 	// Aliases are excluded from the list, so a duplicate here is
 	// a genuine collision, not an alias.

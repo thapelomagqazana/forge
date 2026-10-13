@@ -27,8 +27,10 @@
 //
 // # Contract
 //
-// The file depends on exactly four packages:
+// The file depends on exactly five packages:
 //
+//   - context:      for context.Background(), the parent of the
+//     signal-aware context.
 //   - os:           for os.Exit (the only way to set the process
 //     exit code) and os.Interrupt (the SIGINT signal value passed
 //     to signal.NotifyContext).
@@ -38,11 +40,37 @@
 //     handler's lifetime must match the process's lifetime, and
 //     only main can guarantee that.
 //   - syscall:      for syscall.SIGTERM, the second signal value
-//     passed to signal.NotifyContext.
+//     passed to signal.NotifyContext. syscall.SIGTERM is declared
+//     on every platform Go supports.
 //   - internal/cli: for cli.Run, which owns the entire CLI.
 //
 // No other import is permitted. If a new import seems necessary,
 // the logic that requires it belongs in internal/cli, not here.
+//
+// # Platform-specific signal handling
+//
+// The CLI's broken-pipe contract requires that a write to a pipe
+// whose read end has closed returns an error instead of the
+// process being terminated by the kernel. On Unix, the write
+// delivers SIGPIPE unless the process has installed SIG_IGN for
+// the signal. main installs the disposition by calling
+// installPlatformSignalHandlers, which is provided by two
+// platform-tagged files in this directory:
+//
+//   - signal_init_unix.go  installs SIG_IGN for SIGPIPE.
+//   - signal_init_other.go is a no-op.
+//
+// The split exists because syscall.SIGPIPE is not declared on
+// every platform Go supports (for example, js/wasm). A direct
+// reference from main.go would fail to compile on those
+// platforms; the tagged files confine the reference to the
+// platforms where it exists.
+//
+// On Windows, the broken-pipe condition is ERROR_BROKEN_PIPE,
+// returned by WriteFile as an error, not a signal. The CLI's write
+// sites classify the error via streams.HandleWriteError, which on
+// Windows matches ERROR_BROKEN_PIPE. No signal disposition is
+// needed.
 //
 // # The exit boundary (WBS 11.3.1, ADR-020)
 //
@@ -52,8 +80,8 @@
 //
 // The split is deliberate:
 //
-//   - main owns the process's termination and the signal handler
-//     that triggers it.
+//   - main owns the process's termination and the signal handlers
+//     that influence it.
 //
 //   - internal/cli owns everything else: parsing arguments,
 //     dispatching to commands, rendering errors, deriving the exit
@@ -91,10 +119,14 @@
 //
 // main.go is not tested directly — it has no logic to test beyond
 // the signal registration and the single os.Exit. The signal
-// registration is exercised by the binary integration test in
-// cmd/forge/binary_integration_test.go, which spawns the binary
-// and sends it a signal. The os.Exit call is verified by the
-// same test (the process's exit status is the observable result).
+// registration for SIGINT and SIGTERM is exercised by the binary
+// integration test in cmd/forge/binary_integration_test.go, which
+// spawns the binary and sends it a signal. The SIGPIPE
+// registration is exercised by the broken-pipe tests in the same
+// directory, which spawn the binary, close the read end of its
+// stdout, and observe the exit code. The os.Exit call is verified
+// by the same tests (the process's exit status is the observable
+// result).
 //
 // cli.Run accepts injectable inputs (args, stdout, stderr, env)
 // through the boundary's options value, so every observable
@@ -121,7 +153,8 @@
 // that.
 //
 // See: docs/architecture.md, section "Process Entry Point";
-// docs/architecture/exit-boundary.md; and
+// docs/architecture/exit-boundary.md;
+// docs/reference/output-streams.md §"Broken pipe"; and
 // docs/decisions/ADR-020-exit-boundary-pattern.md.
 package main
 
@@ -136,14 +169,19 @@ import (
 
 // main is the process entry point.
 //
-// It performs exactly two actions:
+// It performs exactly three actions:
 //
-//  1. Installs a signal-aware context for SIGINT and SIGTERM. The
+//  1. Calls installPlatformSignalHandlers to install the
+//     process's platform-specific signal dispositions. On Unix,
+//     this installs SIG_IGN for SIGPIPE. On every other
+//     platform, it is a no-op.
+//
+//  2. Installs a signal-aware context for SIGINT and SIGTERM. The
 //     context is cancelled when either signal arrives; cli.Run
 //     maps the cancellation to the appropriate exit code (130 for
 //     SIGINT, 143 for SIGTERM).
 //
-//  2. Calls cli.Run with that context and forwards the returned
+//  3. Calls cli.Run with that context and forwards the returned
 //     exit code to the operating system via os.Exit.
 //
 // The return value of cli.Run is treated as the *only* observable
@@ -187,6 +225,13 @@ import (
 // somewhere (for example, from an embedding process) would change
 // this line.
 func main() {
+	// Install the process's platform-specific signal
+	// dispositions. On Unix, this installs SIG_IGN for SIGPIPE;
+	// on every other platform, it is a no-op. See
+	// signal_init_unix.go and signal_init_other.go for the
+	// platform-specific implementations.
+	installPlatformSignalHandlers()
+
 	// Install the signal-aware context. The context is cancelled
 	// when SIGINT (Ctrl-C) or SIGTERM arrives. The stop function
 	// unregisters the handler; defer ensures it runs before the

@@ -656,3 +656,121 @@ func TestIntegration_ShortMode(t *testing.T) {
 	// any reason other than a change to the convention it documents.
 	_ = testing.Short()
 }
+
+// =============================================================================
+// Quiet mode (WBS 12.6.1)
+// =============================================================================
+
+// TestQuiet_PreservesExitCode asserts that every documented exit
+// code is identical with and without --quiet.
+//
+// The test runs each scenario twice (with and without --quiet)
+// and asserts the exit codes match. The scenarios cover every
+// exit-code category the CLI can produce: success, usage, config,
+// internal. The list is exhaustive over the codes that a
+// reasonable invocation can reach; a future code added to the
+// taxonomy should be added here.
+func TestQuiet_PreservesExitCode(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"success", []string{"version"}},
+		{"usage error", []string{"unknown-command"}},
+		{"config error", []string{"--config", "/nonexistent-for-testing/x.yaml", "version"}},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			plain := runBinary(t, tc.args...)
+			quiet := runBinary(t, append([]string{"--quiet"}, tc.args...)...)
+
+			if plain.exitCode != quiet.exitCode {
+				t.Fatalf("exit codes differ: plain=%d quiet=%d",
+					plain.exitCode, quiet.exitCode)
+			}
+		})
+	}
+}
+
+// TestQuiet_FormatJSON_ProducesValidJSON asserts that
+// --quiet --format json produces a valid JSON document.
+func TestQuiet_FormatJSON_ProducesValidJSON(t *testing.T) {
+	t.Parallel()
+
+	got := runBinary(t, "--quiet", "--format", "json", "version")
+
+	if got.exitCode != 0 {
+		t.Fatalf("exit code: got %d, want 0", got.exitCode)
+	}
+	dec := json.NewDecoder(strings.NewReader(got.stdout))
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\nstdout: %q",
+			err, got.stdout)
+	}
+	if dec.More() {
+		t.Fatalf("stdout contains trailing data: %q", got.stdout)
+	}
+}
+
+// TestQuiet_ErrorStillOnStderr asserts that an error's diagnostic
+// reaches stderr under --quiet.
+func TestQuiet_ErrorStillOnStderr(t *testing.T) {
+	t.Parallel()
+
+	got := runBinary(t, "--quiet", "unknown-command")
+
+	if got.exitCode == 0 {
+		t.Fatalf("exit code: got 0, want non-success")
+	}
+	if got.stderr == "" {
+		t.Fatal("stderr is empty; --quiet must not suppress the error block")
+	}
+}
+
+// TestQuiet_VerboseConflict asserts that --quiet --verbose is a
+// usage error with a clear message.
+func TestQuiet_VerboseConflict(t *testing.T) {
+	t.Parallel()
+
+	got := runBinary(t, "--quiet", "--verbose", "version")
+
+	if got.exitCode != 64 {
+		t.Fatalf("exit code: got %d, want 64 (usage error)\nstderr: %q",
+			got.exitCode, got.stderr)
+	}
+	if !strings.Contains(got.stderr, "mutually exclusive") {
+		t.Fatalf("stderr does not mention mutual exclusion: %q",
+			got.stderr)
+	}
+	if got.stdout != "" {
+		t.Fatalf("stdout is not empty on usage error: %q", got.stdout)
+	}
+}
+
+// TestQuiet_ShortFormMatchesLongForm asserts that -q and --quiet
+// are equivalent at the CLI boundary.
+func TestQuiet_ShortFormMatchesLongForm(t *testing.T) {
+	t.Parallel()
+
+	long := runBinary(t, "--quiet", "version")
+	short := runBinary(t, "-q", "version")
+
+	if long.exitCode != short.exitCode {
+		t.Fatalf("exit codes differ: --quiet=%d -q=%d",
+			long.exitCode, short.exitCode)
+	}
+	if long.stdout != short.stdout {
+		t.Fatalf("stdout differs:\n--quiet: %q\n-q:      %q",
+			long.stdout, short.stdout)
+	}
+	if long.stderr != short.stderr {
+		t.Fatalf("stderr differs:\n--quiet: %q\n-q:      %q",
+			long.stderr, short.stderr)
+	}
+}

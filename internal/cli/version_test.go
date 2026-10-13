@@ -30,7 +30,7 @@
 //   - Parses flags.
 //   - Collects arguments (none allowed).
 //   - Calls the application service.
-//   - Writes the result to deps.Stdout.
+//   - Writes the result to deps.Streams.Out.
 //   - Returns an error; never calls os.Exit.
 //
 // # Test organisation
@@ -38,7 +38,7 @@
 // The behavioural tests go through the shared runCLI helper in
 // testhelper_test.go rather than constructing a Cobra command
 // directly. The helper exercises the command through the same
-// boundary production code uses (executeWithOptions), which is the
+// boundary production code uses (runWithOptions), which is the
 // property WBS 4.3.2 exists to establish. The structural tests at
 // the bottom of the file read version.go as data and are
 // indifferent to how the command is invoked.
@@ -70,6 +70,7 @@ import (
 	"github.com/spf13/cobra"
 
 	appversion "github.com/thapelomagqazana/forge/internal/app/version"
+	"github.com/thapelomagqazana/forge/internal/streams"
 )
 
 // =============================================================================
@@ -90,7 +91,7 @@ var _ func(Dependencies) *cobra.Command = newVersionCmd
 // These tests exercise the version command the same way a user does:
 // by invoking the CLI with arguments and inspecting the observable
 // result. The shared runCLI helper (in testhelper_test.go) performs
-// the invocation through executeWithOptions, so the test is a
+// the invocation through runWithOptions, so the test is a
 // complete end-to-end exercise of the command tree, the Dependencies
 // transformation, and the handler.
 
@@ -291,7 +292,7 @@ func TestVersionCommand_DelegatesToService(t *testing.T) {
 
 	// Produce the same output by calling the service directly. The
 	// version command's handler calls
-	// appversion.FormatAs(deps.Stdout, appversion.Get(), format);
+	// appversion.FormatAs(deps.Streams.Out, appversion.Get(), format);
 	// this test does the same on a fresh buffer with the default
 	// format.
 	var svcOut bytes.Buffer
@@ -474,7 +475,7 @@ func TestVersionHandler_IsThin(t *testing.T) {
 		"os.Stdout":    "AC4 — write to process-global stream",
 		"os.Stderr":    "AC4 — write to process-global stream",
 		"os.Stdin":     "AC4 — read from process-global stream",
-		"os.Exit":      "AC5 — process exit must be handled by executeWithOptions",
+		"os.Exit":      "AC5 — process exit must be handled by runWithOptions",
 		"fmt.Fprintln": "AC4 — format output directly",
 		"fmt.Fprintf":  "AC4 — format output directly",
 		"fmt.Println":  "AC4 — format output directly",
@@ -638,11 +639,11 @@ func isIdentChar(b byte) bool {
 //
 // The tests below exercise edge cases that are not reachable through
 // the shared runCLI helper, either because they require a specific
-// Dependencies value (nil Stdout) or because they inspect the
+// Dependencies value (nil Out) or because they inspect the
 // handler's behaviour in isolation.
 
 // TestVersionHandler_NilStdoutPanics verifies the handler's behaviour
-// when the injected Stdout is nil.
+// when the injected output stream is nil.
 //
 // The handler does not guard against nil writers: a nil io.Writer
 // panics on first use, and the panic is the correct symptom of a
@@ -654,12 +655,22 @@ func isIdentChar(b byte) bool {
 // through runCLI, because runCLI always supplies a non-nil writer.
 // The direct construction is the only way to reach the nil-writer
 // path.
+//
+// # Why the field is Streams.Out, not Stdout
+//
+// After WBS 12.4.1, the three standard streams travel in a single
+// streams.Streams value on Dependencies. The product output stream
+// is Streams.Out; there is no Stdout field. The test constructs a
+// Streams value with a nil Out and a real Err, matching the shape
+// a caller with a missing output stream would have.
 func TestVersionHandler_NilStdoutPanics(t *testing.T) {
 	t.Parallel()
 
 	deps := Dependencies{
-		Stdout: nil,
-		Stderr: &bytes.Buffer{},
+		Streams: streams.Streams{
+			Out: nil,
+			Err: &bytes.Buffer{},
+		},
 	}
 	cmd := newVersionCmd(deps)
 	cmd.SetOut(&bytes.Buffer{})
@@ -667,7 +678,7 @@ func TestVersionHandler_NilStdoutPanics(t *testing.T) {
 
 	defer func() {
 		if r := recover(); r == nil {
-			t.Error("Execute with nil Stdout did not panic; " +
+			t.Error("Execute with nil Streams.Out did not panic; " +
 				"want panic (documented behaviour)")
 		}
 	}()
