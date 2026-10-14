@@ -1,0 +1,6 @@
+importer \ imported	presentation	application	domain	infrastructure	shared
+presentation	allow	allow	allow	allow	allow
+application	deny	allow	allow	deny	allow
+domain	deny	deny	allow	deny	allow
+infrastructure	deny	deny	allow	allow	allow
+shared	deny	deny	deny	deny	allow

@@ -173,6 +173,7 @@ vars:
     github.com/spf13/pflag
     gopkg.in/yaml.v3
     github.com/stretchr/testify
+    golang.org/x/tools
 
   # ───────────────────────────────────────────────────────────────────────────
   # Markdown lint configuration (WBS 2.1.x — documentation quality)
