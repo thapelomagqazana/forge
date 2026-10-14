@@ -10,6 +10,28 @@
 // for a given category so that table-driven tests can be written
 // without repeating the mapping.
 //
+// # Type-level contract
+//
+// The constructors take their code parameter as forgeerr.Code:
+//
+//	func New(category Category, code Code, message string) *Error
+//	func Wrap(category Category, code Code, message string, cause error) *Error
+//
+// The accessor Error.Code() returns string. The two types are not
+// symmetric, and the asymmetry is intentional:
+//
+//   - The constructor's Code parameter is the write path. It is
+//     guarded so that only registered codes enter an *Error.
+//   - The accessor's string return is the read path. Once a value
+//     has passed the registry check, it is just a string; a read
+//     needs no further guard.
+//
+// The tests below reflect the asymmetry. Positive constructions
+// pass Code constants; accessor comparisons cast the constant to
+// string. Negative tests that deliberately construct an invalid
+// code write Code("...") to make the intent visible at the call
+// site.
+//
 // Organisation:
 //
 //   - Every test is named after the acceptance criterion (AC1–AC9)
@@ -36,7 +58,11 @@ import (
 // mustNew constructs a *Error with the given category, code, and
 // message. It fails the test immediately if construction panics, so
 // callers do not need to wrap every call in a recover.
-func mustNew(tb testing.TB, category Category, code, message string) *Error {
+//
+// The helper takes code as Code. Positive call sites pass registry
+// constants; negative call sites that want to test an invalid code
+// pass an explicit conversion.
+func mustNew(tb testing.TB, category Category, code Code, message string) *Error {
 	tb.Helper()
 	return New(category, code, message)
 }
@@ -94,12 +120,17 @@ func realCodeFor(t *testing.T, cat Category) Code {
 // TestAC1_NewSignature is a compile-time assertion that New has the
 // frozen signature. If a future refactor changes the parameters,
 // this test will fail to compile — which is the intended signal.
+//
+// The assertion is deliberately written against Code, not string:
+// the constructor's parameter type is part of the frozen surface
+// (WBS 10.1.2) and changing it is a breaking change that must be
+// deliberate.
 func TestAC1_NewSignature(t *testing.T) {
 	t.Parallel()
 
-	var _ func(Category, string, string) *Error = New
+	var _ func(Category, Code, string) *Error = New
 
-	e := New(CategoryConfig, string(CodeConfigMalformed), "invalid YAML")
+	e := New(CategoryConfig, CodeConfigMalformed, "invalid YAML")
 	if e == nil {
 		t.Fatal("New returned nil")
 	}
@@ -113,9 +144,9 @@ func TestAC1_NewSignature(t *testing.T) {
 func TestAC2_WrapSignature(t *testing.T) {
 	t.Parallel()
 
-	var _ func(Category, string, string, error) *Error = Wrap
+	var _ func(Category, Code, string, error) *Error = Wrap
 
-	e := Wrap(CategoryFilesystem, string(CodeFilesystemNotFound), "not found", errors.New("underlying"))
+	e := Wrap(CategoryFilesystem, CodeFilesystemNotFound, "not found", errors.New("underlying"))
 	if e == nil {
 		t.Fatal("Wrap returned nil")
 	}
@@ -133,7 +164,7 @@ func TestAC3_WithMethodsSignature(t *testing.T) {
 	var _ func(*Error, string, string) *Error = (*Error).WithContext
 	var _ func(*Error, string) *Error = (*Error).WithRemediation
 
-	e := New(CategoryConfig, string(CodeConfigMalformed), "invalid YAML")
+	e := New(CategoryConfig, CodeConfigMalformed, "invalid YAML")
 	if e.WithCause(errors.New("c")) == nil {
 		t.Fatal("WithCause returned nil")
 	}
@@ -154,7 +185,7 @@ func TestAC4_WrapNilCausePanics(t *testing.T) {
 	t.Parallel()
 
 	expectPanic(t, "nil cause", func() {
-		_ = Wrap(CategoryFilesystem, string(CodeFilesystemNotFound), "not found", nil)
+		_ = Wrap(CategoryFilesystem, CodeFilesystemNotFound, "not found", nil)
 	})
 }
 
@@ -164,7 +195,7 @@ func TestAC4_WrapNilCausePanics(t *testing.T) {
 func TestAC4_WithCauseNilPanics(t *testing.T) {
 	t.Parallel()
 
-	e := New(CategoryConfig, string(CodeConfigMalformed), "invalid YAML")
+	e := New(CategoryConfig, CodeConfigMalformed, "invalid YAML")
 	expectPanic(t, "nil cause", func() {
 		_ = e.WithCause(nil)
 	})
@@ -179,8 +210,8 @@ func TestAC4_WithCauseNilPanics(t *testing.T) {
 func TestAC5_WrapExistingErrorReturnsUnchanged(t *testing.T) {
 	t.Parallel()
 
-	inner := New(CategoryConfig, string(CodeConfigMalformed), "inner")
-	got := Wrap(CategoryFilesystem, string(CodeFilesystemNotFound), "outer", inner)
+	inner := New(CategoryConfig, CodeConfigMalformed, "inner")
+	got := Wrap(CategoryFilesystem, CodeFilesystemNotFound, "outer", inner)
 
 	if got != inner {
 		t.Fatalf("Wrap returned a different *Error: got %p, want %p", got, inner)
@@ -201,10 +232,10 @@ func TestAC5_WrapExistingErrorReturnsUnchanged(t *testing.T) {
 func TestAC5_WrapExistingErrorThroughFmtError(t *testing.T) {
 	t.Parallel()
 
-	inner := New(CategoryConfig, string(CodeConfigMalformed), "inner")
+	inner := New(CategoryConfig, CodeConfigMalformed, "inner")
 	wrapped := fmt.Errorf("context: %w", inner)
 
-	got := Wrap(CategoryFilesystem, string(CodeFilesystemNotFound), "outer", wrapped)
+	got := Wrap(CategoryFilesystem, CodeFilesystemNotFound, "outer", wrapped)
 	if got != inner {
 		t.Fatalf("Wrap did not find inner *Error through fmt.Errorf wrap")
 	}
@@ -219,7 +250,7 @@ func TestAC5_WrapExistingErrorThroughFmtError(t *testing.T) {
 func TestAC6_WithContextImmutability(t *testing.T) {
 	t.Parallel()
 
-	orig := New(CategoryConfig, string(CodeConfigMalformed), "invalid YAML").
+	orig := New(CategoryConfig, CodeConfigMalformed, "invalid YAML").
 		WithContext("a", "1")
 
 	derived := orig.WithContext("b", "2")
@@ -244,7 +275,7 @@ func TestAC6_WithContextImmutability(t *testing.T) {
 func TestAC6_WithContextReplacesExistingKey(t *testing.T) {
 	t.Parallel()
 
-	orig := New(CategoryConfig, string(CodeConfigMalformed), "invalid YAML").
+	orig := New(CategoryConfig, CodeConfigMalformed, "invalid YAML").
 		WithContext("k", "old")
 	derived := orig.WithContext("k", "new")
 
@@ -264,7 +295,7 @@ func TestAC6_WithContextReplacesExistingKey(t *testing.T) {
 func TestAC6_WithContextNilVsEmpty(t *testing.T) {
 	t.Parallel()
 
-	bare := New(CategoryConfig, string(CodeConfigMalformed), "invalid YAML")
+	bare := New(CategoryConfig, CodeConfigMalformed, "invalid YAML")
 	if bare.Context() != nil {
 		t.Fatalf("bare Context() = %v, want nil", bare.Context())
 	}
@@ -284,7 +315,7 @@ func TestAC6_WithCauseImmutability(t *testing.T) {
 	t.Parallel()
 
 	root := errors.New("root")
-	orig := New(CategoryFilesystem, string(CodeFilesystemNotFound), "not found")
+	orig := New(CategoryFilesystem, CodeFilesystemNotFound, "not found")
 	derived := orig.WithCause(root)
 
 	if orig.Unwrap() != nil {
@@ -303,7 +334,7 @@ func TestAC6_WithCauseImmutability(t *testing.T) {
 func TestAC6_WithRemediationImmutability(t *testing.T) {
 	t.Parallel()
 
-	orig := New(CategoryConfig, string(CodeConfigMalformed), "invalid YAML")
+	orig := New(CategoryConfig, CodeConfigMalformed, "invalid YAML")
 	derived := orig.WithRemediation("Fix the YAML syntax.")
 
 	if orig.Remediation() != "" {
@@ -323,7 +354,7 @@ func TestAC6_WithRemediationImmutability(t *testing.T) {
 func TestAC6_ChainedBuildersPreserveBase(t *testing.T) {
 	t.Parallel()
 
-	base := New(CategoryConfig, string(CodeConfigMalformed), "invalid YAML")
+	base := New(CategoryConfig, CodeConfigMalformed, "invalid YAML")
 	built := base.
 		WithCause(errors.New("yaml: line 12")).
 		WithContext("file_path", "/etc/forge/config.yaml").
@@ -364,6 +395,16 @@ func TestAC6_ChainedBuildersPreserveBase(t *testing.T) {
 // is deliberately from a different category, so the prefix check
 // fires before the registry check. Each negative row asserts the
 // prefix diagnostic specifically.
+//
+// # Why the negative rows use real codes from the wrong category
+//
+// The negative rows below pass a registered code under the wrong
+// category. The constructor's prefix check fires before the
+// registry check, so the test exercises the prefix rule, not the
+// registry rule. If a future change reorders the checks, this
+// table would start failing on the registry diagnostic instead —
+// which is exactly the diagnostic visibility the AC7 acceptance
+// criterion is designed to provide.
 func TestAC7_CodePrefixDerivation(t *testing.T) {
 	t.Parallel()
 
@@ -384,7 +425,7 @@ func TestAC7_CodePrefixDerivation(t *testing.T) {
 			tc := tc
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
-				e := New(tc.cat, string(tc.code), "x")
+				e := New(tc.cat, tc.code, "x")
 				if e.Code() != string(tc.code) {
 					t.Fatalf("Code() = %q, want %q", e.Code(), tc.code)
 				}
@@ -413,7 +454,7 @@ func TestAC7_CodePrefixDerivation(t *testing.T) {
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
 				expectPanic(t, "does not start with", func() {
-					_ = New(tc.cat, string(tc.code), "x")
+					_ = New(tc.cat, tc.code, "x")
 				})
 			})
 		}
@@ -425,19 +466,24 @@ func TestAC7_CodePrefixDerivation(t *testing.T) {
 // not a member of the registry (WBS 10.3.1). This is distinct from
 // the prefix check above: the code is well-formed and correctly
 // categorised, but the specific string is not registered.
+//
+// The negative codes are written as Code("...") rather than as
+// bare string literals, because the constructor's parameter is
+// Code. The explicit conversion at the call site is the signal
+// that the test is deliberately constructing a synthetic value.
 func TestAC7_UnregisteredCodePanics(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
 		name string
 		cat  Category
-		code string
+		code Code
 	}{
-		{"config placeholder", CategoryConfig, "FORGE_CONFIG_X"},
-		{"config typo", CategoryConfig, "FORGE_CONFIG_MALFORM"},
-		{"filesystem placeholder", CategoryFilesystem, "FORGE_FILESYSTEM_READ"},
-		{"security placeholder", CategorySecurity, "FORGE_SECURITY_TRAVERSAL"},
-		{"cli placeholder", CategoryCLI, "FORGE_CLI_X"},
+		{"config placeholder", CategoryConfig, Code("FORGE_CONFIG_X")},
+		{"config typo", CategoryConfig, Code("FORGE_CONFIG_MALFORM")},
+		{"filesystem placeholder", CategoryFilesystem, Code("FORGE_FILESYSTEM_READ")},
+		{"security placeholder", CategorySecurity, Code("FORGE_SECURITY_TRAVERSAL")},
+		{"cli placeholder", CategoryCLI, Code("FORGE_CLI_X")},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -456,7 +502,7 @@ func TestAC7_WrapValidatesPrefix(t *testing.T) {
 	t.Parallel()
 
 	expectPanic(t, "does not start with", func() {
-		_ = Wrap(CategoryFilesystem, string(CodeConfigMalformed), "x", errors.New("c"))
+		_ = Wrap(CategoryFilesystem, CodeConfigMalformed, "x", errors.New("c"))
 	})
 }
 
@@ -468,7 +514,7 @@ func TestAC7_WrapValidatesRegistry(t *testing.T) {
 	// FORGE_FILESYSTEM_X matches the regex and carries the correct
 	// prefix, but is not registered.
 	expectPanic(t, "not in the registry", func() {
-		_ = Wrap(CategoryFilesystem, "FORGE_FILESYSTEM_X", "x", errors.New("c"))
+		_ = Wrap(CategoryFilesystem, Code("FORGE_FILESYSTEM_X"), "x", errors.New("c"))
 	})
 }
 
@@ -500,7 +546,7 @@ func TestAC7_PrefixMatchesTaxonomy(t *testing.T) {
 			if !strings.HasPrefix(string(found), c.Prefix()) {
 				t.Fatalf("code %q does not start with prefix %q", found, c.Prefix())
 			}
-			e := New(c, string(found), "x")
+			e := New(c, found, "x")
 			if e.Code() != string(found) {
 				t.Fatalf("Code() = %q, want %q", e.Code(), found)
 			}
@@ -522,8 +568,8 @@ func TestAC7_PrefixMatchesTaxonomy(t *testing.T) {
 func TestAC8_NoCategorylessConstructor(t *testing.T) {
 	t.Parallel()
 
-	var _ func(Category, string, string) *Error = New
-	var _ func(Category, string, string, error) *Error = Wrap
+	var _ func(Category, Code, string) *Error = New
+	var _ func(Category, Code, string, error) *Error = Wrap
 }
 
 // TestAC8_InvalidCategoryPanics asserts that the zero value, a
@@ -531,23 +577,29 @@ func TestAC8_NoCategorylessConstructor(t *testing.T) {
 // non-member are rejected before the prefix check runs. The panic
 // message must reference the closed set, not the prefix, because
 // the category is the more specific failure.
+//
+// The negative categories are written as Category("...") rather
+// than as bare string literals, because the constructor's
+// parameter is Category. The explicit conversion at the call site
+// is the signal that the test is deliberately constructing a
+// synthetic value.
 func TestAC8_InvalidCategoryPanics(t *testing.T) {
 	t.Parallel()
 
 	invalid := []Category{
 		"", // zero value
-		"UNKNOWN",
-		"OTHER", // explicitly forbidden by WBS 10.2.1
-		"cli",   // wrong case
-		"CONFIGX",
-		"FORGE_CONFIG_", // a prefix, not a category
+		Category("UNKNOWN"),
+		Category("OTHER"), // explicitly forbidden by WBS 10.2.1
+		Category("cli"),   // wrong case
+		Category("CONFIGX"),
+		Category("FORGE_CONFIG_"), // a prefix, not a category
 	}
 	for _, c := range invalid {
 		c := c
 		t.Run(fmt.Sprintf("%q", c), func(t *testing.T) {
 			t.Parallel()
 			expectPanic(t, "closed set", func() {
-				_ = New(c, string(CodeConfigMalformed), "x")
+				_ = New(c, CodeConfigMalformed, "x")
 			})
 		})
 	}
@@ -604,36 +656,47 @@ func TestAC9_EveryConstructorHasTests(t *testing.T) {
 
 // TestNew_InvariantPanics covers the constructor's invariant checks
 // for New. Each row violates exactly one rule.
+//
+// # Why some rows use a registered code and others do not
+//
+// Rows that exercise the code-shape rules (I1, I3) or the registry
+// rule (WBS 10.3.1) pass synthetic codes, because the failure is
+// the code itself. Rows that exercise the message rules (I2, I4,
+// I5) pass a registered code so that the failure is unambiguously
+// the message, not the code. The row's `want` substring names the
+// rule; if a future change reorders the constructor's checks, the
+// row's message would surface a different diagnostic and the test
+// would fail — which is the intended visibility.
 func TestNew_InvariantPanics(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name string
 		cat  Category
-		code string
+		code Code
 		msg  string
 		want string
 	}{
 		// I1 / I3 — code-shape rules.
 		{"empty code", CategoryConfig, "", "x", "code must not be empty"},
-		{"code lowercase", CategoryConfig, "forge_config_malformed", "x", "does not match"},
-		{"code missing prefix", CategoryConfig, "CONFIG_MALFORMED", "x", "does not match"},
-		{"code leading digit", CategoryConfig, "FORGE_1X", "x", "does not match"},
-		{"code leading underscore", CategoryConfig, "FORGE__X", "x", "does not match"},
-		{"code lowercase in tail", CategoryConfig, "FORGE_Config", "x", "does not match"},
-		{"code empty tail", CategoryConfig, "FORGE_", "x", "does not match"},
+		{"code lowercase", CategoryConfig, Code("forge_config_malformed"), "x", "does not match"},
+		{"code missing prefix", CategoryConfig, Code("CONFIG_MALFORMED"), "x", "does not match"},
+		{"code leading digit", CategoryConfig, Code("FORGE_1X"), "x", "does not match"},
+		{"code leading underscore", CategoryConfig, Code("FORGE__X"), "x", "does not match"},
+		{"code lowercase in tail", CategoryConfig, Code("FORGE_Config"), "x", "does not match"},
+		{"code empty tail", CategoryConfig, Code("FORGE_"), "x", "does not match"},
 		// WBS 10.3.1 — registry membership. These codes are
 		// well-formed and carry the config prefix, but are not
 		// registered.
-		{"code not in registry", CategoryConfig, "FORGE_CONFIG_X", "x", "not in the registry"},
-		{"code typo", CategoryConfig, "FORGE_CONFIG_MALFORM", "x", "not in the registry"},
+		{"code not in registry", CategoryConfig, Code("FORGE_CONFIG_X"), "x", "not in the registry"},
+		{"code typo", CategoryConfig, Code("FORGE_CONFIG_MALFORM"), "x", "not in the registry"},
 		// I2 / I4 / I5 — message rules. These rows use a registered
 		// code so that the failure is unambiguously the message.
-		{"empty message", CategoryConfig, string(CodeConfigMalformed), "", "message must not be empty"},
-		{"message 81 bytes", CategoryConfig, string(CodeConfigMalformed), strings.Repeat("a", 81), "exceeds 80"},
-		{"message ends with period", CategoryConfig, string(CodeConfigMalformed), "bad.", "must not end with a period"},
-		{"message contains newline", CategoryConfig, string(CodeConfigMalformed), "bad\nline", "single line"},
-		{"message contains CR", CategoryConfig, string(CodeConfigMalformed), "bad\rline", "single line"},
+		{"empty message", CategoryConfig, CodeConfigMalformed, "", "message must not be empty"},
+		{"message 81 bytes", CategoryConfig, CodeConfigMalformed, strings.Repeat("a", 81), "exceeds 80"},
+		{"message ends with period", CategoryConfig, CodeConfigMalformed, "bad.", "must not end with a period"},
+		{"message contains newline", CategoryConfig, CodeConfigMalformed, "bad\nline", "single line"},
+		{"message contains CR", CategoryConfig, CodeConfigMalformed, "bad\rline", "single line"},
 	}
 	for _, tc := range tests {
 		tc := tc
@@ -651,7 +714,7 @@ func TestNew_InvariantPanics(t *testing.T) {
 func TestWithContext_KeyPanics(t *testing.T) {
 	t.Parallel()
 
-	base := New(CategoryConfig, string(CodeConfigMalformed), "invalid YAML")
+	base := New(CategoryConfig, CodeConfigMalformed, "invalid YAML")
 
 	tests := []struct {
 		name string
@@ -685,7 +748,7 @@ func TestWithContext_KeyPanics(t *testing.T) {
 func TestWithContext_KeyAccepted(t *testing.T) {
 	t.Parallel()
 
-	base := New(CategoryConfig, string(CodeConfigMalformed), "invalid YAML")
+	base := New(CategoryConfig, CodeConfigMalformed, "invalid YAML")
 
 	for _, key := range []string{
 		"a",
@@ -711,7 +774,7 @@ func TestWithContext_KeyAccepted(t *testing.T) {
 func TestWithRemediation_Panics(t *testing.T) {
 	t.Parallel()
 
-	base := New(CategoryConfig, string(CodeConfigMalformed), "invalid YAML")
+	base := New(CategoryConfig, CodeConfigMalformed, "invalid YAML")
 
 	tests := []struct {
 		name string
@@ -745,8 +808,7 @@ func TestWithRemediation_Panics(t *testing.T) {
 
 // --- Boundary: message length -----------------------------------------
 
-// TestNew_MessageLengthBoundary pins the exact accepted boundary of
-// the message length rule. The limit is measured in bytes (len),
+// TestNew_MessageLengthBoundary pins the exact accepted boundary of// the message length rule. The limit is measured in bytes (len),
 // not runes; this test documents that choice so a future switch to
 // utf8.RuneCountInString is a deliberate change.
 func TestNew_MessageLengthBoundary(t *testing.T) {
@@ -754,18 +816,18 @@ func TestNew_MessageLengthBoundary(t *testing.T) {
 
 	// Boundary: exactly 80 bytes is accepted.
 	ok80 := strings.Repeat("a", 80)
-	e := mustNew(t, CategoryConfig, string(CodeConfigMalformed), ok80)
+	e := mustNew(t, CategoryConfig, CodeConfigMalformed, ok80)
 	if len(e.Message()) != 80 {
 		t.Fatalf("len = %d", len(e.Message()))
 	}
 
 	// Boundary: 81 bytes is the first invalid length.
 	expectPanic(t, "exceeds 80", func() {
-		_ = New(CategoryConfig, string(CodeConfigMalformed), strings.Repeat("a", 81))
+		_ = New(CategoryConfig, CodeConfigMalformed, strings.Repeat("a", 81))
 	})
 
 	// Boundary: a single-character message is accepted.
-	e = mustNew(t, CategoryConfig, string(CodeConfigMalformed), "x")
+	e = mustNew(t, CategoryConfig, CodeConfigMalformed, "x")
 	if e.Message() != "x" {
 		t.Fatalf("Message() = %q", e.Message())
 	}
@@ -776,7 +838,7 @@ func TestNew_MessageLengthBoundary(t *testing.T) {
 	if len(twoByte) != 80 {
 		t.Fatalf("test setup: byte length = %d", len(twoByte))
 	}
-	e = mustNew(t, CategoryConfig, string(CodeConfigMalformed), twoByte)
+	e = mustNew(t, CategoryConfig, CodeConfigMalformed, twoByte)
 	if len(e.Message()) != 80 {
 		t.Fatalf("byte length = %d", len(e.Message()))
 	}
@@ -796,7 +858,7 @@ func TestBDD_ConfigLoadFailure(t *testing.T) {
 	// When: the config loader wraps the parse failure.
 	e := Wrap(
 		CategoryConfig,
-		string(CodeConfigMalformed),
+		CodeConfigMalformed,
 		"invalid YAML in config.yaml",
 		yamlErr,
 	).WithContext("file_path", "/etc/forge/config.yaml").
@@ -830,8 +892,8 @@ func TestBDD_ConfigLoadFailure(t *testing.T) {
 func TestBDD_ChainPreservesBothCodes(t *testing.T) {
 	t.Parallel()
 
-	inner := New(CategoryFilesystem, string(CodeFilesystemNotFound), "read failed")
-	outer := New(CategoryConfig, string(CodeConfigMalformed), "config invalid").
+	inner := New(CategoryFilesystem, CodeFilesystemNotFound, "read failed")
+	outer := New(CategoryConfig, CodeConfigMalformed, "config invalid").
 		WithCause(inner)
 
 	if !errors.Is(outer, inner) {
@@ -848,7 +910,7 @@ func TestBDD_ChainPreservesBothCodes(t *testing.T) {
 
 	// errors.Is on a synthetic target with the same Code as inner
 	// must match through the chain.
-	synthetic := New(CategoryFilesystem, string(CodeFilesystemNotFound), "different message")
+	synthetic := New(CategoryFilesystem, CodeFilesystemNotFound, "different message")
 	if !errors.Is(outer, synthetic) {
 		t.Fatal("errors.Is did not match inner by Code through chain")
 	}
@@ -862,7 +924,7 @@ func TestBDD_ChainPreservesBothCodes(t *testing.T) {
 // test would not catch a regression in which a WithX method
 // mutated the receiver, so each branch both reads and writes.
 func TestConcurrentBuilders(t *testing.T) {
-	base := New(CategoryConfig, string(CodeConfigMalformed), "invalid YAML").
+	base := New(CategoryConfig, CodeConfigMalformed, "invalid YAML").
 		WithContext("k", "v")
 
 	var wg sync.WaitGroup
@@ -913,7 +975,7 @@ func BenchmarkNew(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = New(CategoryConfig, string(CodeConfigMalformed), "invalid YAML")
+		_ = New(CategoryConfig, CodeConfigMalformed, "invalid YAML")
 	}
 }
 
@@ -921,7 +983,7 @@ func BenchmarkNew(b *testing.B) {
 // context map is copied on each call, so this is expected to
 // allocate O(len(context)) per step.
 func BenchmarkWithContext(b *testing.B) {
-	base := New(CategoryConfig, string(CodeConfigMalformed), "invalid YAML").
+	base := New(CategoryConfig, CodeConfigMalformed, "invalid YAML").
 		WithContext("a", "1").
 		WithContext("b", "2")
 	b.ReportAllocs()
@@ -937,6 +999,16 @@ func BenchmarkWithContext(b *testing.B) {
 // acceptance predicate of New (code matches the regex, carries the
 // config prefix, and is a member of the registry) and "constructs
 // without panicking". The category is fixed to CategoryConfig.
+//
+// The fuzzer's input is a string. The constructor's parameter is
+// Code, so the call site passes Code(code). The conversion is a
+// deliberate, test-local step: it produces a value of the right
+// type so the constructor can be called, and the constructor's
+// runtime checks decide whether that value is acceptable.
+//
+// The acceptance predicate below is the hand-written mirror of the
+// constructor's rules. The fuzzer's job is to detect divergence
+// between the predicate and the constructor's behaviour.
 func FuzzCodeFormat(f *testing.F) {
 	seeds := []string{
 		string(CodeConfigMalformed),
@@ -975,7 +1047,7 @@ func FuzzCodeFormat(f *testing.F) {
 				t.Fatalf("invalid code %q did not panic", code)
 			}
 		}()
-		_ = New(CategoryConfig, code, "x")
+		_ = New(CategoryConfig, Code(code), "x")
 	})
 }
 
@@ -1011,7 +1083,7 @@ func FuzzMessage(f *testing.F) {
 				t.Fatalf("invalid message %q did not panic", msg)
 			}
 		}()
-		_ = New(CategoryConfig, string(CodeConfigMalformed), msg)
+		_ = New(CategoryConfig, CodeConfigMalformed, msg)
 	})
 }
 
@@ -1036,7 +1108,7 @@ func FuzzContextKey(f *testing.F) {
 		f.Add(s)
 	}
 
-	base := New(CategoryConfig, string(CodeConfigMalformed), "invalid YAML")
+	base := New(CategoryConfig, CodeConfigMalformed, "invalid YAML")
 
 	f.Fuzz(func(t *testing.T, key string) {
 		wantValid := isSnakeCase(key)

@@ -11,6 +11,20 @@
 // The tests reference the codes by their named constants rather
 // than by numeric literals, so a future additive change to the
 // taxonomy does not require editing every assertion.
+//
+// # Type-level contract
+//
+// forgeerr.New and forgeerr.Wrap take their code parameter as
+// forgeerr.Code. Every constructor call in this file passes the
+// named constants from internal/forgeerr/codes.go directly. A
+// string(...) cast in a constructor call is the diagnostic that
+// the migration documented in safefs/errors.go was rolled back.
+//
+// The accessor (*Error).Code() returns string; where a test
+// compares it against a named constant, the cast is on the
+// constant's side: e.Code() != string(forgeerr.CodeXXX). No such
+// comparison appears in this file; every cast here has been
+// removed.
 package cli
 
 import (
@@ -138,6 +152,12 @@ func TestMapping_ContextDeadlineExceeded(t *testing.T) {
 // The test constructs one error per category and asserts the
 // mapping's result. The taxonomy is closed (WBS 10.2.1), so the
 // set is enumerated here rather than discovered dynamically.
+//
+// # Type-level contract
+//
+// Every forgeerr.New call passes the code as forgeerr.Code (the
+// named constants from codes.go). The constructor's parameter is
+// forgeerr.Code after the WBS 13.1.1 / ADR-035 migration.
 func TestMapping_ForgeError(t *testing.T) {
 	t.Parallel()
 
@@ -156,7 +176,7 @@ func TestMapping_ForgeError(t *testing.T) {
 		t.Run(string(tc.cat), func(t *testing.T) {
 			t.Parallel()
 
-			e := forgeerr.New(tc.cat, string(tc.code), "message")
+			e := forgeerr.New(tc.cat, tc.code, "message")
 			got := ExitCode(e)
 			want := tc.cat.ExitCode()
 			if got != want {
@@ -175,7 +195,7 @@ func TestMapping_WrappedForgeError(t *testing.T) {
 
 	inner := forgeerr.New(
 		forgeerr.CategoryConfig,
-		string(forgeerr.CodeConfigMalformed),
+		forgeerr.CodeConfigMalformed,
 		"invalid YAML",
 	)
 	cases := []struct {
@@ -243,7 +263,7 @@ func TestMapping_ForgeErrorWrappingCanceled(t *testing.T) {
 
 	e := forgeerr.Wrap(
 		forgeerr.CategoryConfig,
-		string(forgeerr.CodeConfigMalformed),
+		forgeerr.CodeConfigMalformed,
 		"config load cancelled",
 		context.Canceled,
 	)
@@ -274,7 +294,7 @@ func TestMapping_ForgeErrorWrappingDeadline(t *testing.T) {
 
 	e := forgeerr.Wrap(
 		forgeerr.CategoryConfig,
-		string(forgeerr.CodeConfigMalformed),
+		forgeerr.CodeConfigMalformed,
 		"config load timed out",
 		context.DeadlineExceeded,
 	)
@@ -320,9 +340,9 @@ func TestMapping_ResultIsInRange(t *testing.T) {
 		context.DeadlineExceeded,
 		errors.New("plain"),
 		fmt.Errorf("wrapped: %w", context.Canceled),
-		forgeerr.New(forgeerr.CategoryConfig, string(forgeerr.CodeConfigMalformed), "x"),
-		forgeerr.New(forgeerr.CategorySecurity, string(forgeerr.CodeSecurityPathTraversal), "x"),
-		forgeerr.New(forgeerr.CategoryInternal, string(forgeerr.CodeInternalUnexpected), "x"),
+		forgeerr.New(forgeerr.CategoryConfig, forgeerr.CodeConfigMalformed, "x"),
+		forgeerr.New(forgeerr.CategorySecurity, forgeerr.CodeSecurityPathTraversal, "x"),
+		forgeerr.New(forgeerr.CategoryInternal, forgeerr.CodeInternalUnexpected, "x"),
 	}
 	for _, err := range cases {
 		code := ExitCode(err)
@@ -357,7 +377,7 @@ func TestMapping_IsTotal(t *testing.T) {
 		context.Canceled,
 		context.DeadlineExceeded,
 		customError{msg: "custom"},
-		forgeerr.New(forgeerr.CategoryCLI, string(forgeerr.CodeCLIUnknownCommand), "x"),
+		forgeerr.New(forgeerr.CategoryCLI, forgeerr.CodeCLIUnknownCommand, "x"),
 	}
 
 	for _, err := range inputs {
@@ -388,11 +408,11 @@ func TestAC_11_2_1_MappingIsTotal(t *testing.T) {
 		context.DeadlineExceeded,
 		errors.New("plain"),
 		fmt.Errorf("wrapped: %w", errors.New("inner")),
-		forgeerr.New(forgeerr.CategoryCLI, string(forgeerr.CodeCLIUnknownCommand), "x"),
-		forgeerr.New(forgeerr.CategoryConfig, string(forgeerr.CodeConfigMalformed), "x"),
-		forgeerr.New(forgeerr.CategoryFilesystem, string(forgeerr.CodeFilesystemNotFound), "x"),
-		forgeerr.New(forgeerr.CategorySecurity, string(forgeerr.CodeSecurityPathTraversal), "x"),
-		forgeerr.New(forgeerr.CategoryInternal, string(forgeerr.CodeInternalUnexpected), "x"),
+		forgeerr.New(forgeerr.CategoryCLI, forgeerr.CodeCLIUnknownCommand, "x"),
+		forgeerr.New(forgeerr.CategoryConfig, forgeerr.CodeConfigMalformed, "x"),
+		forgeerr.New(forgeerr.CategoryFilesystem, forgeerr.CodeFilesystemNotFound, "x"),
+		forgeerr.New(forgeerr.CategorySecurity, forgeerr.CodeSecurityPathTraversal, "x"),
+		forgeerr.New(forgeerr.CategoryInternal, forgeerr.CodeInternalUnexpected, "x"),
 	}
 	for _, err := range inputs {
 		code := ExitCode(err)
@@ -413,7 +433,7 @@ func TestAC_11_2_1_ErrorIsUnwrappable(t *testing.T) {
 
 	inner := forgeerr.New(
 		forgeerr.CategoryConfig,
-		string(forgeerr.CodeConfigMalformed),
+		forgeerr.CodeConfigMalformed,
 		"invalid YAML",
 	)
 	outer := fmt.Errorf("a: %w",
@@ -532,7 +552,7 @@ func TestBDD_ConfigErrorIsAnExecutionFailure(t *testing.T) {
 	// GIVEN Forge cannot load forge.yaml
 	err := forgeerr.New(
 		forgeerr.CategoryConfig,
-		string(forgeerr.CodeConfigMalformed),
+		forgeerr.CodeConfigMalformed,
 		"invalid YAML",
 	)
 
@@ -572,7 +592,7 @@ func TestBDD_DeeplyWrappedStructuredErrorIsFound(t *testing.T) {
 	// GIVEN a *forgeerr.Error wrapped in three fmt.Errorf layers
 	inner := forgeerr.New(
 		forgeerr.CategorySecurity,
-		string(forgeerr.CodeSecurityPathTraversal),
+		forgeerr.CodeSecurityPathTraversal,
 		"path escapes the root",
 	)
 	err := fmt.Errorf("a: %w", fmt.Errorf("b: %w", fmt.Errorf("c: %w", inner)))
@@ -604,7 +624,7 @@ func TestMapping_IsPure(t *testing.T) {
 
 	e := forgeerr.New(
 		forgeerr.CategoryConfig,
-		string(forgeerr.CodeConfigMalformed),
+		forgeerr.CodeConfigMalformed,
 		"invalid YAML",
 	)
 	// Capture the observable properties before.
@@ -658,7 +678,7 @@ func TestMapping_AgreesWithExitCodeOf(t *testing.T) {
 				t.Skipf("no registered code for category %s", cat)
 			}
 
-			e := forgeerr.New(cat, string(code), "message")
+			e := forgeerr.New(cat, code, "message")
 
 			got := ExitCode(e)
 			want := exitCodeOf(e)
@@ -675,7 +695,7 @@ func TestMapping_AgreesWithExitCodeOf(t *testing.T) {
 func BenchmarkExitCode_ForgeError(b *testing.B) {
 	err := forgeerr.New(
 		forgeerr.CategoryConfig,
-		string(forgeerr.CodeConfigMalformed),
+		forgeerr.CodeConfigMalformed,
 		"benchmark error",
 	)
 	b.ReportAllocs()
@@ -702,7 +722,7 @@ func BenchmarkExitCode_Nil(b *testing.B) {
 func BenchmarkExitCode_WrappedForgeError(b *testing.B) {
 	inner := forgeerr.New(
 		forgeerr.CategoryConfig,
-		string(forgeerr.CodeConfigMalformed),
+		forgeerr.CodeConfigMalformed,
 		"benchmark error",
 	)
 	err := fmt.Errorf("outer: %w", inner)
@@ -729,19 +749,19 @@ func TestBDD_EveryDomainErrorHasAStructuredExitCode(t *testing.T) {
 	errs := []error{
 		// config package
 		forgeerr.New(forgeerr.CategoryConfig,
-			string(forgeerr.CodeConfigMalformed), "invalid YAML"),
+			forgeerr.CodeConfigMalformed, "invalid YAML"),
 		// filesystem package
 		forgeerr.New(forgeerr.CategoryFilesystem,
-			string(forgeerr.CodeFilesystemNotFound), "path not found"),
+			forgeerr.CodeFilesystemNotFound, "path not found"),
 		// cli package
 		forgeerr.New(forgeerr.CategoryCLI,
-			string(forgeerr.CodeCLIUnknownCommand), "unknown command"),
+			forgeerr.CodeCLIUnknownCommand, "unknown command"),
 		// app/version package
 		forgeerr.New(forgeerr.CategoryInternal,
-			string(forgeerr.CodeInternalUnexpected), "unexpected"),
+			forgeerr.CodeInternalUnexpected, "unexpected"),
 		// security category
 		forgeerr.New(forgeerr.CategorySecurity,
-			string(forgeerr.CodeSecurityPathTraversal), "path escape"),
+			forgeerr.CodeSecurityPathTraversal, "path escape"),
 	}
 
 	// WHEN a shell script reads the exit code

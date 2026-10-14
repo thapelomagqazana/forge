@@ -270,17 +270,20 @@
 //
 // # Why the pflag import is not used
 //
-// The early parse ignores pflag.ErrHelp (the "pflag: help
-// requested" signal). The check is performed against a package-
-// local sentinel (errPflagHelpRequested, defined in errors.go) so
-// that execute.go does not import github.com/spf13/pflag. The
-// package's import policy (TestStdlibOnlyForExecuteImports)
-// permits only the standard library and Forge's own packages.
+// The early parse ignores pflag's ErrHelp signal (whose message
+// is "pflag: help requested"). The check is performed against a
+// package-local predicate (isPflagHelpRequested, defined in
+// errors.go) so that execute.go does not import
+// github.com/spf13/pflag. The package's import policy
+// (TestStdlibOnlyForExecuteImports) permits only the standard
+// library and Forge's own packages.
 //
-// The sentinel's message matches pflag.ErrHelp's message exactly;
-// errors.Is compares the two by message when neither wraps the
-// other. A future pflag version that changes the message must be
-// matched by a change to the sentinel; the check is localized to
+// The predicate compares the error's message, not its identity,
+// because errors.Is on a package-local sentinel would not match
+// pflag's error across the package boundary — see
+// isPflagHelpRequested's docstring for the reasoning. A future
+// pflag version that changes the message must be matched by a
+// change to the constant in errors.go; the check is localized to
 // the one call site below.
 package cli
 
@@ -288,6 +291,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"syscall"
@@ -314,7 +318,7 @@ import (
 //
 // Every field is a value, not a pointer, except config, which is a
 // pointer so that nil can represent "no injection; use the default".
-// This is deliberate: the struct is small (eight fields), and
+// This is deliberate: the struct is small (seven fields), and
 // passing it by value avoids the aliasing questions that come with
 // pointers. A caller who wants to share state between two
 // invocations can construct two options values that reference the
@@ -766,7 +770,7 @@ func Execute() (code int) {
 func recoveredPanicError(panicValue any) *forgeerr.Error {
 	return forgeerr.New(
 		forgeerr.CategoryInternal,
-		string(forgeerr.CodeInternalPanic),
+		forgeerr.CodeInternalPanic,
 		"internal error occurred",
 	).WithContext("panic", fmt.Sprint(panicValue))
 }
@@ -833,7 +837,7 @@ func wrappedUnexpectedError(cause error) *forgeerr.Error {
 	// of wrappedUnexpectedError's contract.
 	return forgeerr.Wrap(
 		forgeerr.CategoryInternal,
-		string(forgeerr.CodeInternalUnexpected),
+		forgeerr.CodeInternalUnexpected,
 		"unexpected error",
 		cause,
 	).WithContext("cause", cause.Error())
@@ -1262,7 +1266,7 @@ func runWithOptions(ctx context.Context, opts options) (int, error) {
 	// forgeerr.Format already includes the trailing newline
 	// (rule F10 of the frozen format).
 	if err := validateArgs(opts.args); err != nil {
-		fmt.Fprint(opts.streams.ErrOrEmpty(), forgeerr.Format(err, forgeerr.Options{
+		fmt.Fprint(streamsErr(opts.streams), forgeerr.Format(err, forgeerr.Options{
 			Verbose: opts.verbose,
 		}))
 		return exitCodeOf(err), err
@@ -1323,15 +1327,15 @@ func runWithOptions(ctx context.Context, opts options) (int, error) {
 	// resolver can read the log-level flags (which were parsed
 	// before the help flag fired).
 	//
-	// The comparison uses errPflagHelpRequested, a package-local
-	// sentinel whose message matches pflag's. The sentinel
-	// exists because execute.go is subject to a stdlib-only
-	// import policy (TestStdlibOnlyForExecuteImports); the
-	// alternative — importing github.com/spf13/pflag and
-	// comparing with errors.Is(err, pflag.ErrHelp) — would
-	// violate the policy. See errPflagHelpRequested's docstring
-	// in errors.go for the rationale and the coupling to pflag's
-	// message.
+	// The comparison uses isPflagHelpRequested, a package-local
+	// predicate whose definition and rationale live in
+	// errors.go. The predicate exists because execute.go is
+	// subject to a stdlib-only import policy
+	// (TestStdlibOnlyForExecuteImports); the alternative —
+	// importing github.com/spf13/pflag and comparing with
+	// errors.Is(err, pflag.ErrHelp) — would violate the policy.
+	// See isPflagHelpRequested's docstring in errors.go for the
+	// full reasoning and the coupling to pflag's message.
 	//
 	// # Error handling for everything else
 	//
@@ -1343,14 +1347,14 @@ func runWithOptions(ctx context.Context, opts options) (int, error) {
 	target, remaining, err := root.Find(opts.args)
 	if err != nil {
 		err = wrapCobraError(err)
-		fmt.Fprint(opts.streams.ErrOrEmpty(), forgeerr.Format(err, forgeerr.Options{
+		fmt.Fprint(streamsErr(opts.streams), forgeerr.Format(err, forgeerr.Options{
 			Verbose: opts.verbose,
 		}))
 		return exitCodeOf(err), err
 	}
 	if err := target.ParseFlags(remaining); err != nil && !isPflagHelpRequested(err) {
 		err = wrapCobraError(err)
-		fmt.Fprint(opts.streams.ErrOrEmpty(), forgeerr.Format(err, forgeerr.Options{
+		fmt.Fprint(streamsErr(opts.streams), forgeerr.Format(err, forgeerr.Options{
 			Verbose: opts.verbose,
 		}))
 		return exitCodeOf(err), err
@@ -1395,7 +1399,7 @@ func runWithOptions(ctx context.Context, opts options) (int, error) {
 	// failure.
 	decision, err := resolveLogLevelWithEnv(target, opts.env, "")
 	if err != nil {
-		fmt.Fprint(opts.streams.ErrOrEmpty(), forgeerr.Format(err, forgeerr.Options{
+		fmt.Fprint(streamsErr(opts.streams), forgeerr.Format(err, forgeerr.Options{
 			Verbose: opts.verbose,
 		}))
 		return exitCodeOf(err), err
@@ -1521,7 +1525,7 @@ func runWithOptions(ctx context.Context, opts options) (int, error) {
 	// The write uses fmt.Fprint, not fmt.Fprintln, because
 	// forgeerr.Format produces the complete byte-exact string
 	// including the trailing newline (rule F10).
-	fmt.Fprint(opts.streams.ErrOrEmpty(), forgeerr.Format(err, forgeerr.Options{
+	fmt.Fprint(streamsErr(opts.streams), forgeerr.Format(err, forgeerr.Options{
 		Verbose: verbose,
 	}))
 
@@ -1535,7 +1539,7 @@ func runWithOptions(ctx context.Context, opts options) (int, error) {
 	// *forgeerr.Error; a write error here would be a broken pipe
 	// or a closed stream, neither of which the CLI can act on.
 	if ferr != nil {
-		_, _ = writeFailure(opts.streams.OutOrEmpty(), format, ferr)
+		_, _ = writeFailure(opts.streams.Out, format, ferr)
 	}
 
 	// Map the error to an exit code. The mapping is defined by
@@ -1543,6 +1547,51 @@ func runWithOptions(ctx context.Context, opts options) (int, error) {
 	// *forgeerr.Error from the chain and reads its
 	// Category().ExitCode().
 	return exitCodeOf(err), err
+}
+
+// streamsErr returns s.Err if it is non-nil, and os.Stderr
+// otherwise.
+//
+// # Why the helper exists
+//
+// The error path in runWithOptions writes the rendered error block
+// to stderr. A caller that constructs an options value without
+// setting Streams.Err would otherwise cause a nil-pointer panic in
+// the error path — the worst place for a panic, because the error
+// path is called when something has already gone wrong, and a
+// panic there masks the original failure.
+//
+// # The fallback
+//
+// The fallback is os.Stderr, the same sink Execute's panic recovery
+// uses, and for the same reason: when the injected writer is not
+// available, the process's own stderr is the last resort. The
+// fallback is a defence, not a design; a caller that supplies a
+// Streams value with a nil Err should expect the error block to go
+// to the process's stderr, not to a captured buffer.
+//
+// # Why not panic
+//
+// A panic here would be caught by Execute's deferred recovery and
+// converted to a FORGE_INTERNAL_PANIC error, which is rendered to
+// os.Stderr and exits 70. That outcome is acceptable in principle
+// but hides the caller's mistake inside a generic internal error.
+// The fallback is the smaller intervention: the error the user
+// needs to see is still shown, and the caller's mistake is visible
+// in the test that constructs the broken options value.
+//
+// # Why not require the streams package to expose ErrOrEmpty
+//
+// If internal/streams exposes an ErrOrEmpty accessor, prefer it:
+// the accessor names the intent and lives in the package that owns
+// the invariant. This helper exists only for the case where the
+// package exposes the field directly and the CLI must supply its
+// own nil-tolerance.
+func streamsErr(s streams.Streams) io.Writer {
+	if s.Err != nil {
+		return s.Err
+	}
+	return os.Stderr
 }
 
 // signalExitCode returns the exit code for a cancelled context.
@@ -1771,7 +1820,7 @@ func wrapCobraError(err error) error {
 		name := strings.TrimPrefix(msg, "unknown flag: ")
 		return forgeerr.Wrap(
 			forgeerr.CategoryCLI,
-			string(forgeerr.CodeCLIUnknownFlag),
+			forgeerr.CodeCLIUnknownFlag,
 			"unknown flag",
 			err,
 		).WithContext("flag", name)
@@ -1784,7 +1833,7 @@ func wrapCobraError(err error) error {
 		detail := strings.TrimPrefix(msg, "unknown shorthand flag: ")
 		return forgeerr.Wrap(
 			forgeerr.CategoryCLI,
-			string(forgeerr.CodeCLIUnknownFlag),
+			forgeerr.CodeCLIUnknownFlag,
 			"unknown flag",
 			err,
 		).WithContext("flag", detail)
@@ -1798,7 +1847,7 @@ func wrapCobraError(err error) error {
 		name, parent := parseUnknownCommandMessage(msg)
 		e := forgeerr.Wrap(
 			forgeerr.CategoryCLI,
-			string(forgeerr.CodeCLIUnknownCommand),
+			forgeerr.CodeCLIUnknownCommand,
 			"unknown command",
 			err,
 		).WithContext("command", name)

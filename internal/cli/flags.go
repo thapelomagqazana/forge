@@ -152,6 +152,14 @@
 // The conversion is the reason a second format reader exists
 // alongside formatValue (which returns the raw string for the
 // config command's dispatch).
+//
+// # Type-level contract
+//
+// forgeerr.Wrap takes its code parameter as forgeerr.Code. The two
+// call sites below pass the named constants from
+// internal/forgeerr/codes.go directly. A string(...) cast in a
+// constructor call is the diagnostic that the migration
+// documented in safefs/errors.go was rolled back.
 package cli
 
 import (
@@ -331,19 +339,18 @@ var ErrQuietVerboseConflict = errors.New(
 // # What the function registers
 //
 //   - --verbose:   a bool flag, default false.
-//   - --quiet:     a bool flag, default false.
+//   - --quiet:     a bool flag, default false, shorthand -q.
 //   - --log-level: a string flag, default "".
 //   - --config:    a string flag, default "".
 //   - --format:    a string flag, default FlagFormatText.
 //
-// The short forms are deliberately not registered. --verbose and
-// --quiet have no short forms because the single-letter aliases
-// are reserved for other purposes (in particular, -v is reserved
-// for --version, see WBS 5.2.3 and
-// docs/reference/verbose-mode.md §2). --config and --format have
-// no short forms because none of the conventional letters (c, f)
-// is unambiguously associated with either flag in the presence of
-// the other.
+// The short forms are deliberately not registered for --verbose,
+// --log-level, --config, or --format. --verbose has no short form
+// because the single-letter alias -v is reserved for --version
+// (see WBS 5.2.3 and docs/reference/verbose-mode.md §2). --config
+// and --format have no short forms because none of the
+// conventional letters (c, f) is unambiguously associated with
+// either flag in the presence of the other.
 //
 // # The --verbose help text
 //
@@ -592,6 +599,12 @@ func formatRequested(cmd *cobra.Command) OutputFormat {
 // for the sentinel's errors.Is comparison can pass a different
 // string to forgeerr.Wrap; the sentinel's message remains the
 // stable identity.
+//
+// # Type-level contract
+//
+// forgeerr.Wrap takes its code parameter as forgeerr.Code. The
+// named constant CodeCLIUnknownFlag satisfies it directly; the
+// string(...) cast that the pre-migration code carried is gone.
 func validateLogFlags(cmd *cobra.Command) error {
 	if cmd == nil {
 		panic("cli: validateLogFlags called with nil command")
@@ -601,7 +614,7 @@ func validateLogFlags(cmd *cobra.Command) error {
 	if quiet && verbose {
 		return forgeerr.Wrap(
 			forgeerr.CategoryCLI,
-			string(forgeerr.CodeCLIUnknownFlag),
+			forgeerr.CodeCLIUnknownFlag,
 			ErrQuietVerboseConflict.Error(),
 			ErrQuietVerboseConflict,
 		).
@@ -642,7 +655,12 @@ func logFlagsToInputs(cmd *cobra.Command) logger.Inputs {
 //
 // # Why the env lookup is a parameter
 //
-// (unchanged)
+// The resolver is a pure function of its inputs; it does not read
+// the process environment itself. The two callers — the CLI's
+// process boundary (with opts.env) and this file's legacy wrapper
+// resolveLogLevel (with nil) — differ only in how they supply the
+// lookup. The threading is what makes FORGE_LOG_LEVEL testable
+// in-process.
 //
 // # Error classification
 //
@@ -711,7 +729,7 @@ func resolveLogLevelWithEnv(cmd *cobra.Command, env func(string) string, configL
 		// code for log levels.
 		return logger.Decision{}, forgeerr.Wrap(
 			forgeerr.CategoryCLI,
-			string(forgeerr.CodeCLIUnknownFormat),
+			forgeerr.CodeCLIUnknownFormat,
 			err.Error(),
 			err,
 		).WithContext("input", "--log-level or FORGE_LOG_LEVEL")

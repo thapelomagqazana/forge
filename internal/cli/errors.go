@@ -15,6 +15,14 @@
 // suggestion-distance constant that governs Cobra's suggestion
 // mechanism, and to declare the predicates the boundary uses.
 //
+// # Type-level contract
+//
+// forgeerr.New takes its code parameter as forgeerr.Code. The
+// constructor below passes the named constant from the registry
+// directly. A string(...) cast in a constructor call is the
+// diagnostic that the migration documented in safefs/errors.go
+// was rolled back.
+//
 // # No package-level mutable state
 //
 // The CLI package's contract test forbids package-level
@@ -149,6 +157,14 @@ func isPflagHelpRequested(err error) bool {
 // trigger a suggestion. A distance of 1 would miss two-character
 // typos; a distance of 3 would produce suggestions for inputs that
 // are not close to any command.
+//
+// # Why a constant and not a field on the root command
+//
+// The value is set on the root command (root.go) and read by
+// Cobra's suggestion machinery. It is declared here so that the
+// contract tests can reference it without constructing the root
+// command, and so that a reader of this file sees the constant
+// next to the constructor that produces the suggestion text.
 const suggestionsMinimumDistance = 2
 
 // unknownCommandError constructs the error returned when the
@@ -185,12 +201,21 @@ const suggestionsMinimumDistance = 2
 // and adding it would require a format change (an ADR). When no
 // suggestion is available, the error carries no remediation and
 // the frozen format omits the Suggestion block entirely.
+//
+// # Why the code is passed as Code, not string
+//
+// forgeerr.New's second parameter is forgeerr.Code. The registry
+// constant CodeCLIUnknownCommand satisfies it directly. A
+// string(...) cast would yield a string and would not satisfy the
+// parameter; if such a cast is present, the constructor's
+// parameter has reverted to string and the migration is
+// incomplete.
 func unknownCommandError(cmd *cobra.Command, name string) error {
 	base := fmt.Sprintf("unknown command %q for %q", name, cmd.CommandPath())
 
 	e := forgeerr.New(
 		forgeerr.CategoryCLI,
-		string(forgeerr.CodeCLIUnknownCommand),
+		forgeerr.CodeCLIUnknownCommand,
 		base,
 	)
 

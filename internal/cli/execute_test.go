@@ -787,7 +787,7 @@ func TestRecoveredPanicError_MessageIsFixed(t *testing.T) {
 	}
 	for _, v := range cases {
 		v := v
-		t.Run(fmt.Sprintf("%v", v)[:minInt(len(fmt.Sprintf("%v", v)), 20)], func(t *testing.T) {
+		t.Run(truncate(fmt.Sprintf("%v", v), 20), func(t *testing.T) {
 			t.Parallel()
 
 			e := recoveredPanicError(v)
@@ -905,7 +905,7 @@ func TestExitCodeOf_GivenForgeError_ReturnsCategoryCode(t *testing.T) {
 		t.Run(string(tc.cat), func(t *testing.T) {
 			t.Parallel()
 
-			e := forgeerr.New(tc.cat, string(tc.code), "message")
+			e := forgeerr.New(tc.cat, tc.code, "message")
 			got := exitCodeOf(e)
 			want := tc.cat.ExitCode()
 			if got != want {
@@ -924,7 +924,7 @@ func TestExitCodeOf_GivenWrappedForgeError_ReturnsCategoryCode(t *testing.T) {
 
 	e := forgeerr.New(
 		forgeerr.CategoryConfig,
-		string(forgeerr.CodeConfigMalformed),
+		forgeerr.CodeConfigMalformed,
 		"invalid YAML",
 	)
 	wrapped := fmt.Errorf("outer context: %w", e)
@@ -1241,25 +1241,7 @@ func TestExecuteWithOptions_CallsResolveLogLevel(t *testing.T) {
 }
 
 // TestExecuteWithOptions_InstallsLoggerBeforeTree verifies that
-// the logger installation precedes the command tree's execution.
-//
-// # Why the ordering matters
-//
-// The command tree's RunE handlers call logger.Debug. If the
-// logger is installed after the tree runs, those calls route
-// through the previous default (Nop), and the DEBUG records are
-// dropped. The ordering is the whole point of the wiring.
-//
-// # How the test checks the ordering
-//
-// The test finds the byte offset of `logger.SetDefault(` and the
-// byte offset of `root.ExecuteContext(` in the body of
-// runWithOptions. It asserts the former is smaller. This is a
-// text-level check, not a compiler-level one, but it is precise
-// for the shape the wiring takes and catches the regression the
-// ordering guards against.
-// TestExecuteWithOptions_InstallsLoggerBeforeTree verifies that the
-// invocation's logger is installed before the command tree runs.
+// the invocation's logger is installed before the command tree runs.
 //
 // # Why the test now inspects hooks.go and not execute.go
 //
@@ -1436,19 +1418,33 @@ func TestRun_ContextCancelled_ReturnsSIGINT(t *testing.T) {
 	}
 }
 
+// TestProbeResolver is a diagnostic probe, not a contract test. It
+// prints the resolver's output for the two usage-error cases so a
+// developer investigating a resolver failure can see the shapes
+// without attaching a debugger.
+//
+// # Why the probe uses resolveLogLevelWithEnv
+//
+// The production boundary calls resolveLogLevelWithEnv (the
+// WBS 12.5.1 form, which reads the env through an injected lookup).
+// The earlier resolveLogLevel wrapper reads the process env and
+// exists only for backward compatibility. A probe that used the
+// wrapper would exercise a code path the boundary does not use.
 func TestProbeResolver(t *testing.T) {
+	env := func(string) string { return "" }
+
 	cmd := newFlagTestCmd()
 	if err := cmd.ParseFlags([]string{"--quiet", "--verbose"}); err != nil {
 		t.Fatalf("ParseFlags: %v", err)
 	}
-	d, err := resolveLogLevel(cmd, "")
+	d, err := resolveLogLevelWithEnv(cmd, env, "")
 	t.Logf("conflict case: decision=%+v err=%v", d, err)
 
 	cmd2 := newFlagTestCmd()
 	if err := cmd2.ParseFlags([]string{"--log-level=trace"}); err != nil {
 		t.Fatalf("ParseFlags: %v", err)
 	}
-	d2, err2 := resolveLogLevel(cmd2, "")
+	d2, err2 := resolveLogLevelWithEnv(cmd2, env, "")
 	t.Logf("invalid case:  decision=%+v err=%v", d2, err2)
 }
 
@@ -1548,6 +1544,33 @@ func TestSignalExitCode_UnknownCause_ReturnsSIGINT(t *testing.T) {
 
 // =============================================================================
 // Test helpers — source file reading and function body extraction
+// =============================================================================
+
+// truncate returns s, shortened to at most n bytes. If s is already
+// shorter, it is returned unchanged. The helper is used to build
+// subtest names from arbitrary strings, where t.Run requires a name
+// that is a valid identifier-ish token and where arbitrarily long
+// names are noisy in test output.
+//
+// # Why bytes and not runes
+//
+// The helper is used on subtest names that are ASCII in practice
+// (a panic value's fmt.Sprint, truncated). A byte-based cut is the
+// conservative choice: it never splits a multi-byte rune in a way
+// that would produce invalid output, because it truncates before
+// the rune's continuation byte. A rune-based cut would be more
+// correct for non-ASCII inputs but is not needed here, and the
+// extra machinery (utf8.RuneCountInString, a rune loop) would
+// obscure the helper's purpose.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
+}
+
+// =============================================================================
+// Test helpers — function body extraction
 // =============================================================================
 
 // executeTestPackageDir returns the absolute path to the

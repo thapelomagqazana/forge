@@ -21,19 +21,21 @@
 //
 // The codes are documented in docs/cli-ux-spec.md "Config Error
 // Reference" and in docs/reference/error-codes.md. Their exit
-// code is ExitConfig (3) for all eight.
+// code is ExitConfig (10) for all eight under the WBS 11.1.1
+// taxonomy (see ADR-018 for the migration from the WBS 4.1.2
+// flat values).
 //
 // # How the CLI classifies a config error
 //
-// The CLI's exitCodeOf reads the error's Category() method.
+// The CLI's exit-code mapping reads the error's Category() method.
 // Every config error's Category() returns CategoryConfig. The
 // helper maps that category to CategoryConfig.ExitCode(), which
-// is ExitConfig (3).
+// is ExitConfig (10) under the WBS 11.1.1 taxonomy.
 //
 // The classification is done by category, not by code. The eight
-// codes all map to ExitConfig (3); a future WBS that splits the
+// codes all map to ExitConfig (10); a future WBS that splits the
 // exit codes (for example, a distinct code for a syntax error)
-// changes the categories' ExitCode method, not the constructors.
+// changes the category's ExitCode method, not the constructors.
 //
 // # The error's structure
 //
@@ -56,26 +58,29 @@
 //	Code:  FORGE_CONFIG_NOT_FOUND
 //	       path: /etc/forge/config.yaml
 //
-// # Migration note (WBS 10.5.2)
+// # Migration notes
 //
-// Before WBS 10.5.2, the constructors returned plain *configError
-// values whose Category() method returned the string "config".
-// The plain errors were the source of an incorrect exit code at
-// the CLI boundary: the boundary's non-*forgeerr.Error wrapping
-// path classified them as FORGE_INTERNAL_UNEXPECTED, whose
-// category is CategoryInternal and whose exit code is
-// ExitFailure (1), not ExitConfig (3).
+// Two migrations shaped this file.
 //
-// The migration replaces the plain errors with *forgeerr.Error
-// values. The configError type is deleted; the Category() string
-// method is no longer needed because the category is a
-// forgeerr.Category and the *forgeerr.Error carries it.
+// WBS 10.5.2 replaced plain *configError values with
+// *forgeerr.Error values. The plain errors had a Category() string
+// method that returned "config"; the CLI boundary's
+// non-*forgeerr.Error wrapping path classified them as
+// FORGE_INTERNAL_UNEXPECTED, whose category is CategoryInternal
+// and whose exit code is ExitInternal (70), not ExitConfig. The
+// migration deleted the configError type; the Category() method
+// is now the one forgeerr.Error exposes.
+//
+// WBS 13.1.1 / ADR-035 widened forgeerr.New to take its code
+// parameter as forgeerr.Code. The sentinel declarations below
+// pass the registry constants directly. A string(...) cast in a
+// constructor call is the diagnostic that the migration was
+// rolled back.
 //
 // # What about the sentinels
 //
 // The eight sentinels (ErrConfigNotFound, ErrConfigPermission,
-// ...) remain exported. Their type changes from *configError to
-// *forgeerr.Error, but their role is unchanged: they are values
+// ...) remain exported. Their role is unchanged: they are values
 // that callers can match with errors.Is. The *forgeerr.Error's
 // Is method compares codes, so errors.Is(err, ErrConfigNotFound)
 // matches any error with code CodeConfigNotFound, regardless of
@@ -118,6 +123,15 @@ import (
 // The docstring on each sentinel records the code's meaning, the
 // trigger, the message shape, and the remediation. The four
 // together are the code's contract.
+//
+// # Why the codes are passed as Code, not string
+//
+// forgeerr.New's second parameter is forgeerr.Code. Passing the
+// named constant is the only form that satisfies the compiler
+// without an explicit conversion. The named constant also makes
+// the sentinel's code greppable: `grep -rn CodeConfigNotFound
+// internal/` finds both the registry entry and every sentinel
+// that uses it.
 
 // ErrConfigNotFound is the sentinel for E1: the file the user
 // asked for does not exist.
@@ -143,10 +157,10 @@ import (
 //
 // # Exit code
 //
-// ExitConfig (3), via CategoryConfig.ExitCode().
+// ExitConfig (10), via CategoryConfig.ExitCode().
 var ErrConfigNotFound = forgeerr.New(
 	forgeerr.CategoryConfig,
-	string(forgeerr.CodeConfigNotFound),
+	forgeerr.CodeConfigNotFound,
 	"config file not found",
 )
 
@@ -171,10 +185,10 @@ var ErrConfigNotFound = forgeerr.New(
 //
 // # Exit code
 //
-// ExitConfig (3).
+// ExitConfig (10).
 var ErrConfigPermission = forgeerr.New(
 	forgeerr.CategoryConfig,
-	string(forgeerr.CodeConfigPermission),
+	forgeerr.CodeConfigPermission,
 	"cannot read config file",
 )
 
@@ -200,10 +214,10 @@ var ErrConfigPermission = forgeerr.New(
 //
 // # Exit code
 //
-// ExitConfig (3).
+// ExitConfig (10).
 var ErrConfigMalformed = forgeerr.New(
 	forgeerr.CategoryConfig,
-	string(forgeerr.CodeConfigMalformed),
+	forgeerr.CodeConfigMalformed,
 	"invalid YAML",
 )
 
@@ -228,10 +242,10 @@ var ErrConfigMalformed = forgeerr.New(
 //
 // # Exit code
 //
-// ExitConfig (3).
+// ExitConfig (10).
 var ErrConfigUnknownField = forgeerr.New(
 	forgeerr.CategoryConfig,
-	string(forgeerr.CodeConfigUnknownField),
+	forgeerr.CodeConfigUnknownField,
 	"unknown field",
 )
 
@@ -256,10 +270,10 @@ var ErrConfigUnknownField = forgeerr.New(
 //
 // # Exit code
 //
-// ExitConfig (3).
+// ExitConfig (10).
 var ErrConfigInvalidType = forgeerr.New(
 	forgeerr.CategoryConfig,
-	string(forgeerr.CodeConfigInvalidType),
+	forgeerr.CodeConfigInvalidType,
 	"invalid type",
 )
 
@@ -286,7 +300,7 @@ var ErrConfigInvalidType = forgeerr.New(
 //
 // # Exit code
 //
-// ExitConfig (3).
+// ExitConfig (10).
 //
 // # Why the sentinel is named ErrConfigInvalid and not
 // # ErrConfigInvalidValue
@@ -297,7 +311,7 @@ var ErrConfigInvalidType = forgeerr.New(
 // CodeConfigInvalidValue, which is the registry's name for E6.
 var ErrConfigInvalid = forgeerr.New(
 	forgeerr.CategoryConfig,
-	string(forgeerr.CodeConfigInvalidValue),
+	forgeerr.CodeConfigInvalidValue,
 	"invalid value",
 )
 
@@ -321,10 +335,10 @@ var ErrConfigInvalid = forgeerr.New(
 //
 // # Exit code
 //
-// ExitConfig (3).
+// ExitConfig (10).
 var ErrConfigTooLarge = forgeerr.New(
 	forgeerr.CategoryConfig,
-	string(forgeerr.CodeConfigTooLarge),
+	forgeerr.CodeConfigTooLarge,
 	"config file too large",
 )
 
@@ -349,10 +363,10 @@ var ErrConfigTooLarge = forgeerr.New(
 //
 // # Exit code
 //
-// ExitConfig (3).
+// ExitConfig (10).
 var ErrConfigInvalidEncoding = forgeerr.New(
 	forgeerr.CategoryConfig,
-	string(forgeerr.CodeConfigInvalidEncoding),
+	forgeerr.CodeConfigInvalidEncoding,
 	"invalid encoding",
 )
 
