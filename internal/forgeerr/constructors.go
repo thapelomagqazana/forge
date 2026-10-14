@@ -43,37 +43,18 @@ import (
 
 // New creates a *Error with the given category, code, and message.
 //
-// New is the primary constructor for errors the program produces
-// itself. It never attaches a cause; use Wrap for that.
-//
-// New panics if any invariant is violated:
-//
-//   - category is not a member of the closed set (I6),
-//   - code is empty (I1),
-//   - code does not match ^FORGE_[A-Z][A-Z0-9_]*$ (I3),
-//   - code does not carry the prefix required by category (AC7),
-//   - message is empty (I2),
-//   - message is longer than 80 bytes (I4),
-//   - message ends with a period (I5),
-//   - message contains CR or LF (I5).
-//
-// New never returns nil. Callers may use the result without a nil
-// check.
-//
-// Example:
-//
-//	return forgeerr.New(
-//	    forgeerr.CategoryConfig,
-//	    "FORGE_CONFIG_MALFORMED",
-//	    "invalid YAML in config.yaml",
-//	)
-func New(category Category, code, message string) *Error {
+// The code parameter is forgeerr.Code, not string, so that the
+// compiler rejects a call site that passes a message, a category,
+// or any other string in the code position. The registry in
+// codes.go declares every code as forgeerr.Code; the constructor
+// matches.
+func New(category Category, code Code, message string) *Error {
 	validateCategory(category)
 	validateCode(category, code)
 	validateMessage(message)
 
 	return &Error{
-		code:     code,
+		code:     string(code),
 		message:  message,
 		category: category,
 	}
@@ -82,44 +63,12 @@ func New(category Category, code, message string) *Error {
 // Wrap creates a *Error with the given category, code, message, and
 // cause.
 //
-// Behaviour:
-//
-//   - If cause is nil, Wrap panics. Wrapping nil is a programming
-//     error: the caller almost certainly meant New.
-//
-//   - If cause is already a *Error, Wrap returns cause unchanged.
-//     The category, code, and message arguments are ignored. This
-//     prevents double-wrapping, which would corrupt Code-based
-//     errors.Is comparisons and produce misleading formatter output.
-//
-//   - Otherwise, Wrap constructs a new *Error whose Cause is cause.
-//     All of New's invariant checks apply.
-//
-// Wrap never returns nil. Callers may use the result without a nil
-// check.
-//
-// Example:
-//
-//	if err := os.ReadFile(path); err != nil {
-//	    return forgeerr.Wrap(
-//	        forgeerr.CategoryFilesystem,
-//	        "FORGE_FILESYSTEM_READ",
-//	        "failed to read config file",
-//	        err,
-//	    )
-//	}
-func Wrap(category Category, code, message string, cause error) *Error {
+// The code parameter is forgeerr.Code for the same reason as in New.
+func Wrap(category Category, code Code, message string, cause error) *Error {
 	if cause == nil {
 		panic("forgeerr: Wrap called with nil cause; use New instead")
 	}
 
-	// Fast path: the cause is already a *Error. Return it unchanged
-	// so that errors.Is comparisons on Code remain stable and the
-	// formatter sees exactly one Code per chain.
-	//
-	// We intentionally return the cause by value (it is a pointer,
-	// so the receiver is shared). The receiver is immutable, so
-	// sharing is safe.
 	var existing *Error
 	if errors.As(cause, &existing) {
 		return existing
@@ -130,7 +79,7 @@ func Wrap(category Category, code, message string, cause error) *Error {
 	validateMessage(message)
 
 	return &Error{
-		code:     code,
+		code:     string(code),
 		message:  message,
 		category: category,
 		cause:    cause,
@@ -257,7 +206,7 @@ func cloneContext(src map[string]string) map[string]string {
 // WBS 10.3.1 rule that the code is a member of the frozen
 // registry.
 //
-// The three checks are ordered from the most specific failure to
+// The four checks are ordered from the most specific failure to
 // the least:
 //
 //  1. Empty code (I1).
@@ -270,32 +219,118 @@ func cloneContext(src map[string]string) map[string]string {
 //     is the only check that a regex cannot express, because the
 //     registry is a finite set of specific strings.
 //
+// # Why the parameter is Code and not string
+//
+// The parameter type is forgeerr.Code, not string. This is the
+// load-bearing half of the compile-time guarantee that the code
+// registry exists to provide. A caller that passes a message, a
+// category name, or any other string in the code position fails
+// to compile, because Go does not implicitly convert an untyped
+// string constant to a named string type in a function-call
+// argument position unless the constant is a member of that named
+// type's underlying type's untyped-constant set. In practice, the
+// only way to satisfy the parameter is:
+//
+//   - a named constant from codes.go (the intended use), or
+//   - an explicit string(...) conversion of such a constant
+//     (the accommodation documented in safefs/errors.go), or
+//   - a value of type forgeerr.Code read from a lookup table
+//     (rare, and reviewed).
+//
+// A bare string literal — "FORGE_CONFIG_MALFORMED" — does not
+// satisfy the parameter, because a string literal is an untyped
+// constant of kind string, and Code is a *named* type whose
+// underlying type is string. Go's assignability rules do not
+// bridge that gap implicitly. The compiler rejects the call
+// before the runtime check runs.
+//
+// # The category argument
+//
 // The category argument is assumed to have already been validated;
 // callers must not pass an invalid Category. If they do,
 // category.Prefix() panics with a message that identifies the
 // invalid value, which is the correct diagnostic: the caller
 // skipped a required check.
-func validateCode(category Category, code string) {
+//
+// # Why the checks are ordered this way
+//
+// The order is not arbitrary. Each check rules out a distinct
+// class of failure and produces a distinct diagnostic:
+//
+//   - Empty (I1) is a caller bug so basic that it deserves its own
+//     message, not a regex error. A caller who passes "" almost
+//     always meant to pass a variable that turned out to be zero.
+//
+//   - Regex (I3) catches shape errors: lowercase letters, hyphens,
+//     a leading digit, a trailing underscore, an empty specific
+//     segment. These are cheap to explain ("does not match") and
+//     cheap to fix.
+//
+//   - Prefix (AC7) catches a well-formed code that is in the
+//     wrong category. This is the failure mode a code-review miss
+//     produces most often: someone copies a code from another
+//     category and changes the specific segment but forgets the
+//     category segment. The message names both the required
+//     prefix and the category, so the fix is obvious.
+//
+//   - Registry (WBS 10.3.1) catches the failure the regex cannot:
+//     a code that is well-formed and in the right category but is
+//     not a member of the closed set. This is the check that
+//     makes "the registry is a closed set" real. Without it, a
+//     new code string could be invented at any call site and the
+//     stability policy of ADR-012 would be aspirational.
+//
+// The order is specific-to-general: each successive check assumes
+// the previous ones passed. Reordering would produce misleading
+// diagnostics — for example, checking the registry before the
+// prefix would report a wrong-category code as "unregistered"
+// rather than as "wrong prefix," which is less actionable.
+//
+// # Why the empty check is separate from the regex check
+//
+// codePattern requires a non-empty match, so an empty code would
+// also fail the regex check. The empty check exists anyway so
+// that the diagnostic for "" does not mention a regex. "Code
+// must not be empty" is a clearer message than "code \"\" does
+// not match ^FORGE_[A-Z][A-Z0-9_]*$" for the caller who most
+// needs it — the one who has a zero-valued variable and no
+// obvious reason it should be empty.
+func validateCode(category Category, code Code) {
 	if code == "" {
 		panic("forgeerr: code must not be empty (I1)")
 	}
-	if !codePattern.MatchString(code) {
+
+	// Regex and prefix checks operate on the underlying string.
+	// The conversion is a no-op at runtime — Code is a named
+	// string, and the memory layout is identical — but it makes
+	// the string operations explicit and keeps the compiler from
+	// having to reason about named-type methods on the regexp
+	// package's parameter list.
+	s := string(code)
+
+	if !codePattern.MatchString(s) {
 		panic(fmt.Sprintf(
 			"forgeerr: code %q does not match %s (I3)",
-			code, codePattern.String(),
+			s, codePattern.String(),
 		))
 	}
+
 	want := category.Prefix()
-	if !strings.HasPrefix(code, want) {
+	if !strings.HasPrefix(s, want) {
 		panic(fmt.Sprintf(
 			"forgeerr: code %q does not start with %q required by category %s (AC7)",
-			code, want, category,
+			s, want, category,
 		))
 	}
-	if !IsRegistered(Code(code)) {
+
+	// IsRegistered already takes a Code, so no conversion is
+	// needed here. If a future refactor changes IsRegistered's
+	// parameter type back to string, this call site breaks at
+	// compile time — which is the desired behaviour.
+	if !IsRegistered(code) {
 		panic(fmt.Sprintf(
 			"forgeerr: code %q is not in the registry (WBS 10.3.1)",
-			code,
+			s,
 		))
 	}
 }

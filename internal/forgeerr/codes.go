@@ -80,6 +80,32 @@
 // that owns the affected property, and the layers above it are
 // untouched.
 //
+// # Filesystem versus Security
+//
+// Three codes describe failures at the boundary between a Forge
+// process and the filesystem. They are deliberately distinct:
+//
+//   - FORGE_FILESYSTEM_ESCAPE (CategoryFilesystem) — a path that
+//     Forge computed escaped the expected root. This is a bug in
+//     Forge, not an attack. The exit code is ExitFilesystem (12).
+//
+//   - FORGE_SECURITY_PATH_TRAVERSAL (CategorySecurity) — a
+//     user-supplied path attempted to traverse outside the
+//     project root. This is an attack. The exit code is
+//     ExitSecurity (13).
+//
+//   - FORGE_SECURITY_SYMLINK_ESCAPE (CategorySecurity) — a
+//     user-supplied path resolved through a symlink whose target
+//     lies outside the project root. This is an attack. The exit
+//     code is ExitSecurity (13).
+//
+// The distinction matters to scripts: a script that operates on
+// untrusted input can abort on ExitSecurity without aborting on
+// ExitFilesystem, because the two failures have different causes
+// and different remedies. Merging the codes would erase that
+// distinction and force every script to treat both as a single
+// class.
+//
 // Only the Go standard library is used (see docs/dependency-policy.md).
 package forgeerr
 
@@ -146,8 +172,36 @@ type Code string
 // and the numeric values are grouped into ranges in
 // internal/cli/exitcodes.go (WBS 11.1.1). A reader who wants to
 // know the exit code for a code should follow the prefix to the
-// category and the category to the exit code. The three-layer
-// separation is documented in the package docstring above.
+// category and the category to the exit code.
+//
+// # Codes added in WBS 13.1.1
+//
+// The four filesystem codes NOT_LOCAL, DEPTH_EXCEEDED,
+// ENTRIES_EXCEEDED, and CASE_COLLISION were added to support
+// internal/filesystem/safefs (WBS 13.1.1, ADR-035). They are
+// grouped with the existing filesystem codes because their prefix
+// is FORGE_FILESYSTEM_; the security counterparts
+// (FORGE_SECURITY_PATH_TRAVERSAL and FORGE_SECURITY_SYMLINK_ESCAPE)
+// already existed and are unchanged.
+//
+// # Codes added in WBS 13.5.1
+//
+// Seven filesystem codes were added to complete the OS-level
+// error taxonomy defined by WBS 13.5.1:
+//
+//	FORGE_FILESYSTEM_EXISTS
+//	FORGE_FILESYSTEM_READ_ONLY
+//	FORGE_FILESYSTEM_IS_DIRECTORY
+//	FORGE_FILESYSTEM_NOT_DIRECTORY
+//	FORGE_FILESYSTEM_SYMLINK_LOOP
+//	FORGE_FILESYSTEM_RESERVED_NAME
+//	FORGE_FILESYSTEM_PATH_TOO_LONG
+//
+// They are produced by the classify function in
+// internal/filesystem/safefs/errors.go when the underlying FS
+// returns an OS-level error. See
+// docs/reference/filesystem-errors.md for the full taxonomy and
+// the cross-platform mapping table.
 
 const (
 	// --- CLI errors ----------------------------------------------------
@@ -236,13 +290,29 @@ const (
 	// and retry. Before the taxonomy, the same category returned
 	// 4, in the flat range that no longer exists.
 	//
+	// # Filesystem versus Security
+	//
 	// Note the deliberate distinction between this category and
-	// CategorySecurity, below. A filesystem error is a computed
-	// path that happened to be unreachable; a security error is a
-	// path supplied by an attacker that was refused. The two
-	// categories have different exit codes (ExitFilesystem vs
-	// ExitSecurity) so that a script can abort on a security
-	// violation without aborting on an ordinary I/O error.
+	// CategorySecurity. A filesystem error is a computed path that
+	// happened to be unreachable, or a name that a caller
+	// constructed incorrectly. A security error is a name supplied
+	// by an attacker that was refused. The two categories have
+	// different exit codes (ExitFilesystem vs ExitSecurity) so
+	// that a script can abort on a security violation without
+	// aborting on an ordinary I/O error or a programmer mistake.
+	//
+	// The three boundary-related codes across the two categories
+	// form a deliberate triad:
+	//
+	//   - FORGE_FILESYSTEM_ESCAPE — a computed path escaped
+	//     (bug in Forge).
+	//   - FORGE_SECURITY_PATH_TRAVERSAL — a user-supplied path
+	//     attempted traversal (attack).
+	//   - FORGE_SECURITY_SYMLINK_ESCAPE — a user-supplied path
+	//     resolved through an escaping symlink (attack).
+	//
+	// Do not merge them. See the package docstring, section
+	// "Filesystem versus Security".
 
 	// CodeFilesystemNotFound indicates a referenced path does not
 	// exist.
@@ -252,11 +322,161 @@ const (
 	// but cannot be read or written due to permissions.
 	CodeFilesystemPermission Code = "FORGE_FILESYSTEM_PERMISSION"
 
-	// CodeFilesystemEscape indicates a path resolves outside the
-	// expected root. This is a filesystem error, not a security
-	// error: the path was computed, not supplied by an attacker.
-	// See CategorySecurity for the attacker-supplied case.
+	// CodeFilesystemEscape indicates a path Forge computed
+	// resolves outside the expected root. This is a filesystem
+	// error, not a security error: the path was computed, not
+	// supplied by an attacker. See the two FORGE_SECURITY_* codes
+	// below for the attacker-supplied case.
 	CodeFilesystemEscape Code = "FORGE_FILESYSTEM_ESCAPE"
+
+	// CodeFilesystemNotLocal indicates that a name supplied to a
+	// safefs.Root method is not a local, forward-slash, cleaned
+	// relative path: it is empty, absolute, contains a Windows
+	// drive letter, contains a UNC prefix, or is otherwise
+	// rejected by filepath.IsLocal.
+	//
+	// This code is returned by internal/filesystem/safefs when the
+	// *structural* form of the name is wrong. When the name is
+	// well-formed but attempts to traverse outside the root, the
+	// more specific FORGE_SECURITY_PATH_TRAVERSAL is returned
+	// instead.
+	//
+	// Introduced: WBS 13.1.1.
+	CodeFilesystemNotLocal Code = "FORGE_FILESYSTEM_NOT_LOCAL"
+
+	// CodeFilesystemDepthExceeded indicates that a recursive walk
+	// has exceeded the MaxDepth configured on the Root.
+	//
+	// This is a security control, not a performance optimisation:
+	// a hostile or accidentally deep tree must not exhaust the
+	// process. The limit is opt-in per Root via
+	// safefs.WithMaxDepth; zero disables the bound.
+	//
+	// Introduced: WBS 13.1.1.
+	CodeFilesystemDepthExceeded Code = "FORGE_FILESYSTEM_DEPTH_EXCEEDED"
+
+	// CodeFilesystemEntriesExceeded indicates that a recursive
+	// walk has exceeded the MaxEntries configured on the Root.
+	//
+	// Like CodeFilesystemDepthExceeded, this is a security
+	// control. The limit is opt-in per Root via
+	// safefs.WithMaxEntries; zero disables the bound.
+	//
+	// Introduced: WBS 13.1.1.
+	CodeFilesystemEntriesExceeded Code = "FORGE_FILESYSTEM_ENTRIES_EXCEEDED"
+
+	// CodeFilesystemCaseCollision indicates that two names in the
+	// same directory collide under Unicode case folding, on a
+	// filesystem that is case-insensitive.
+	//
+	// This check is opt-in per Root via
+	// safefs.WithCaseCollisionDetection. It is a no-op on
+	// case-sensitive filesystems.
+	//
+	// Introduced: WBS 13.1.1.
+	CodeFilesystemCaseCollision Code = "FORGE_FILESYSTEM_CASE_COLLISION"
+
+	// --- Filesystem errors added by WBS 13.5.1 -------------------------
+	//
+	// The following seven codes complete the OS-level filesystem
+	// error taxonomy. They are produced by the classify function
+	// in internal/filesystem/safefs/errors.go when the underlying
+	// FS returns an OS-level error, and they are consumed by the
+	// existing-file policy that WBS 13.5.1 pins.
+	//
+	// Category: CategoryFilesystem.
+	// Exit code: ExitFilesystem (12).
+	//
+	// See docs/reference/filesystem-errors.md for the full
+	// taxonomy and the cross-platform mapping table
+	// (POSIX errno → Windows ERROR_* → code).
+
+	// CodeFilesystemExists indicates the target of an operation
+	// exists and the operation is fail-closed: it refuses to
+	// overwrite. The caller either chooses a different target or
+	// uses the explicit overwrite variant of the operation.
+	//
+	// This is the code behind safefs.ErrExists. It is the default
+	// outcome for Root.Write and Root.Rename when the target
+	// exists; see the existing-file policy matrix in
+	// docs/reference/filesystem-errors.md.
+	//
+	// Introduced: WBS 13.5.1.
+	CodeFilesystemExists Code = "FORGE_FILESYSTEM_EXISTS"
+
+	// CodeFilesystemReadOnly indicates the filesystem is mounted
+	// read-only, or the file's attributes forbid writes.
+	//
+	// On POSIX systems, this corresponds to EROFS. On Windows, it
+	// corresponds to ERROR_WRITE_PROTECT.
+	//
+	// This is the code behind safefs.ErrReadOnly.
+	//
+	// Introduced: WBS 13.5.1.
+	CodeFilesystemReadOnly Code = "FORGE_FILESYSTEM_READ_ONLY"
+
+	// CodeFilesystemIsDirectory indicates an operation that
+	// expected a file found a directory.
+	//
+	// On POSIX systems, this corresponds to EISDIR. Windows does
+	// not have a distinct code for this condition; the Windows
+	// classifier maps ERROR_ACCESS_DENIED to this code when the
+	// operation's context indicates a directory was targeted.
+	//
+	// This is the code behind safefs.ErrIsDirectory.
+	//
+	// Introduced: WBS 13.5.1.
+	CodeFilesystemIsDirectory Code = "FORGE_FILESYSTEM_IS_DIRECTORY"
+
+	// CodeFilesystemNotDirectory indicates an operation that
+	// expected a directory found a file.
+	//
+	// On POSIX systems, this corresponds to ENOTDIR. On Windows,
+	// it corresponds to ERROR_DIRECTORY.
+	//
+	// This is the code behind safefs.ErrNotDirectory.
+	//
+	// Introduced: WBS 13.5.1.
+	CodeFilesystemNotDirectory Code = "FORGE_FILESYSTEM_NOT_DIRECTORY"
+
+	// CodeFilesystemSymlinkLoop indicates symlink resolution
+	// exceeded the Root's MaxSymlinkChain bound, or the operating
+	// system's own limit.
+	//
+	// On POSIX systems, the OS limit corresponds to ELOOP. On
+	// Windows, it corresponds to ERROR_CANT_RESOLVE_FILENAME or
+	// ERROR_TOO_MANY_LINKS.
+	//
+	// This is the code behind safefs.ErrSymlinkLoop.
+	//
+	// Introduced: WBS 13.5.1.
+	CodeFilesystemSymlinkLoop Code = "FORGE_FILESYSTEM_SYMLINK_LOOP"
+
+	// CodeFilesystemReservedName indicates a name is reserved by
+	// the operating system.
+	//
+	// The reserved set exists on Windows only: CON, PRN, AUX,
+	// NUL, COM1–COM9, LPT1–LPT9. The set is case-insensitive and
+	// applies with or without an extension. On POSIX systems the
+	// condition does not arise and the code is unreachable.
+	//
+	// This is the code behind safefs.ErrReservedName.
+	//
+	// Introduced: WBS 13.5.1.
+	CodeFilesystemReservedName Code = "FORGE_FILESYSTEM_RESERVED_NAME"
+
+	// CodeFilesystemPathTooLong indicates a path exceeds the
+	// operating system's maximum length.
+	//
+	// On POSIX systems, this corresponds to ENAMETOOLONG. On
+	// Windows, the \\?\ prefix raises the limit but does not
+	// eliminate it; the exceeded-limit error is
+	// ERROR_FILENAME_EXCED_RANGE.
+	//
+	// This is the code behind safefs.ErrPathTooLong.
+	//
+	// Introduced: WBS 13.5.1.
+	CodeFilesystemPathTooLong Code = "FORGE_FILESYSTEM_PATH_TOO_LONG"
 
 	// --- Security errors -----------------------------------------------
 	//
@@ -270,13 +490,35 @@ const (
 	// (10–19), per the WBS 11.1.1 taxonomy. Before the taxonomy,
 	// the same category returned 6, in the flat range that no
 	// longer exists.
+	//
+	// # Who returns these codes
+	//
+	// Every code in this block is returned by
+	// internal/filesystem/safefs, and only by safefs. Domain
+	// packages never construct one directly: they receive an error
+	// wrapping one of these codes from a Root method and propagate
+	// it. The CLI maps the error's Category to the exit code
+	// without inspecting the specific code, so a new security code
+	// added here automatically inherits the security exit code.
+	//
+	// CodeFilesystemEscape, above, is NOT returned by safefs. It
+	// is reserved for internal computations — for example, a
+	// path built by joining blueprint fragments — that are
+	// expected to remain inside the root by construction and did
+	// not. If safefs ever observes such a path it is a bug in the
+	// caller, and the escape is reported as an INTERNAL error, not
+	// as a security error, because the path was not user-supplied.
 
 	// CodeSecurityPathTraversal indicates a user-supplied path
 	// attempts to traverse outside the project root.
+	//
+	// Introduced: WBS 10.3.1.
 	CodeSecurityPathTraversal Code = "FORGE_SECURITY_PATH_TRAVERSAL"
 
 	// CodeSecuritySymlinkEscape indicates a symlink resolves to a
 	// target outside the project root.
+	//
+	// Introduced: WBS 10.3.1.
 	CodeSecuritySymlinkEscape Code = "FORGE_SECURITY_SYMLINK_ESCAPE"
 
 	// --- Internal errors -----------------------------------------------
@@ -371,8 +613,8 @@ type codeSpec struct {
 // would be simpler to read but would make the constructor's
 // validation O(n) and would risk accidental duplicates (two rows
 // with the same code), which the map prevents by construction. The
-// registry is small (19 codes in Phase 2) and the map is the right
-// data structure for the access pattern.
+// registry is small (30 codes after WBS 13.5.1) and the map is the
+// right data structure for the access pattern.
 var codeSpecs = map[Code]codeSpec{
 	// CLI
 	CodeCLIUnknownCommand: {code: CodeCLIUnknownCommand, introduced: "Phase 2"},
@@ -390,10 +632,25 @@ var codeSpecs = map[Code]codeSpec{
 	CodeConfigTooLarge:        {code: CodeConfigTooLarge, introduced: "Phase 2"},
 	CodeConfigInvalidEncoding: {code: CodeConfigInvalidEncoding, introduced: "Phase 2"},
 
-	// Filesystem
+	// Filesystem — Phase 2 codes
 	CodeFilesystemNotFound:   {code: CodeFilesystemNotFound, introduced: "Phase 2"},
 	CodeFilesystemPermission: {code: CodeFilesystemPermission, introduced: "Phase 2"},
 	CodeFilesystemEscape:     {code: CodeFilesystemEscape, introduced: "Phase 2"},
+
+	// Filesystem — WBS 13.1.1 codes
+	CodeFilesystemNotLocal:        {code: CodeFilesystemNotLocal, introduced: "WBS 13.1.1"},
+	CodeFilesystemDepthExceeded:   {code: CodeFilesystemDepthExceeded, introduced: "WBS 13.1.1"},
+	CodeFilesystemEntriesExceeded: {code: CodeFilesystemEntriesExceeded, introduced: "WBS 13.1.1"},
+	CodeFilesystemCaseCollision:   {code: CodeFilesystemCaseCollision, introduced: "WBS 13.1.1"},
+
+	// Filesystem — WBS 13.5.1 codes
+	CodeFilesystemExists:       {code: CodeFilesystemExists, introduced: "WBS 13.5.1"},
+	CodeFilesystemReadOnly:     {code: CodeFilesystemReadOnly, introduced: "WBS 13.5.1"},
+	CodeFilesystemIsDirectory:  {code: CodeFilesystemIsDirectory, introduced: "WBS 13.5.1"},
+	CodeFilesystemNotDirectory: {code: CodeFilesystemNotDirectory, introduced: "WBS 13.5.1"},
+	CodeFilesystemSymlinkLoop:  {code: CodeFilesystemSymlinkLoop, introduced: "WBS 13.5.1"},
+	CodeFilesystemReservedName: {code: CodeFilesystemReservedName, introduced: "WBS 13.5.1"},
+	CodeFilesystemPathTooLong:  {code: CodeFilesystemPathTooLong, introduced: "WBS 13.5.1"},
 
 	// Security
 	CodeSecurityPathTraversal: {code: CodeSecurityPathTraversal, introduced: "Phase 2"},

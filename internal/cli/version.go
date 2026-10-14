@@ -134,6 +134,14 @@
 // version command's fields (version, commit, dirty, format) are
 // not secrets; a future field that is a secret must be added in
 // the same change as a redaction test.
+//
+// # Type-level contract
+//
+// forgeerr.New and forgeerr.Wrap take their code parameter as
+// forgeerr.Code. The two call sites below pass the named
+// constants from internal/forgeerr/codes.go directly. A
+// string(...) cast in a constructor call is the diagnostic that
+// the migration documented in safefs/errors.go was rolled back.
 package cli
 
 import (
@@ -255,6 +263,12 @@ See the CLI UX specification for the frozen format of each.`,
 			// running with --verbose sees both the DEBUG record
 			// and the rendered error, and can correlate them by
 			// timestamp.
+			//
+			// # Type-level contract
+			//
+			// The forgeerr.New call passes CodeCLIUnknownFormat
+			// directly. The constructor's parameter is
+			// forgeerr.Code after the WBS 13.1.1 migration.
 			switch format {
 			case appversion.FormatText, appversion.FormatJSON:
 				logger.Debug(ctx, "version: selected format",
@@ -268,7 +282,7 @@ See the CLI UX specification for the frozen format of each.`,
 				)
 				return forgeerr.New(
 					forgeerr.CategoryCLI,
-					string(forgeerr.CodeCLIUnknownFormat),
+					forgeerr.CodeCLIUnknownFormat,
 					"unknown output format",
 				).
 					WithContext("format", format).
@@ -288,9 +302,15 @@ See the CLI UX specification for the frozen format of each.`,
 				// concern (the caller supplied the writer,
 				// and its failure is not a user input
 				// problem).
+				//
+				// # Type-level contract
+				//
+				// The forgeerr.Wrap call passes
+				// CodeInternalUnexpected directly. Same
+				// rationale as above.
 				return forgeerr.Wrap(
 					forgeerr.CategoryInternal,
-					string(forgeerr.CodeInternalUnexpected),
+					forgeerr.CodeInternalUnexpected,
 					"failed to write version output",
 					err,
 				)

@@ -51,7 +51,7 @@ import (
 // valid, registry-registered, category-correct error.
 func configErr(tb testing.TB, message string) *Error {
 	tb.Helper()
-	return New(CategoryConfig, string(CodeConfigMalformed), message)
+	return New(CategoryConfig, CodeConfigMalformed, message)
 }
 
 // filesystemErr returns a *Error with a registered filesystem code.
@@ -59,7 +59,7 @@ func configErr(tb testing.TB, message string) *Error {
 // by Is and by errors.Is.
 func filesystemErr(tb testing.TB, message string) *Error {
 	tb.Helper()
-	return New(CategoryFilesystem, string(CodeFilesystemNotFound), message)
+	return New(CategoryFilesystem, CodeFilesystemNotFound, message)
 }
 
 // --- W1–W8: the scenarios enumerated in WBS 10.3.2 --------------------
@@ -179,7 +179,7 @@ func TestW8_DoubleWrapReturnsExisting(t *testing.T) {
 	t.Parallel()
 
 	inner := configErr(t, "inner")
-	wrapped := Wrap(CategoryFilesystem, string(CodeFilesystemNotFound), "outer", inner)
+	wrapped := Wrap(CategoryFilesystem, CodeFilesystemNotFound, "outer", inner)
 
 	if wrapped != inner {
 		t.Fatalf("Wrap returned %p, want %p", wrapped, inner)
@@ -515,7 +515,7 @@ func TestAC6_DoubleWrapReturnsExisting(t *testing.T) {
 	t.Parallel()
 
 	inner := configErr(t, "inner")
-	wrapped := Wrap(CategoryFilesystem, string(CodeFilesystemNotFound), "outer", inner)
+	wrapped := Wrap(CategoryFilesystem, CodeFilesystemNotFound, "outer", inner)
 
 	if wrapped != inner {
 		t.Fatalf("Wrap returned %p, want %p", wrapped, inner)
@@ -531,7 +531,7 @@ func TestAC6_DoubleWrapThroughFmtError(t *testing.T) {
 	inner := configErr(t, "inner")
 	wrapped := fmt.Errorf("context: %w", inner)
 
-	got := Wrap(CategoryFilesystem, string(CodeFilesystemNotFound), "outer", wrapped)
+	got := Wrap(CategoryFilesystem, CodeFilesystemNotFound, "outer", wrapped)
 	if got != inner {
 		t.Fatalf("Wrap returned %p, want %p (inner)", got, inner)
 	}
@@ -569,7 +569,7 @@ func TestEdge_ChainOfErrors(t *testing.T) {
 	// errors.Is(outer, inner) matches at the top level, before
 	// any traversal. To force traversal, use a distinct code for
 	// the outer.
-	outer = New(CategoryInternal, string(CodeInternalUnexpected), "outer").WithCause(middle)
+	outer = New(CategoryInternal, CodeInternalUnexpected, "outer").WithCause(middle)
 
 	if !errors.Is(outer, inner) {
 		t.Fatal("errors.Is(outer, inner) = false; traversal failed")

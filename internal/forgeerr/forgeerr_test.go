@@ -19,6 +19,20 @@
 // is the single source of truth for codes; the tests refer to the
 // exported constants, not to string literals.
 //
+// # Type-level contract
+//
+// The constructors New and Wrap take their code parameter as
+// forgeerr.Code, not as string. Every call site in this file
+// passes the named constants from codes.go directly. A
+// string(...) cast in a constructor call is a signal that the
+// constructor's parameter type has reverted to string and the
+// migration documented in safefs/errors.go is incomplete.
+//
+// The accessor Code() returns forgeerr.Code, not string. The
+// accessor is paired with the constructor: what goes in as Code
+// comes out as Code. Callers that need the string form write
+// string(e.Code()).
+//
 // Test categories:
 //
 //   - Unit:      accessors, Error() format
@@ -94,7 +108,7 @@ func TestError_FieldsAreUnexported(t *testing.T) {
 func TestError_Accessors(t *testing.T) {
 	t.Parallel()
 
-	e := New(CategoryConfig, string(CodeConfigMalformed), "invalid YAML").
+	e := New(CategoryConfig, CodeConfigMalformed, "invalid YAML").
 		WithContext("file_path", "/etc/forge/config.yaml").
 		WithRemediation("Fix the YAML syntax.")
 
@@ -144,10 +158,14 @@ func TestError_AccessorsEveryCategory(t *testing.T) {
 				t.Skipf("no registered code for category %s", c)
 			}
 
-			e := New(c, string(code), "x")
+			e := New(c, code, "x")
 			if got := e.Category(); got != c {
 				t.Fatalf("Category() = %v, want %v", got, c)
 			}
+			// Code() returns string, so compare against the
+			// string form of the named constant. The reverse
+			// cast — Code(e.Code()) — would bypass the registry
+			// check and is never used in tests.
 			if got := e.Code(); got != string(code) {
 				t.Fatalf("Code() = %q, want %q", got, code)
 			}
@@ -161,7 +179,7 @@ func TestError_AccessorsEveryCategory(t *testing.T) {
 func TestError_NilContext(t *testing.T) {
 	t.Parallel()
 
-	e := New(CategoryConfig, string(CodeConfigMalformed), "invalid YAML")
+	e := New(CategoryConfig, CodeConfigMalformed, "invalid YAML")
 	if e.Context() != nil {
 		t.Fatalf("Context() = %v, want nil", e.Context())
 	}
@@ -174,7 +192,7 @@ func TestError_NilContext(t *testing.T) {
 func TestError_ContextIsCopy(t *testing.T) {
 	t.Parallel()
 
-	e := New(CategoryConfig, string(CodeConfigMalformed), "invalid YAML").
+	e := New(CategoryConfig, CodeConfigMalformed, "invalid YAML").
 		WithContext("k", "v")
 
 	returned := e.Context()
@@ -194,7 +212,7 @@ func TestError_ContextIsCopy(t *testing.T) {
 func TestError_ErrorString(t *testing.T) {
 	t.Parallel()
 
-	e := New(CategoryConfig, string(CodeConfigMalformed), "invalid YAML in config.yaml")
+	e := New(CategoryConfig, CodeConfigMalformed, "invalid YAML in config.yaml")
 	want := "FORGE_CONFIG_MALFORMED: invalid YAML in config.yaml"
 	if got := e.Error(); got != want {
 		t.Fatalf("Error() = %q, want %q", got, want)
@@ -208,7 +226,7 @@ func TestError_ErrorString(t *testing.T) {
 func TestError_ErrorStringIsStable(t *testing.T) {
 	t.Parallel()
 
-	e := New(CategoryConfig, string(CodeConfigMalformed), "invalid YAML")
+	e := New(CategoryConfig, CodeConfigMalformed, "invalid YAML")
 	first := e.Error()
 	for i := 0; i < 100; i++ {
 		if got := e.Error(); got != first {
@@ -232,7 +250,7 @@ func TestError_ErrorStringIsStable(t *testing.T) {
 func TestError_ErrorStringUsesCodeAndMessage(t *testing.T) {
 	t.Parallel()
 
-	e := New(CategoryConfig, string(CodeConfigMalformed), "invalid YAML").
+	e := New(CategoryConfig, CodeConfigMalformed, "invalid YAML").
 		WithContext("file_path", "/etc/forge/config.yaml").
 		WithRemediation("Fix the YAML syntax.")
 
@@ -381,7 +399,7 @@ func TestValidateRemediation(t *testing.T) {
 // helper that constructors actually call. The helper delegates to
 // Category.valid(); the panic message must mention the closed set
 // and must format the category as a quoted string (WBS 10.2.1
-// changed Category from uint8 to string).
+// defines Category as a string type, not a numeric enum).
 //
 // validateCategory does not consult the code registry, so the
 // category values below are the only thing under test.
@@ -438,7 +456,7 @@ func TestValidateCategory(t *testing.T) {
 // the accessors.
 
 func TestError_ConcurrentReads(t *testing.T) {
-	e := New(CategoryConfig, string(CodeConfigMalformed), "invalid YAML").
+	e := New(CategoryConfig, CodeConfigMalformed, "invalid YAML").
 		WithContext("k", "v").
 		WithCause(errors.New("cause")).
 		WithRemediation("Fix it.")
@@ -470,7 +488,7 @@ func TestError_ConcurrentReads(t *testing.T) {
 // fresh copy on every call, each goroutine operates on its own map
 // and the internal state is never touched.
 func TestError_ConcurrentContextMutation(t *testing.T) {
-	e := New(CategoryConfig, string(CodeConfigMalformed), "invalid YAML").
+	e := New(CategoryConfig, CodeConfigMalformed, "invalid YAML").
 		WithContext("k", "v")
 
 	var wg sync.WaitGroup
@@ -494,7 +512,7 @@ func TestError_ConcurrentContextMutation(t *testing.T) {
 // BenchmarkError measures the cost of Error(), which is a single
 // string concatenation and should allocate once.
 func BenchmarkError(b *testing.B) {
-	e := New(CategoryConfig, string(CodeConfigMalformed), "invalid YAML")
+	e := New(CategoryConfig, CodeConfigMalformed, "invalid YAML")
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -506,7 +524,7 @@ func BenchmarkError(b *testing.B) {
 // Context() performs on every call. The cost is O(len(context)),
 // which is expected to be small (typically 1–3 keys).
 func BenchmarkContext(b *testing.B) {
-	e := New(CategoryConfig, string(CodeConfigMalformed), "invalid YAML").
+	e := New(CategoryConfig, CodeConfigMalformed, "invalid YAML").
 		WithContext("file_path", "/etc/forge/config.yaml").
 		WithContext("line_number", "12")
 	b.ReportAllocs()

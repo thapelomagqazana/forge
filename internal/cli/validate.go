@@ -24,6 +24,14 @@
 // returned a plain error would route its rejections through the
 // boundary's wrapping path, mislabelling a usage error as an
 // internal error.
+//
+// # Type-level contract
+//
+// forgeerr.New takes its code parameter as forgeerr.Code. Every
+// constructor call in this file passes the named constants from
+// internal/forgeerr/codes.go directly. A string(...) cast in a
+// constructor call is the diagnostic that the migration
+// documented in safefs/errors.go was rolled back.
 package cli
 
 import (
@@ -197,6 +205,13 @@ func validateArgs(args []string) error {
 // order. The simplicity is intentional: the forbidden pattern is a
 // simple prefix, and the scan that detects it should be equally
 // simple.
+//
+// # Type-level contract
+//
+// The forgeerr.New call passes CodeCLIInvalidArg directly. The
+// constructor's parameter is forgeerr.Code after the WBS 13.1.1
+// migration; a string(...) cast would be a compile error once the
+// migration is complete.
 func validateHelpFlagWithArgs(args []string) error {
 	seenHelpFlag := false
 	seenHelpFlagName := ""
@@ -208,7 +223,7 @@ func validateHelpFlagWithArgs(args []string) error {
 			if seenHelpFlag {
 				return forgeerr.New(
 					forgeerr.CategoryCLI,
-					string(forgeerr.CodeCLIInvalidArg),
+					forgeerr.CodeCLIInvalidArg,
 					fmt.Sprintf("the %s flag takes no argument", seenHelpFlagName),
 				).
 					WithContext("argument", arg).
@@ -288,7 +303,7 @@ func validateVersionFlagWithArgs(args []string) error {
 			if seenVersionFlag {
 				return forgeerr.New(
 					forgeerr.CategoryCLI,
-					string(forgeerr.CodeCLIInvalidArg),
+					forgeerr.CodeCLIInvalidArg,
 					fmt.Sprintf("the %s flag takes no argument", seenVersionFlagName),
 				).
 					WithContext("argument", arg).
@@ -377,7 +392,7 @@ func validateConfigFlagWithArgs(args []string) error {
 		if i+1 >= len(args) {
 			return forgeerr.New(
 				forgeerr.CategoryCLI,
-				string(forgeerr.CodeCLIInvalidArg),
+				forgeerr.CodeCLIInvalidArg,
 				"the --config flag requires a value",
 			).WithRemediation("Use '--config <path>' to specify a configuration file.")
 		}
@@ -385,7 +400,7 @@ func validateConfigFlagWithArgs(args []string) error {
 		if strings.HasPrefix(next, "-") {
 			return forgeerr.New(
 				forgeerr.CategoryCLI,
-				string(forgeerr.CodeCLIInvalidArg),
+				forgeerr.CodeCLIInvalidArg,
 				"the --config flag requires a value",
 			).
 				WithContext("argument", next).
@@ -467,7 +482,7 @@ func validateHelpTopic(args []string) error {
 
 	return forgeerr.New(
 		forgeerr.CategoryCLI,
-		string(forgeerr.CodeCLIUnknownCommand),
+		forgeerr.CodeCLIUnknownCommand,
 		fmt.Sprintf("unknown help topic %q", topic),
 	).
 		WithContext("topic", topic).

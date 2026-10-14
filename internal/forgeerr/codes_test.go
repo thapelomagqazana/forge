@@ -3,9 +3,31 @@
 // Every test is named after the acceptance criterion (AC1–AC8) it
 // verifies. AC7 (codes are never renamed) and AC8 (deprecated
 // codes are marked) are policies that cannot be tested in Go; they
-// are documented in ADR-014 and enforced by code review. The tests
+// are documented in ADR-012 and enforced by code review. The tests
 // here enforce everything that *can* be mechanised: shape,
 // membership, prefix-category agreement, and documentation sync.
+//
+// # Shared test helpers
+//
+// The -update flag, the golden-file reader (goldenText), and the
+// repoRoot walk-up helper are defined once per package:
+//
+//   - update and goldenText live in testhelpers_test.go (or, if
+//     the package has no such file, in format_test.go). This file
+//     consumes them; it does not define them. A duplicate
+//     definition would fail to compile.
+//   - repoRoot lives in format_test.go. The AC10 documentation
+//     test uses it; this file does not need it.
+//
+// # Registry size
+//
+// The registry grows additively. WBS 13.1.1 added four codes to
+// the FORGE_FILESYSTEM_ family so that internal/filesystem/safefs
+// can report structural name problems, bounded-walk overruns, and
+// case collisions through the taxonomy. The Phase 2 count moved
+// from 19 to 23. The two "enumerate every code" tests below are
+// the place that count is asserted; a future addition updates
+// both tests and the golden file in the same commit.
 //
 // Test categories:
 //
@@ -19,7 +41,6 @@
 package forgeerr
 
 import (
-	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -27,83 +48,36 @@ import (
 	"testing"
 )
 
-// --- Test helpers -----------------------------------------------------
-
-// update is the -update flag shared by the golden-file tests. It is
-// registered once, in codes_flags_test.go's init function, so that
-// this file does not depend on flag-registration order.
-var update *bool
-
-// readGolden reads the golden file at path.
-//
-// If the -update flag is set, the file is rewritten with the
-// canonical rendering of the registry and the freshly rendered
-// content is returned so that the caller's comparison passes. This
-// is the standard Go golden-file pattern.
-//
-// If the flag is not set, the file is read and returned verbatim.
-// A missing file is a fatal error: the test cannot pass without
-// its golden artifact.
-func readGolden(t *testing.T, path string) string {
-	t.Helper()
-	want := renderCodesGolden()
-	if update != nil && *update {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
-		}
-		if err := os.WriteFile(path, []byte(want), 0o644); err != nil {
-			t.Fatalf("write %s: %v", path, err)
-		}
-		return want
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-	return string(raw)
-}
-
-// repoRoot walks up from the current working directory until it
-// finds a go.mod file. It is used to locate docs/ from a test that
-// runs inside internal/forgeerr.
-func repoRoot(t *testing.T) string {
-	t.Helper()
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatalf("go.mod not found above %s", dir)
-		}
-		dir = parent
-	}
-}
-
 // --- AC1: registry has all Phase 2 codes ------------------------------
 
 // TestAC1_RegistryHasAllPhase2Codes asserts that the registry
-// contains exactly the 19 codes enumerated in WBS 10.3.1. A
-// mismatch in either direction — a missing code or an extra one —
-// is a failure, because the registry is a frozen set.
+// contains exactly the 23 codes enumerated across WBS 10.3.1 and
+// WBS 13.1.1. A mismatch in either direction — a missing code or
+// an extra one — is a failure, because the registry is a frozen
+// set.
 //
 // The expected list is written out by hand rather than derived
 // from the registry, so that a change to codeSpecs that silently
 // adds or removes an entry is caught here. This is the point of a
 // frozen set: its contents are pinned, not inferred.
+//
+// The four FORGE_FILESYSTEM_* codes added in WBS 13.1.1 are:
+//
+//   - FORGE_FILESYSTEM_NOT_LOCAL         structural name rejection
+//   - FORGE_FILESYSTEM_DEPTH_EXCEEDED    bounded walk overrun
+//   - FORGE_FILESYSTEM_ENTRIES_EXCEEDED  bounded walk overrun
+//   - FORGE_FILESYSTEM_CASE_COLLISION    case-insensitive collision
 func TestAC1_RegistryHasAllPhase2Codes(t *testing.T) {
 	t.Parallel()
 
 	want := []Code{
+		// CLI
 		CodeCLIUnknownCommand,
 		CodeCLIUnknownFlag,
 		CodeCLIInvalidArg,
 		CodeCLIUnknownFormat,
 
+		// Config
 		CodeConfigNotFound,
 		CodeConfigPermission,
 		CodeConfigMalformed,
@@ -113,13 +87,31 @@ func TestAC1_RegistryHasAllPhase2Codes(t *testing.T) {
 		CodeConfigTooLarge,
 		CodeConfigInvalidEncoding,
 
+		// Filesystem — Phase 2
 		CodeFilesystemNotFound,
 		CodeFilesystemPermission,
 		CodeFilesystemEscape,
 
+		// Filesystem — WBS 13.1.1
+		CodeFilesystemNotLocal,
+		CodeFilesystemDepthExceeded,
+		CodeFilesystemEntriesExceeded,
+		CodeFilesystemCaseCollision,
+
+		// Filesystem — WBS 13.5.1
+		CodeFilesystemExists,
+		CodeFilesystemReadOnly,
+		CodeFilesystemIsDirectory,
+		CodeFilesystemNotDirectory,
+		CodeFilesystemSymlinkLoop,
+		CodeFilesystemReservedName,
+		CodeFilesystemPathTooLong,
+
+		// Security
 		CodeSecurityPathTraversal,
 		CodeSecuritySymlinkEscape,
 
+		// Internal
 		CodeInternalPanic,
 		CodeInternalUnexpected,
 	}
@@ -146,14 +138,25 @@ func TestAC1_RegistryHasAllPhase2Codes(t *testing.T) {
 // constant is a member of the registry. A constant that is
 // declared but not registered would be unusable with the
 // constructors, which is a silent contract violation.
+//
+// The list below must match the list in
+// TestAC1_RegistryHasAllPhase2Codes. The two are intentionally
+// duplicated rather than shared: a single shared list would mean
+// a single edit to keep both tests in sync, which is the failure
+// mode the duplication exists to prevent. Two independent lists
+// that must agree catch a mistaken edit that updates one and
+// forgets the other.
 func TestAC1_EveryConstantIsRegistered(t *testing.T) {
 	t.Parallel()
 
 	declared := []Code{
+		// CLI
 		CodeCLIUnknownCommand,
 		CodeCLIUnknownFlag,
 		CodeCLIInvalidArg,
 		CodeCLIUnknownFormat,
+
+		// Config
 		CodeConfigNotFound,
 		CodeConfigPermission,
 		CodeConfigMalformed,
@@ -162,11 +165,21 @@ func TestAC1_EveryConstantIsRegistered(t *testing.T) {
 		CodeConfigInvalidValue,
 		CodeConfigTooLarge,
 		CodeConfigInvalidEncoding,
+
+		// Filesystem
 		CodeFilesystemNotFound,
 		CodeFilesystemPermission,
 		CodeFilesystemEscape,
+		CodeFilesystemNotLocal,
+		CodeFilesystemDepthExceeded,
+		CodeFilesystemEntriesExceeded,
+		CodeFilesystemCaseCollision,
+
+		// Security
 		CodeSecurityPathTraversal,
 		CodeSecuritySymlinkEscape,
+
+		// Internal
 		CodeInternalPanic,
 		CodeInternalUnexpected,
 	}
@@ -284,6 +297,10 @@ func TestAC3_CategoryUniqueness(t *testing.T) {
 //   - VALIDATION: no validation subsystem yet.
 //   - TEMPLATE:   templates are a Phase 4 concern.
 //
+// WBS 13.1.1 did not change this list. The four new codes are
+// FORGE_FILESYSTEM_*, so the FILESYSTEM category was already
+// covered by CodeFilesystemNotFound and remains covered.
+//
 // When the first code for a pending category is added, the entry
 // must be removed from this list in the same commit; the second
 // half of TestAC3_RegistryCoversEveryCategory enforces that.
@@ -377,6 +394,14 @@ func TestAC3_PendingCategoriesAreValid(t *testing.T) {
 //     (the file itself contains a comment with the command).
 //  4. Commit all four files together: codes.go, codes_test.go,
 //     testdata/codes/codes.golden.txt, docs/reference/error-codes.md.
+//
+// # Shared with the user-facing format goldens
+//
+// The -update flag and the golden-file reader (goldenText) are the
+// same helpers used by format_test.go's golden tests. They are
+// defined once in testhelpers_test.go (or, if the package has no
+// such file, in format_test.go). This file consumes them; a
+// duplicate definition would fail to compile.
 
 // TestAC4_DocsSyncWithRegistry asserts that the golden file
 // testdata/codes/codes.golden.txt matches the registry.
@@ -385,11 +410,22 @@ func TestAC3_PendingCategoriesAreValid(t *testing.T) {
 // registry that the docs generation pipeline consumes. If it
 // drifts, CI fails; the fix is to regenerate it, not to edit it
 // by hand.
+//
+// # Why this test uses goldenText and not a local reader
+//
+// A local reader (the previous version's readGolden) would have
+// to duplicate the -update branch and the mkdir-or-fail logic
+// that goldenText already implements. Two readers, one per golden
+// family, drift the moment one of them is updated. A single
+// reader guarantees that a change to the flag's semantics — for
+// example, adding a -check mode — applies to every golden in the
+// package.
 func TestAC4_DocsSyncWithRegistry(t *testing.T) {
 	t.Parallel()
 
 	want := renderCodesGolden()
-	got := readGolden(t, filepath.Join("testdata", "codes", "codes.golden.txt"))
+	path := filepath.Join("testdata", "codes", "codes.golden.txt")
+	got := goldenText(t, path, want)
 
 	if got != want {
 		t.Fatalf(
@@ -430,6 +466,10 @@ func TestLookup_KnownCodes(t *testing.T) {
 // agree on values that look like codes but are not registered.
 // Each vector is a plausible typo: a missing suffix, a truncated
 // word, a trailing underscore.
+//
+// The vectors include near-misses for both the original codes and
+// the four added in WBS 13.1.1. A typo of a new code is as
+// plausible as a typo of an old one.
 func TestLookup_UnknownCodes(t *testing.T) {
 	t.Parallel()
 
@@ -441,6 +481,13 @@ func TestLookup_UnknownCodes(t *testing.T) {
 		"FORGE_SECURITY_TRAVERSAL_",   // trailing underscore
 		"FORGE_INTERNAL_UNEXPECTED_X", // extra suffix
 		"FORGE_CONFIG_X",              // well-formed, unregistered
+
+		// Near-misses for the WBS 13.1.1 codes.
+		"FORGE_FILESYSTEM_NOT_LOCA",       // truncated
+		"FORGE_FILESYSTEM_DEPTH_EXCEED",   // truncated
+		"FORGE_FILESYSTEM_ENTRIES_EXCEED", // truncated
+		"FORGE_FILESYSTEM_CASE_COLLISON",  // misspelled
+		"FORGE_FILESYSTEM_NOT_LOCAL_X",    // extra suffix
 	}
 	for _, c := range unknown {
 		c := c
@@ -489,6 +536,11 @@ func TestCategory_UnknownCodes(t *testing.T) {
 // and longest registered codes are handled correctly by the
 // category derivation. This is a sanity check on the length
 // arithmetic in hasPrefix.
+//
+// The introduction of the four FORGE_FILESYSTEM_* codes in WBS
+// 13.1.1 likely changes which code is the longest; the test does
+// not name the specific code, so a length change does not require
+// an edit here.
 func TestBoundary_ShortestAndLongestCodes(t *testing.T) {
 	t.Parallel()
 
@@ -522,7 +574,7 @@ func TestBoundary_ShortestAndLongestCodes(t *testing.T) {
 func TestBDD_ConfigMalformedRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	e := New(CategoryConfig, string(CodeConfigMalformed), "invalid YAML in config.yaml")
+	e := New(CategoryConfig, CodeConfigMalformed, "invalid YAML in config.yaml")
 
 	code := Code(e.Code())
 
@@ -543,6 +595,30 @@ func TestBDD_ConfigMalformedRoundTrip(t *testing.T) {
 	}
 	if deprecated {
 		t.Fatalf("Lookup(%q).deprecated = true, want false", code)
+	}
+}
+
+// TestBDD_FilesystemNotLocalRoundTrip walks the same scenario
+// through one of the four codes added in WBS 13.1.1. It exists so
+// that the round-trip is exercised for the new codes at least
+// once through the constructor, not only through the registry
+// directly.
+func TestBDD_FilesystemNotLocalRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	e := New(CategoryFilesystem, CodeFilesystemNotLocal, "name is not local")
+
+	code := Code(e.Code())
+	cat, ok := code.Category()
+	if !ok {
+		t.Fatalf("Category() = (_, false) for %q", code)
+	}
+	if cat != CategoryFilesystem {
+		t.Fatalf("Category() = %v, want %v", cat, CategoryFilesystem)
+	}
+
+	if _, deprecated, ok := Lookup(code); !ok || deprecated {
+		t.Fatalf("Lookup(%q) = (_, %v, %v), want (_, false, true)", code, deprecated, ok)
 	}
 }
 
@@ -612,6 +688,12 @@ func BenchmarkIsRegistered(b *testing.B) {
 // non-empty introduced field, or it is not registered and Lookup
 // returns false. Divergence would mean two different answers to
 // the same question.
+//
+// The seeds include every registered code, every shape of
+// malformed input, and the near-misses for the WBS 13.1.1 codes.
+// The fuzzer's job is to explore the space around these seeds;
+// the seeds themselves are chosen so that a failing input is
+// likely to be a plausible typo rather than a random byte string.
 func FuzzRegistryMembership(f *testing.F) {
 	for _, c := range AllCodes() {
 		f.Add(string(c))
@@ -622,6 +704,8 @@ func FuzzRegistryMembership(f *testing.F) {
 	f.Add("FORGE_CONFIG_MALFORM")
 	f.Add("FORGE_CONFIG_X")
 	f.Add("FORGE_")
+	f.Add("FORGE_FILESYSTEM_NOT_LOCA")
+	f.Add("FORGE_FILESYSTEM_NOT_LOCAL_X")
 
 	f.Fuzz(func(t *testing.T, s string) {
 		c := Code(s)
@@ -655,6 +739,17 @@ func FuzzRegistryMembership(f *testing.F) {
 // One row per code, sorted by code. Rows are terminated by a
 // single newline. The file is easy to diff, easy to generate, and
 // easy to consume from a documentation generator.
+//
+// # Why the exit code is in the golden file
+//
+// The exit code is not a property of the registry — it is a
+// property of the category, and Category.ExitCode is the single
+// source of truth for it. The golden file includes the exit code
+// anyway because the reference documentation at
+// docs/reference/error-codes.md documents it, and a change to the
+// exit-code mapping should be visible in the golden diff. The
+// value is derived here, not stored; if Category.ExitCode changes,
+// the golden file is regenerated in the same commit.
 func renderCodesGolden() string {
 	var b strings.Builder
 	for _, c := range AllCodes() {

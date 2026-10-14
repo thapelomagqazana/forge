@@ -25,6 +25,29 @@
 //   - Corner:    multiple errors logged in sequence
 //   - NF:        determinism, concurrency
 //   - Fuzz:      invariant preservation
+//
+// # Type-level contract
+//
+// Every call to forgeerr.New and forgeerr.Wrap in this file passes
+// the code as forgeerr.Code, not as string. The constructors'
+// signatures are New(category, code Code, message) and
+// Wrap(category, code Code, message, cause). The Code parameter is
+// what makes the registry a closed set at compile time: a bare
+// string literal in the code position does not convert implicitly,
+// so a caller who invents a new code cannot compile the call.
+//
+// If this file fails to compile with "cannot use
+// forgeerr.CodeXxx (constant ... of string type forgeerr.Code) as
+// string value", the constructor signature is still code string and
+// the migration documented in safefs/errors.go is incomplete.
+//
+// # Why the type matters here specifically
+//
+// The tests in this file are the ones a future contributor will
+// copy when adding a new AC. If they see string(CodeConfigMalformed)
+// they will copy the cast, and the cast is what defeats the whole
+// point of the Code type. The tests use the named constants
+// directly, so the pattern that propagates is the correct one.
 package forgeerr
 
 import (
@@ -39,25 +62,29 @@ import (
 	"testing"
 )
 
-// --- Test helpers -----------------------------------------------------
+// --- Test-only constants and helpers ----------------------------------
 
-// logWith renders e with the given handler and returns the
-// resulting string. The message is the standard "something went
-// wrong" used by the tests; the error's own message is rendered
-// separately by the tests that need it.
+// logWith renders e with a handler produced by mk and returns the
+// resulting string.
 //
-// The helper accepts a slog.Handler so that the same call site
-// works with the text handler, the JSON handler, and any future
-// handler.
-func logWith(h slog.Handler, e *Error) string {
+// logWith takes a constructor rather than a pre-built handler
+// because a slog.Handler is bound to its writer at construction.
+// A caller that passes a handler has already chosen the writer,
+// and logWith cannot retrieve it — the handler writes to the
+// caller's buffer, while a naive helper would read from its own.
+// Taking the constructor keeps the buffer inside logWith, which is
+// the only place it is needed.
+//
+// The helper is the canonical way to invoke the logger in this
+// test file; every test that does not need a custom ReplaceAttr
+// uses it. It builds a logger, emits one Error record with the
+// error attached under slog.Any("error", e), and returns the
+// buffer's contents. It does not call t.Fatalf; a caller that
+// wants to inspect the raw string does so directly.
+func logWith(mk func(*bytes.Buffer) slog.Handler, e *Error) string {
 	var buf bytes.Buffer
-	logger := slog.New(h)
-	// The With-attached attributes are part of the record. The
-	// message is deliberately short so that the assertions on
-	// the error group are not confused with the message.
-	logger.Error("failed",
-		slog.Any("error", e),
-	)
+	logger := slog.New(mk(&buf))
+	logger.Error("failed", slog.Any("error", e))
 	return buf.String()
 }
 
@@ -65,14 +92,17 @@ func logWith(h slog.Handler, e *Error) string {
 // text format, with the timestamp removed and the level
 // lowercased. The transformations make the output deterministic
 // and comparable against golden files.
+//
+// The ReplaceAttr callback runs for every attribute, including
+// attributes inside groups. It receives the group path in the
+// first argument, which this handler ignores: the transforms it
+// applies are unconditional.
 func newTextHandler(buf *bytes.Buffer) slog.Handler {
 	return slog.NewTextHandler(buf, &slog.HandlerOptions{
 		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
-			// Drop the timestamp; it changes on every call.
 			if a.Key == slog.TimeKey {
 				return slog.Attr{}
 			}
-			// Lowercase the level for readability.
 			if a.Key == slog.LevelKey {
 				if lvl, ok := a.Value.Any().(slog.Level); ok {
 					a.Value = slog.StringValue(strings.ToLower(lvl.String()))
@@ -85,7 +115,8 @@ func newTextHandler(buf *bytes.Buffer) slog.Handler {
 
 // newJSONHandler returns a slog.Handler that writes to buf in
 // JSON format, with the timestamp removed and the level
-// lowercased.
+// lowercased. The two transformations match newTextHandler's so
+// that the same golden fixture drives both.
 func newJSONHandler(buf *bytes.Buffer) slog.Handler {
 	return slog.NewJSONHandler(buf, &slog.HandlerOptions{
 		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
@@ -110,7 +141,7 @@ func newJSONHandler(buf *bytes.Buffer) slog.Handler {
 func TestAC1_LogValueImplemented(t *testing.T) {
 	t.Parallel()
 
-	var v slog.LogValuer = New(CategoryConfig, string(CodeConfigMalformed), "x")
+	var v slog.LogValuer = New(CategoryConfig, CodeConfigMalformed, "x")
 	if v == nil {
 		t.Fatal("New returned a nil slog.LogValuer")
 	}
@@ -124,7 +155,7 @@ func TestAC2_IncludesCodeCategoryCause(t *testing.T) {
 	t.Parallel()
 
 	cause := errors.New("underlying failure")
-	e := New(CategoryConfig, string(CodeConfigMalformed), "invalid YAML").
+	e := New(CategoryConfig, CodeConfigMalformed, "invalid YAML").
 		WithCause(cause)
 
 	var buf bytes.Buffer
@@ -157,7 +188,7 @@ func TestAC2_IncludesCodeCategoryCause(t *testing.T) {
 func TestAC2_CauseOmittedWhenNil(t *testing.T) {
 	t.Parallel()
 
-	e := New(CategoryConfig, string(CodeConfigMalformed), "invalid YAML")
+	e := New(CategoryConfig, CodeConfigMalformed, "invalid YAML")
 
 	var buf bytes.Buffer
 	logger := slog.New(newJSONHandler(&buf))
@@ -184,7 +215,7 @@ func TestAC2_CauseOmittedWhenNil(t *testing.T) {
 func TestAC3_ContextFlattened(t *testing.T) {
 	t.Parallel()
 
-	e := New(CategoryConfig, string(CodeConfigMalformed), "invalid YAML").
+	e := New(CategoryConfig, CodeConfigMalformed, "invalid YAML").
 		WithContext("file", "config.yaml").
 		WithContext("line", "12")
 
@@ -208,7 +239,6 @@ func TestAC3_ContextFlattened(t *testing.T) {
 	if got := errGroup["line"]; got != "12" {
 		t.Errorf("line = %v, want %q", got, "12")
 	}
-	// Ensure context is not nested under a "context" key.
 	if _, present := errGroup["context"]; present {
 		t.Errorf("context is nested under a 'context' key; it should be flattened: %v", errGroup)
 	}
@@ -222,15 +252,12 @@ func TestAC4_KeysSortedAlphabetically(t *testing.T) {
 	t.Parallel()
 
 	// Insert keys in reverse order to prove the sort is applied.
-	e := New(CategoryConfig, string(CodeConfigMalformed), "x").
+	e := New(CategoryConfig, CodeConfigMalformed, "x").
 		WithContext("zeta", "1").
 		WithContext("yotta", "2").
 		WithContext("alpha", "3")
 
-	var buf bytes.Buffer
-	logger := slog.New(newTextHandler(&buf))
-	logger.Error("failed", slog.Any("error", e))
-	out := buf.String()
+	out := logWith(newTextHandler, e)
 
 	alphaIdx := strings.Index(out, "alpha=3")
 	yottaIdx := strings.Index(out, "yotta=2")
@@ -258,12 +285,9 @@ func TestAC4_KeysSortedAlphabetically(t *testing.T) {
 func TestAC5_WorksWithSlogAny(t *testing.T) {
 	t.Parallel()
 
-	e := New(CategoryConfig, string(CodeConfigMalformed), "invalid YAML")
+	e := New(CategoryConfig, CodeConfigMalformed, "invalid YAML")
 
-	var buf bytes.Buffer
-	logger := slog.New(newTextHandler(&buf))
-	logger.Error("failed", slog.Any("error", e))
-	out := buf.String()
+	out := logWith(newTextHandler, e)
 
 	if !strings.Contains(out, "error.code="+string(CodeConfigMalformed)) {
 		t.Errorf("output does not contain structured code attribute:\n%s", out)
@@ -280,7 +304,7 @@ func TestAC5_WorksWithSlogAny(t *testing.T) {
 func TestAC6_WorksWithJSONHandler(t *testing.T) {
 	t.Parallel()
 
-	e := New(CategoryConfig, string(CodeConfigMalformed), "invalid YAML").
+	e := New(CategoryConfig, CodeConfigMalformed, "invalid YAML").
 		WithContext("file", "config.yaml")
 
 	var buf bytes.Buffer
@@ -316,13 +340,10 @@ func TestAC6_WorksWithJSONHandler(t *testing.T) {
 func TestAC7_WorksWithTextHandler(t *testing.T) {
 	t.Parallel()
 
-	e := New(CategoryConfig, string(CodeConfigMalformed), "invalid YAML").
+	e := New(CategoryConfig, CodeConfigMalformed, "invalid YAML").
 		WithContext("file", "config.yaml")
 
-	var buf bytes.Buffer
-	logger := slog.New(newTextHandler(&buf))
-	logger.Error("failed", slog.Any("error", e))
-	out := buf.String()
+	out := logWith(newTextHandler, e)
 
 	for _, want := range []string{
 		"error.code=" + string(CodeConfigMalformed),
@@ -354,12 +375,9 @@ func TestAC7_WorksWithTextHandler(t *testing.T) {
 func TestAC8_HandlerRedactsSecrets(t *testing.T) {
 	t.Parallel()
 
-	// A fake secret. In practice, the secret pattern list is in
-	// docs/security-model.md; this test uses a distinctive
-	// string and a matching predicate for clarity.
 	const secret = "ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
-	e := New(CategoryConfig, string(CodeConfigMalformed), "invalid YAML").
+	e := New(CategoryConfig, CodeConfigMalformed, "invalid YAML").
 		WithContext("token", secret)
 
 	var buf bytes.Buffer
@@ -368,11 +386,9 @@ func TestAC8_HandlerRedactsSecrets(t *testing.T) {
 			if a.Key == slog.TimeKey {
 				return slog.Attr{}
 			}
-			// Redact any string value that looks like a
-			// GitHub personal access token.
 			if s, ok := a.Value.Any().(string); ok {
 				if strings.HasPrefix(s, "ghp_") {
-					a.Value = slog.StringValue("<redacted>")
+					a.Value = slog.StringValue(redactedMarker)
 				}
 			}
 			return a
@@ -388,8 +404,8 @@ func TestAC8_HandlerRedactsSecrets(t *testing.T) {
 	}
 	errGroup := record["error"].(map[string]any)
 
-	if got := errGroup["token"]; got != "<redacted>" {
-		t.Errorf("token = %v, want <redacted>", got)
+	if got := errGroup["token"]; got != redactedMarker {
+		t.Errorf("token = %v, want %s", got, redactedMarker)
 	}
 	if strings.Contains(buf.String(), secret) {
 		t.Errorf("secret leaked into output:\n%s", buf.String())
@@ -416,11 +432,8 @@ func TestGolden_TextFormat(t *testing.T) {
 	t.Parallel()
 
 	e := logFixtureError()
-	var buf bytes.Buffer
-	logger := slog.New(newTextHandler(&buf))
-	logger.Error("failed", slog.Any("error", e))
 
-	got := buf.String()
+	got := logWith(newTextHandler, e)
 	path := filepath.Join("testdata", "log", "text.golden.txt")
 	want := goldenText(t, path, got)
 
@@ -446,11 +459,8 @@ func TestGolden_JSONFormat(t *testing.T) {
 	t.Parallel()
 
 	e := logFixtureError()
-	var buf bytes.Buffer
-	logger := slog.New(newJSONHandler(&buf))
-	logger.Error("failed", slog.Any("error", e))
 
-	got := buf.String()
+	got := logWith(newJSONHandler, e)
 	path := filepath.Join("testdata", "log", "json.golden.txt")
 	want := goldenText(t, path, got)
 
@@ -468,7 +478,7 @@ func TestGolden_JSONFormat(t *testing.T) {
 // tests. It exercises every attribute: code, category, cause, and
 // multiple context entries.
 func logFixtureError() *Error {
-	return New(CategoryConfig, string(CodeConfigMalformed), "invalid YAML").
+	return New(CategoryConfig, CodeConfigMalformed, "invalid YAML").
 		WithCause(errors.New("yaml: line 12: mapping values are not allowed in this context")).
 		WithContext("file", "config.yaml").
 		WithContext("line", "12")
@@ -484,7 +494,7 @@ func logFixtureError() *Error {
 func TestEdge_EmptyCauseMessage(t *testing.T) {
 	t.Parallel()
 
-	e := New(CategoryConfig, string(CodeConfigMalformed), "x").
+	e := New(CategoryConfig, CodeConfigMalformed, "x").
 		WithCause(errors.New(""))
 
 	var buf bytes.Buffer
@@ -506,7 +516,7 @@ func TestEdge_EmptyCauseMessage(t *testing.T) {
 	}
 }
 
-// TestEdge_ContextKeyCollidesWithReservedKey asserts the
+// TestEdge_ContextKeyCollidesWithReservedKey documents the
 // behaviour when a context key is one of the reserved keys
 // ("code", "category", "cause"). The context key shadows the
 // reserved key in the output, which is a data-loss scenario.
@@ -516,17 +526,18 @@ func TestEdge_EmptyCauseMessage(t *testing.T) {
 // snake_case. The formatter cannot prevent the collision without
 // reserving the names, which the format does not do.
 //
-// This test documents the current behaviour: the context
-// attribute overwrites the reserved attribute when the two
-// collide. A future ADR may reserve the names and reject them at
-// construction time.
+// This test pins the current behaviour so that a future ADR can
+// change it deliberately rather than accidentally. The change the
+// ADR would make is either (a) reserving the three names in
+// validateContextKey, which would reject them at construction
+// time, or (b) teaching the formatter to prefix context keys that
+// collide, which would preserve both values. Neither change is in
+// scope for WBS 13.1.1; the test exists so that the decision is
+// visible.
 func TestEdge_ContextKeyCollidesWithReservedKey(t *testing.T) {
 	t.Parallel()
 
-	// The collision is documented, not prevented. A caller who
-	// uses "code", "category", or "cause" as a context key
-	// loses the corresponding reserved attribute.
-	e := New(CategoryConfig, string(CodeConfigMalformed), "x").
+	e := New(CategoryConfig, CodeConfigMalformed, "x").
 		WithContext("code", "shadowed")
 
 	var buf bytes.Buffer
@@ -540,8 +551,11 @@ func TestEdge_ContextKeyCollidesWithReservedKey(t *testing.T) {
 	errGroup := record["error"].(map[string]any)
 
 	// The context attribute is the last one written, so it
-	// shadows the reserved one. This is the documented
-	// behaviour; see the test's docstring.
+	// shadows the reserved one. The shadowing is a data loss:
+	// the real code is no longer recoverable from the log entry.
+	// The test asserts the loss is visible, so that a future
+	// change to reject the collision at construction time is
+	// accompanied by an update to this test.
 	if got := errGroup["code"]; got != "shadowed" {
 		t.Errorf("code = %v, want %q (context shadows reserved)", got, "shadowed")
 	}
@@ -552,20 +566,14 @@ func TestEdge_ContextKeyCollidesWithReservedKey(t *testing.T) {
 func TestEdge_ManyContextKeys(t *testing.T) {
 	t.Parallel()
 
-	e := New(CategoryConfig, string(CodeConfigMalformed), "x")
+	e := New(CategoryConfig, CodeConfigMalformed, "x")
 	keys := []string{"k", "j", "i", "h", "g", "f", "e", "d", "c", "b", "a"}
 	for _, k := range keys {
 		e = e.WithContext(k, "v-"+k)
 	}
 
-	var buf bytes.Buffer
-	logger := slog.New(newTextHandler(&buf))
-	logger.Error("failed", slog.Any("error", e))
-	out := buf.String()
+	out := logWith(newTextHandler, e)
 
-	// The keys are sorted in the output. The insertion order
-	// above is reverse-alphabetical; the output must be
-	// alphabetical.
 	prev := -1
 	for _, k := range []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"} {
 		idx := strings.Index(out, "error."+k+"=")
@@ -586,7 +594,7 @@ func TestEdge_ManyContextKeys(t *testing.T) {
 func TestEdge_NonASCIIValues(t *testing.T) {
 	t.Parallel()
 
-	e := New(CategoryConfig, string(CodeConfigMalformed), "x").
+	e := New(CategoryConfig, CodeConfigMalformed, "x").
 		WithContext("path", "/home/用户/config.yaml")
 
 	var buf bytes.Buffer
@@ -617,7 +625,7 @@ func TestEdge_NonASCIIValues(t *testing.T) {
 func TestNF_Deterministic(t *testing.T) {
 	t.Parallel()
 
-	e := New(CategoryConfig, string(CodeConfigMalformed), "x").
+	e := New(CategoryConfig, CodeConfigMalformed, "x").
 		WithContext("alpha", "1").
 		WithContext("beta", "2").
 		WithContext("gamma", "3").
@@ -626,10 +634,7 @@ func TestNF_Deterministic(t *testing.T) {
 
 	var first string
 	for i := 0; i < 100; i++ {
-		var buf bytes.Buffer
-		logger := slog.New(newTextHandler(&buf))
-		logger.Error("failed", slog.Any("error", e))
-		got := buf.String()
+		got := logWith(newTextHandler, e)
 		if i == 0 {
 			first = got
 			continue
@@ -646,7 +651,7 @@ func TestNF_Deterministic(t *testing.T) {
 // The *Error is immutable; LogValue reads its fields. The test
 // exercises the read path from many goroutines.
 func TestNF_ConcurrentLogging(t *testing.T) {
-	e := New(CategoryConfig, string(CodeConfigMalformed), "x").
+	e := New(CategoryConfig, CodeConfigMalformed, "x").
 		WithCause(errors.New("cause")).
 		WithContext("a", "1").
 		WithContext("b", "2")
@@ -656,9 +661,7 @@ func TestNF_ConcurrentLogging(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			var buf bytes.Buffer
-			logger := slog.New(newJSONHandler(&buf))
-			logger.Error("failed", slog.Any("error", e))
+			_ = logWith(newJSONHandler, e)
 		}()
 	}
 	wg.Wait()
@@ -696,9 +699,9 @@ func FuzzLogValue(f *testing.F) {
 
 		var e *Error
 		if key == "" {
-			e = New(cat, code, msg)
+			e = New(cat, Code(code), msg)
 		} else {
-			e = New(cat, code, msg).WithContext(key, value)
+			e = New(cat, Code(code), msg).WithContext(key, value)
 		}
 
 		var buf bytes.Buffer
@@ -715,7 +718,6 @@ func FuzzLogValue(f *testing.F) {
 			t.Fatalf("error group not found: %v", record)
 		}
 
-		// The code and the category are always present.
 		if _, present := errGroup["code"]; !present {
 			t.Fatalf("code attribute missing: %v", errGroup)
 		}
@@ -725,13 +727,20 @@ func FuzzLogValue(f *testing.F) {
 	})
 }
 
+// --- Redaction tests --------------------------------------------------
+//
+// The redaction tests below assert that the log format, rendered
+// through a redacting handler, does not leak secrets or home
+// directories. They are the programmer-facing counterpart to the
+// user-facing redaction tests in format_test.go.
+
 // TestLog_RedactsSecretContextValue asserts that a log entry
 // whose context includes a secret is rendered with the marker,
 // not the raw value.
 func TestLog_RedactsSecretContextValue(t *testing.T) {
 	t.Parallel()
 
-	e := New(CategoryConfig, string(CodeConfigMalformed), "x").
+	e := New(CategoryConfig, CodeConfigMalformed, "x").
 		WithContext("api_token", "ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
 
 	var buf bytes.Buffer
@@ -755,6 +764,12 @@ func TestLog_RedactsSecretContextValue(t *testing.T) {
 // TestLog_RedactsHomeDirectoryPath asserts that a log entry
 // whose context includes a home-directory path is rendered with
 // the "~" prefix.
+//
+// The test uses the actual home directory, obtained from
+// os.UserHomeDir, rather than a synthetic path. A synthetic path
+// would not exercise the redaction rule's dependence on the
+// running user's home, which is the part that can break across
+// platforms or CI environments.
 func TestLog_RedactsHomeDirectoryPath(t *testing.T) {
 	t.Parallel()
 
@@ -764,7 +779,7 @@ func TestLog_RedactsHomeDirectoryPath(t *testing.T) {
 	}
 
 	in := filepath.Join(home, "config.yaml")
-	e := New(CategoryConfig, string(CodeConfigMalformed), "x").
+	e := New(CategoryConfig, CodeConfigMalformed, "x").
 		WithContext("file", in)
 
 	var buf bytes.Buffer
@@ -791,7 +806,7 @@ func TestLog_RedactsHomeDirectoryPath(t *testing.T) {
 func TestLog_CauseIsShown(t *testing.T) {
 	t.Parallel()
 
-	e := New(CategoryConfig, string(CodeConfigMalformed), "x").
+	e := New(CategoryConfig, CodeConfigMalformed, "x").
 		WithCause(errors.New("internal detail"))
 
 	var buf bytes.Buffer

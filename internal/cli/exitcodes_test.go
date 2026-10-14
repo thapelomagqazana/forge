@@ -41,6 +41,20 @@
 // falls into the correct domain. This is the load-bearing property
 // that lets CI pipelines branch on code < 10 vs. code >= 10 without
 // parsing output.
+//
+// # Type-level contract
+//
+// forgeerr.New takes its code parameter as forgeerr.Code. Every
+// constructor call in this file passes the named constants from
+// internal/forgeerr/codes.go directly. A string(...) cast in a
+// constructor call is the diagnostic that the migration documented
+// in safefs/errors.go was rolled back.
+//
+// The accessor (*Error).Code() returns string, so comparisons
+// against a named constant cast the constant on the right-hand
+// side: e.Code() != string(forgeerr.CodeConfigMalformed). The cast
+// is on the known side (the constant), not on the accessor's
+// return value.
 package cli
 
 import (
@@ -529,6 +543,15 @@ func TestExitCodeOf_Nil(t *testing.T) {
 // helper returns Category.ExitCode(). The taxonomy is closed
 // (WBS 10.2.1), so the set is enumerated here rather than discovered
 // dynamically.
+//
+// # Type-level contract
+//
+// Every forgeerr.New call passes the code as forgeerr.Code (the
+// named constants from codes.go). The constructor's parameter is
+// forgeerr.Code after the WBS 13.1.1 / ADR-035 migration; a
+// string(...) cast would be a compile error once the migration is
+// complete, and its presence is the diagnostic that the migration
+// was rolled back.
 func TestExitCodeOf_ForgeError(t *testing.T) {
 	t.Parallel()
 
@@ -548,7 +571,7 @@ func TestExitCodeOf_ForgeError(t *testing.T) {
 		t.Run(string(tc.cat), func(t *testing.T) {
 			t.Parallel()
 
-			e := forgeerr.New(tc.cat, string(tc.code), "message")
+			e := forgeerr.New(tc.cat, tc.code, "message")
 			got := exitCodeOf(e)
 			want := tc.cat.ExitCode()
 			if got != want {
@@ -570,7 +593,7 @@ func TestExitCodeOf_WrappedForgeError(t *testing.T) {
 
 	inner := forgeerr.New(
 		forgeerr.CategoryConfig,
-		string(forgeerr.CodeConfigMalformed),
+		forgeerr.CodeConfigMalformed,
 		"inner error",
 	)
 	wrapped := fmt.Errorf("outer context: %w", inner)
@@ -588,7 +611,7 @@ func TestExitCodeOf_DeeplyWrappedForgeError(t *testing.T) {
 
 	inner := forgeerr.New(
 		forgeerr.CategorySecurity,
-		string(forgeerr.CodeSecurityPathTraversal),
+		forgeerr.CodeSecurityPathTraversal,
 		"inner error",
 	)
 	wrapped := fmt.Errorf("a: %w", fmt.Errorf("b: %w", fmt.Errorf("c: %w", inner)))
@@ -629,7 +652,7 @@ func TestExitCodeOf_IsPure(t *testing.T) {
 
 	err := forgeerr.New(
 		forgeerr.CategorySecurity,
-		string(forgeerr.CodeSecurityPathTraversal),
+		forgeerr.CodeSecurityPathTraversal,
 		"test error",
 	)
 
@@ -675,7 +698,7 @@ func TestExitCodeOf_MatchesCategoryExitCode(t *testing.T) {
 				t.Skipf("no registered code for category %s", cat)
 			}
 
-			e := forgeerr.New(cat, string(code), "message")
+			e := forgeerr.New(cat, code, "message")
 
 			got := exitCodeOf(e)
 			want := cat.ExitCode()
@@ -712,7 +735,7 @@ func TestExitCodeOf_ResultIsInDocumentedRange(t *testing.T) {
 				t.Skipf("no registered code for category %s", cat)
 			}
 
-			e := forgeerr.New(cat, string(code), "message")
+			e := forgeerr.New(cat, code, "message")
 			got := exitCodeOf(e)
 
 			if err := VerifyExitCodeRange(got); err != nil {
@@ -756,7 +779,7 @@ func TestExitCodeOf_UnknownCategoryCannotExist(t *testing.T) {
 	}()
 	_ = forgeerr.New(
 		forgeerr.Category("UNKNOWN"),
-		string(forgeerr.CodeConfigMalformed),
+		forgeerr.CodeConfigMalformed,
 		"message",
 	)
 }
@@ -1096,7 +1119,7 @@ func BenchmarkLookupExitCodeRange(b *testing.B) {
 func BenchmarkExitCodeOf_ForgeError(b *testing.B) {
 	err := forgeerr.New(
 		forgeerr.CategoryConfig,
-		string(forgeerr.CodeConfigMalformed),
+		forgeerr.CodeConfigMalformed,
 		"benchmark error",
 	)
 	b.ReportAllocs()
