@@ -559,6 +559,120 @@ BSD-3-Clause, MIT), all maintained, and none is a security concern.
 The dependency is test-only, so it does not affect the production
 binary's size, attack surface, or startup time.
 
+### golang.org/x/tools
+
+| Attribute           | Value                                                |
+|---------------------|------------------------------------------------------|
+| Module path         | `golang.org/x/tools`                                 |
+| Pinned version      | `<COMPAT>`                                           |
+| License             | BSD-3-Clause                                         |
+| Maintainer          | The Go team (golang.org)                             |
+| First introduced    | WBS 14.1.1                                           |
+| ADR                 | [ADR-041](decisions/ADR-041-arch-guardrail-dependency-golang-x-tools.md) |
+| Purpose             | Loading the Go package graph for the architecture guardrail (`internal/arch`) |
+| Last reviewed       | 2026-10-14                                           |
+
+**Why golang.org/x/tools:** Forge's clean-architecture guardrail
+(ADR-040) and its package-group dependency matrix (ADR-042) are
+enforced by a Go test in `internal/arch` that loads every package
+under `internal/...`, classifies it into a layer and a group, and
+asserts the allowed-import matrix against the real import graph. The
+canonical way to load a Go package graph in Go is
+`golang.org/x/tools/go/packages`. It is the same library used by
+`staticcheck`, `gopls`, `golangci-lint`, and every other serious Go
+analysis tool.
+
+The library provides four properties the guardrail depends on:
+
+1. **Build-tag awareness.** `packages.Load` honors `GOOS`, `GOARCH`,
+   and build tags, so the guardrail sees the same package set the
+   compiler sees. A hand-written parser over the filesystem would
+   miss build-tagged files or include files that are not compiled.
+2. **Module resolution.** `packages.Load` resolves the module graph
+   via `go list` under the hood, so module replacements and vendored
+   builds are handled correctly.
+3. **Test-package awareness.** `packages.Load` reports test-only
+   variants (`foo [foo.test]`) and external test packages
+   (`foo_test`) as distinct packages, which is what allows the
+   guardrail to check imports made only from `_test.go` files.
+4. **A stable, documented API.** `golang.org/x/tools/go/packages` is
+   the supported replacement for the older
+   `golang.org/x/tools/go/loader` package; its API is documented in
+   the standard Go reference and versioned with the module.
+
+The library is used only from `internal/arch`'s test files. It is not
+imported by any non-test code, and it is not linked into the
+production binary. This is a property of the Go build: packages
+imported only by test files do not appear in the binary.
+
+**Transitive dependencies:** `golang.org/x/tools` has two direct
+dependencies, both of which are pulled into Forge's module graph:
+
+- `golang.org/x/mod` — module-file parsing. Maintained by the Go
+  team. License: BSD-3-Clause.
+- `golang.org/x/sync` — concurrency primitives. Maintained by the Go
+  team. License: BSD-3-Clause.
+
+Both transitive dependencies are pinned automatically via `go.sum`
+and require no manual maintenance. Their licenses are on the
+compatible list (§5), their maintainer is the same as
+`golang.org/x/tools`, and neither is a security concern.
+
+**Version bound (the constraint that decides which version is
+pinned):** `golang.org/x/tools` raises its own `go` directive as the
+Go team drops support for older Go releases. The version pinned in
+Forge is the newest release whose `go.mod` declares `go 1.23.0` or
+lower, because that is the frozen minimum supported by Forge
+(ADR-004, `docs/development.md`). Adopting a newer release would
+force Forge's `go` directive above `1.23.0`, which is a project-wide
+change governed by WBS 2.1.2 and blocked by the
+`goversion:verify:go-directive` task.
+
+**Upgrade criteria:**
+
+- **Patch upgrades** (e.g., `<COMPAT>` → the next patch): permitted
+  if the release notes contain only bug fixes and no API changes,
+  **and** the candidate's `go` directive is still ≤ `1.23.0`. A
+  short note in the pull request description suffices; no ADR
+  required.
+- **Minor upgrades** (e.g., `<COMPAT>` → the next minor): permitted
+  if the release notes do not indicate breaking changes, **and** the
+  candidate's `go` directive is still ≤ `1.23.0`. A brief ADR is
+  required.
+- **Major upgrades** (a hypothetical `v1.x`): require a full ADR.
+  The module has not released a major version beyond v0.
+- **Crossing the toolchain bound:** any upgrade whose `go` directive
+  exceeds Forge's frozen minimum is blocked until WBS 2.1.2 is
+  revised by a superseding ADR. The check is mechanical: verify the
+  candidate's `go` directive with `go mod download -x
+  golang.org/x/tools@<candidate>` and inspect the cached `.mod`
+  file, or fetch `https://proxy.golang.org/golang.org/x/tools/@v/<candidate>.mod`.
+
+**Upgrade cadence:** Reviewed quarterly, aligned with the general
+dependency review cycle described in §4.5.
+
+**CVE history:** None affecting the pinned version. Security
+advisories for the `golang.org/x/` family are published via
+`pkg.go.dev/vuln`; the registry's "Last reviewed" field is updated
+when the advisories are re-checked.
+
+**Why the dependency is test-only:** `golang.org/x/tools` is used by
+`internal/arch`, which is itself test infrastructure. No production
+package imports it. This is confirmed by `go build ./cmd/forge`
+succeeding without `golang.org/x/tools` in the link step; a reviewer
+can verify with `go tool nm ./forge | grep x/tools`, which must
+produce no output for a correctly built binary.
+
+**Alternatives considered and rejected:** the alternatives are the
+same ones that appear in ADR-041: a hand-written parser using
+`go/parser` + `go/ast`, shelling out to `go list -json`, and using
+`golangci-lint`'s `depguard` rule. All three were rejected for
+reasons documented in ADR-041. The short version: a hand-written
+parser re-implements build-tag and module-resolution logic that the
+toolchain already provides; shelling out to `go list` makes the test
+depend on `go` being on `PATH` and is slower; and `depguard` expresses
+allow/deny lists rather than a full matrix over dynamic package sets.
+
 ---
 
 ## 8. Module resolution policy
@@ -624,6 +738,7 @@ in sync with `go.mod`.
 | 0.2.0   | 2026-10-10 | @thapelomagqazana  | Corrected V2's scope from "every `require` directive" to "every direct `require` directive". Indirect dependencies are selected by the Go toolchain and are out of scope for version pinning. The correction was motivated by `github.com/inconshreveable/mousetrap v1.1.0 // indirect`, a transitive dependency of Cobra, which the V2 check flagged as a false positive. The `scripts/deps/check-pr-deps.sh` script was updated to exclude `// indirect` lines, and a regression test was added to `internal/cli/structure_test.go`. V3 and V4 already scoped to direct dependencies; V2 now matches. |
 | 0.3.0   | 2026-10-11 | @thapelomagqazana  | Added the `gopkg.in/yaml.v3` registry entry (§ 7). The dependency was introduced by WBS 8.4.2 (the config file loader); ADR-007 documents its rationale. The entry records the module path, pinned version (`v3.0.1`), dual MIT/Apache-2.0 license, Canonical's maintenance, no transitive dependencies, and the upgrade criteria. The registry's addition closes the `verify:deps:documented` failure that reported the dependency as undocumented. |
 | 0.4.0   | 2026-10-12 | @thapelomagqazana  | Added the `github.com/stretchr/testify` registry entry (§ 7). The dependency was introduced by WBS 9.5.1 (the acceptance tests) and is used throughout `internal/cli`'s test files. The entry records the module path, pinned version (`v1.9.0`), MIT license, Stretchr, Inc.'s maintenance, the four transitive dependencies (all permissively licensed), and the upgrade criteria. The registry's addition closes the `verify:deps:documented` failure that reported the dependency as undocumented. The section also records why a test-only dependency with a larger transitive closure than Forge's other dependencies is acceptable: the closure is permissively licensed, actively maintained, and does not affect the production binary. |
+| 0.5.0   | 2026-10-14 | @thapelomagqazana  | Added the `golang.org/x/tools` registry entry (§7). The dependency was introduced by WBS 14.1.1 (the clean-architecture guardrail, ADR-040) and extended by WBS 14.1.2 (the package-group dependency matrix, ADR-042). The entry records the module path, pinned version (`<COMPAT>`), BSD-3-Clause license, the Go team's maintenance, the two transitive dependencies (`golang.org/x/mod` and `golang.org/x/sync`, both BSD-3-Clause), and the version-bound rationale: the pinned version is the newest release whose `go` directive is ≤ Forge's frozen minimum (`go 1.23.0`), because adopting a newer release would raise the project's minimum supported Go version for a test-only dependency. |
 
 ---
 

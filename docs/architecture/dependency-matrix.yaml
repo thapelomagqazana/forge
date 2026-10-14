@@ -1,0 +1,373 @@
+# Forge dependency matrix — machine-readable form.
+#
+# This file is the authoritative input for the CI lint rule (WBS 14.6.1).
+# The human-readable form is docs/architecture/dependency-matrix.md; the two
+# are asserted equal by TestMatrixYAMLMatchesMarkdown in internal/arch.
+#
+# Schema: schemas/dependency-matrix.schema.json
+# ADR:    docs/decisions/ADR-042-package-group-dependency-matrix.md
+#
+# Editing rules:
+#   1. Change this file first, then regenerate the Markdown form with
+#      `go test ./internal/arch -run TestMatrixYAMLMatchesMarkdown -update`.
+#   2. Any new exception requires a superseding ADR.
+#   3. Cycles are forbidden; ParseMatrix rejects a cyclic matrix at load time
+#      and TestMatrixAcyclic asserts the invariant on the canonical file.
+
+version: 1
+schema: schemas/dependency-matrix.schema.json
+adr: docs/decisions/ADR-042-package-group-dependency-matrix.md
+traceability:
+  - FR-ARCH-002
+  - NFR-ARCHITECTURE-002
+
+groups:
+  # architecture.tooling covers internal/arch, the architecture-guardrail
+  # package (ADR-040, ADR-042). It is development tooling, not production
+  # code; it is imported only by its own tests and it imports only external
+  # packages. It is classified in the Shared layer because it is a
+  # cross-cutting tool with no dependencies on any Forge layer.
+  architecture.tooling:
+    layer: shared
+    packages:
+      - internal/arch
+
+  presentation.cli:
+    layer: presentation
+    packages:
+      - internal/cli
+
+  application:
+    layer: application
+    packages:
+      - internal/application
+
+  # domain is the layer-root placeholder package created by task 14.1.1. It
+  # contains only doc.go. It is the parent group of the domain.blueprint,
+  # domain.template, domain.component, domain.policy, and domain.foundation
+  # subgroups below. Longest-prefix matching in GroupOf ensures a package
+  # under one of those subgroups resolves to the subgroup, not to this one.
+  domain:
+    layer: domain
+    packages:
+      - internal/domain
+
+  domain.blueprint:
+    layer: domain
+    packages:
+      - internal/domain/blueprint
+  domain.template:
+    layer: domain
+    packages:
+      - internal/domain/template
+  domain.component:
+    layer: domain
+    packages:
+      - internal/domain/component
+  domain.policy:
+    layer: domain
+    packages:
+      - internal/domain/policy
+  domain.foundation:
+    layer: domain
+    packages:
+      - internal/domain/foundation
+
+  # infrastructure is the layer-root placeholder package created by task
+  # 14.1.1. It contains only doc.go. It is the parent group of the more
+  # specific infrastructure subgroups below.
+  infrastructure:
+    layer: infrastructure
+    packages:
+      - internal/infrastructure
+
+  infrastructure.filesystem:
+    layer: infrastructure
+    packages:
+      - internal/infrastructure/filesystem
+      - internal/filesystem
+  infrastructure.config:
+    layer: infrastructure
+    packages:
+      - internal/infrastructure/config
+      - internal/config
+  infrastructure.renderer:
+    layer: infrastructure
+    packages:
+      - internal/infrastructure/renderer
+      - internal/output
+  infrastructure.streams:
+    layer: infrastructure
+    packages:
+      - internal/infrastructure/streams
+      - internal/streams
+  infrastructure.logging:
+    layer: infrastructure
+    packages:
+      - internal/infrastructure/logging
+  infrastructure.registry:
+    layer: infrastructure
+    packages:
+      - internal/infrastructure/registry
+  infrastructure.git:
+    layer: infrastructure
+    packages:
+      - internal/infrastructure/git
+
+  # shared is the layer-root placeholder package created by task 14.1.1. It
+  # contains only doc.go. It is the parent group of the shared.errors,
+  # shared.logging, and shared.version subgroups below.
+  shared:
+    layer: shared
+    packages:
+      - internal/shared
+
+  shared.errors:
+    layer: shared
+    packages:
+      - internal/shared/errors
+      - internal/forgeerr
+  shared.logging:
+    layer: shared
+    packages:
+      - internal/shared/logging
+      - internal/logger
+  shared.version:
+    layer: shared
+    packages:
+      - internal/shared/version
+      - internal/version
+      - internal/app/version
+
+matrix:
+  # architecture.tooling imports only external packages. Empty row: no
+  # outgoing substantive imports.
+  architecture.tooling: {}
+
+  presentation.cli:
+    application: allow
+    domain.blueprint: "condition:C1"
+    domain.template: "condition:C1"
+    domain.component: "condition:C1"
+    domain.policy: "condition:C1"
+    domain.foundation: "condition:C1"
+    infrastructure.filesystem: "condition:C2"
+    infrastructure.config: "condition:C3"
+    infrastructure.renderer: "condition:C3"
+    infrastructure.streams: "condition:C2"
+    infrastructure.logging: "condition:C2"
+    infrastructure.registry: "condition:C2"
+    infrastructure.git: "condition:C9"
+    shared.version: allow
+
+  application:
+    domain.blueprint: allow
+    domain.template: allow
+    domain.component: allow
+    domain.policy: allow
+    domain.foundation: allow
+    shared.version: allow
+
+  # domain is the layer-root placeholder package. It contains only doc.go and
+  # is not intended to be imported by any other package. Empty row.
+  domain: {}
+
+  # Domain bounded contexts are peers. No context may import another context.
+  # If a type must be shared, it is extracted into a shared domain primitive
+  # (see ADR-042 §"Cross-context domain imports"). Condition C5 was removed
+  # in the same change that emptied these rows, because permitting mutual
+  # imports between two contexts is a cycle by construction.
+  domain.blueprint: {}
+  domain.template: {}
+  domain.component: {}
+  domain.policy: {}
+  domain.foundation: {}
+
+  # infrastructure is the layer-root placeholder package. It contains only
+  # doc.go and is not intended to be imported by any other package. Empty row.
+  infrastructure: {}
+
+  infrastructure.filesystem:
+    domain.blueprint: "condition:C6"
+    domain.template: "condition:C6"
+    domain.component: "condition:C6"
+    domain.policy: "condition:C6"
+    domain.foundation: "condition:C6"
+    infrastructure.logging: "condition:C6"
+    shared.version: allow
+
+  infrastructure.config:
+    domain.blueprint: "condition:C6"
+    domain.template: "condition:C6"
+    domain.component: "condition:C6"
+    domain.policy: "condition:C6"
+    domain.foundation: "condition:C6"
+    infrastructure.filesystem: "condition:C7"
+    infrastructure.logging: "condition:C6"
+    shared.version: allow
+
+  infrastructure.renderer:
+    domain.blueprint: "condition:C6"
+    domain.template: "condition:C6"
+    domain.component: "condition:C6"
+    domain.policy: "condition:C6"
+    domain.foundation: "condition:C6"
+    infrastructure.streams: "condition:C8"
+    infrastructure.logging: "condition:C6"
+    shared.version: allow
+
+  infrastructure.streams:
+    infrastructure.logging: "condition:C6"
+    shared.version: allow
+
+  infrastructure.logging:
+    shared.version: allow
+
+  infrastructure.registry:
+    domain.blueprint: "condition:C6"
+    domain.template: "condition:C6"
+    domain.component: "condition:C6"
+    domain.policy: "condition:C6"
+    domain.foundation: "condition:C6"
+    infrastructure.filesystem: "condition:C7"
+    infrastructure.config: "condition:C7"
+    infrastructure.logging: "condition:C6"
+    shared.version: allow
+
+  infrastructure.git:
+    domain.foundation: "condition:C6"
+    infrastructure.logging: "condition:C6"
+    shared.version: allow
+
+  # shared is the layer-root placeholder package. Empty row.
+  shared: {}
+
+  shared.errors: {}
+  shared.logging: {}
+  shared.version: {}
+
+conditions:
+  C1:
+    summary: "Types-only import from presentation.cli to domain.*"
+    rationale: >
+      presentation.cli may import a domain package only to name a type that
+      appears in an application service's Input/Output or in a returned error.
+      It must not call domain functions or construct domain values.
+    applies_to:
+      - presentation.cli -> domain.blueprint
+      - presentation.cli -> domain.template
+      - presentation.cli -> domain.component
+      - presentation.cli -> domain.policy
+      - presentation.cli -> domain.foundation
+    enforced_by: review
+
+  C2:
+    summary: "Composition-root construction of infrastructure adapters"
+    rationale: >
+      presentation.cli may import an infrastructure group to construct an
+      adapter and inject it into an application service. It must not call
+      adapter methods directly.
+    applies_to:
+      - presentation.cli -> infrastructure.filesystem
+      - presentation.cli -> infrastructure.streams
+      - presentation.cli -> infrastructure.logging
+      - presentation.cli -> infrastructure.registry
+    enforced_by: layer
+
+  C3:
+    summary: "Composition-root construction of config and renderer"
+    rationale: >
+      Same as C2, called out separately because config and renderer are the
+      two adapter groups the CLI constructs directly today.
+    applies_to:
+      - presentation.cli -> infrastructure.config
+      - presentation.cli -> infrastructure.renderer
+    enforced_by: layer
+
+  C4:
+    summary: "Domain may name the logger interface only"
+    rationale: >
+      A domain package may import shared.logging only to name the Logger
+      interface it receives as a constructor parameter. It must not construct
+      a logger, call slog.*, or reference infrastructure.logging.
+    applies_to: []
+    enforced_by: review
+
+  # C5 is intentionally absent. It permitted types-only imports between
+  # domain bounded contexts, which is a cycle by construction (A -> B and
+  # B -> A). Domain contexts are peers and must not import each other; shared
+  # types are extracted into a shared domain primitive, which is a separate
+  # ADR. See ADR-042 §"Cross-context domain imports".
+
+  C6:
+    summary: "Adapter may name the domain types it implements or operates on"
+    rationale: >
+      An infrastructure adapter may import the domain types it implements
+      interfaces for, and the domain types it operates on. It must not call
+      domain behavior that is not part of an interface it implements.
+    applies_to:
+      - infrastructure.filesystem -> domain.blueprint
+      - infrastructure.filesystem -> domain.template
+      - infrastructure.filesystem -> domain.component
+      - infrastructure.filesystem -> domain.policy
+      - infrastructure.filesystem -> domain.foundation
+      - infrastructure.config -> domain.blueprint
+      - infrastructure.config -> domain.template
+      - infrastructure.config -> domain.component
+      - infrastructure.config -> domain.policy
+      - infrastructure.config -> domain.foundation
+      - infrastructure.renderer -> domain.blueprint
+      - infrastructure.renderer -> domain.template
+      - infrastructure.renderer -> domain.component
+      - infrastructure.renderer -> domain.policy
+      - infrastructure.renderer -> domain.foundation
+      - infrastructure.registry -> domain.blueprint
+      - infrastructure.registry -> domain.template
+      - infrastructure.registry -> domain.component
+      - infrastructure.registry -> domain.policy
+      - infrastructure.registry -> domain.foundation
+      - infrastructure.git -> domain.foundation
+    enforced_by: review
+
+  C7:
+    summary: "Adapter may use the safe filesystem API"
+    rationale: >
+      These adapters may import infrastructure.filesystem to read and write
+      files through the safe filesystem API. They must not reach into the
+      implementation or assume the concrete filesystem is osfs.
+    applies_to:
+      - infrastructure.config -> infrastructure.filesystem
+      - infrastructure.registry -> infrastructure.filesystem
+      - infrastructure.registry -> infrastructure.config
+    enforced_by: layer
+
+  C8:
+    summary: "Renderer writes through the stream wrapper"
+    rationale: >
+      The renderer may import infrastructure.streams to detect and handle
+      broken pipes and to write to the configured output streams.
+    applies_to:
+      - infrastructure.renderer -> infrastructure.streams
+    enforced_by: layer
+
+  C9:
+    summary: "Composition-root construction of the git adapter"
+    rationale: >
+      Same as C2. Called out separately because infrastructure.git is a
+      future group.
+    applies_to:
+      - presentation.cli -> infrastructure.git
+    enforced_by: layer
+
+exceptions:
+  - group: shared.errors
+    applies_to: all
+    rationale: >
+      Every group must be able to construct and classify errors. See
+      ADR-011, ADR-012, ADR-013, ADR-014.
+  - group: shared.logging
+    applies_to: all
+    rationale: >
+      Every group must be able to emit diagnostics through the logger
+      interface. See ADR-022, ADR-026, ADR-027. Domain groups use it only to
+      name the interface (condition C4).
