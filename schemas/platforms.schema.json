@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forge.dev/schemas/platforms.schema.json",
+  "title": "Forge Supported Platform Matrix",
+  "description": "Machine-readable form of docs/reference/supported-platforms.md. Validated in CI by `task platform:verify`.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "matrix_version", "applies_to", "policy", "platforms", "channels"],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Schema version. Bumped only on incompatible schema changes."
+    },
+    "matrix_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Semantic version of the matrix itself."
+    },
+    "applies_to": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Forge version range this matrix applies to (semver range)."
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cgo_enabled", "build_tags", "ldflags"],
+      "properties": {
+        "cgo_enabled": {
+          "type": "integer",
+          "enum": [0],
+          "description": "MUST be 0 for all release builds."
+        },
+        "build_tags": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "ldflags": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1
+        }
+      }
+    },
+    "platforms": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/platform" }
+    },
+    "channels": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["description"],
+        "properties": {
+          "description": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name", "goos", "goarch", "tier", "min_os", "libc",
+        "static", "signing", "channels", "ci_runner", "notes"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+-[a-z0-9]+$",
+          "description": "Stable artifact-name prefix, e.g. linux-amd64."
+        },
+        "goos": {
+          "type": "string",
+          "enum": ["linux", "darwin", "windows", "freebsd", "openbsd", "netbsd", "dragonfly", "solaris", "illumos", "aix", "plan9", "js", "wasip1"]
+        },
+        "goarch": {
+          "type": "string",
+          "enum": ["amd64", "arm64", "386", "arm", "ppc64", "ppc64le", "mips", "mipsle", "mips64", "mips64le", "riscv64", "s390x", "wasm", "loong64"]
+        },
+        "tier": {
+          "type": "integer",
+          "enum": [1, 2, 3],
+          "description": "1 = fully tested in CI; 2 = built + unit-tested; 3 = best-effort."
+        },
+        "min_os": { "type": "string", "minLength": 1 },
+        "libc": {
+          "type": "string",
+          "enum": ["glibc", "musl", "system", "none"],
+          "description": "libc the binary links against, or 'system' for OS-native, 'none' for freestanding."
+        },
+        "static": {
+          "type": "boolean",
+          "const": true,
+          "description": "MUST be true. Static linking is a hard requirement."
+        },
+        "signing": {
+          "type": "string",
+          "enum": ["none", "notarization", "authenticode", "gpg"],
+          "description": "Signing mechanism required for distribution."
+        },
+        "channels": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "docker_platform": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+/[a-z0-9]+$",
+          "description": "Only present for platforms that ship a container image."
+        },
+        "ci_runner": {
+          "type": "string",
+          "minLength": 1,
+          "description": "GitHub Actions runner label used to build and test this platform."
+        },
+        "signing_host_requirements": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true,
+          "description": "Required only when signing != none."
+        },
+        "notes": { "type": "string", "minLength": 1 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "signing": { "const": "none" } }, "required": ["signing"] },
+          "then": { "not": { "required": ["signing_host_requirements"] } }
+        },
+        {
+          "if": { "properties": { "signing": { "enum": ["notarization", "authenticode", "gpg"] } }, "required": ["signing"] },
+          "then": { "required": ["signing_host_requirements"] }
+        },
+        {
+          "if": { "properties": { "channels": { "contains": { "const": "docker" } } }, "required": ["channels"] },
+          "then": { "required": ["docker_platform"] }
+        }
+      ]
+    }
+  }
+}

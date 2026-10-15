@@ -1,0 +1,448 @@
+# Forge Version & Release Metadata — machine-readable form.
+#
+# This file is the source of truth for build scripts, CI tag routing,
+# and release tooling. It is validated against schemas/version.schema.json
+# in CI by `task version:verify`.
+#
+# It is the machine-readable companion to:
+#   - docs/reference/versioning.md        (version string semantics)
+#   - docs/reference/release-channels.md  (channel semantics)
+#
+# When this file and the prose disagree, the prose wins and this file is
+# corrected. The two are asserted equal by the internal/version tests; a
+# rule that appears in one but not the other fails CI.
+#
+# Editing rules:
+#   1. Change this file and the matching prose in the same commit.
+#   2. Every rule a script can check MUST be expressed here. Prose alone
+#      is not a contract.
+#   3. Every example MUST be a real tag a maintainer could create.
+#   4. Tag patterns are anchored regular expressions. An unanchored
+#      pattern is a defect: it would match a longer tag as a prefix.
+#
+# Schema version:   1
+# Metadata version: 1.0.0
+# Additive policy:  see docs/reference/versioning.md §8.
+
+schema_version: 1
+metadata_version: "1.0.0"
+applies_to: ">=0.1.0"
+
+# ---------------------------------------------------------------------------
+# Version embedding
+#
+# The four variables injected at link time by Taskfile.yml via
+# `-ldflags -X`. Consumed by internal/version. The order in this list is
+# the field order of `forge version --format=json` and is part of the
+# public contract.
+# ---------------------------------------------------------------------------
+embedding:
+  variables:
+    - name: version
+      source: "git describe --tags --always --dirty"
+      example: "v1.4.2"
+      required: true
+      description: >
+        The version string. On a tagged commit it is the tag. Off a tag
+        it is the tag plus a commit offset (e.g. v1.4.2-3-gabc1234). A
+        trailing -dirty means the working tree had uncommitted changes.
+        The value is preserved verbatim; it is not normalized.
+      constraints:
+        - "non-empty"
+        - "begins with v"
+      examples:
+        - "v1.4.2"
+        - "v1.4.2-dirty"
+        - "v1.4.2-3-gabc1234"
+        - "v1.4.2-3-gabc1234-dirty"
+        - "v0.0.0-unknown"
+
+    - name: commit
+      source: "git rev-parse --short HEAD"
+      example: "abc1234"
+      required: true
+      description: >
+        The short commit SHA the binary was built from. Lowercase hex.
+        7 to 12 characters.
+      constraints:
+        - "non-empty"
+        - "lowercase hex"
+        - "length 7..12"
+
+    - name: buildDate
+      source: "date -u +%Y-%m-%dT%H:%M:%SZ"
+      example: "2026-06-01T12:00:00Z"
+      required: true
+      description: >
+        UTC ISO 8601 timestamp of the build. Always UTC. Always with a
+        trailing Z. Local time and non-UTC offsets are never embedded.
+      constraints:
+        - "RFC 3339"
+        - "UTC (Z suffix)"
+
+    - name: buildType
+      source: "CI environment"
+      example: "release"
+      required: true
+      description: >
+        One of release, ci, local. release is set by the release
+        pipeline; ci is set by non-release CI; local is the default
+        when neither is set. An empty or unrecognized value is
+        normalized to local by internal/version.ParseBuildType.
+      allowed:
+        - release
+        - ci
+        - local
+
+# The JSON shape of `forge version --format=json`. Field order is
+# observable and is part of the contract. A change requires a MAJOR bump.
+json_output:
+  field_order:
+    - version
+    - commit
+    - buildDate
+    - buildType
+  example: >
+    {"version":"v1.4.2","commit":"abc1234","buildDate":"2026-06-01T12:00:00Z","buildType":"release"}
+  html_escaping: false
+
+# ---------------------------------------------------------------------------
+# SemVer segment meanings
+#
+# Each segment is a closed list of surfaces. A change that fits no list
+# is treated as MINOR until a new row is added by an ADR.
+# ---------------------------------------------------------------------------
+semver:
+  grammar: >
+    v MAJOR . MINOR . PATCH [ - PRERELEASE ] [ + BUILD ]
+  v_prefix: mandatory
+  build_metadata_in_tags: forbidden
+
+  major_breaks:
+    summary: >
+      Bump MAJOR when any of the following changes in a way that can
+      break an existing user. A single qualifying change is sufficient.
+    surfaces:
+      - id: cli_surface
+        description: "Remove, rename, or change the meaning of a command, flag, positional argument, or flag default."
+        examples:
+          - "forge blueprint init -> forge init"
+          - "forge check <dir> -> forge check --dir=<dir>"
+          - "Remove --quiet"
+          - "Change --format default from text to json"
+      - id: forge_yaml_schema
+        description: "Remove, rename, or change the type of a field in forge.yaml; reject a previously-accepted value."
+        examples:
+          - "logLevel: info -> log.level: info"
+          - "Change logLevel from string to integer"
+          - "Remove the registry section"
+      - id: exit_codes
+        description: "Change the numeric value of a code in the stable range (0-127); remove a code; introduce a code in the signals range (128-255)."
+        examples:
+          - "64 (usage) -> 2"
+          - "Remove ExitConfig"
+          - "Assign 130 to anything other than SIGINT"
+      - id: output_format
+        description: "Change the JSON shape of --format=json; rename or remove a field; change the exit-code envelope."
+        examples:
+          - '{"version": ...} -> {"v": ...}'
+          - "Remove the error envelope's code field"
+      - id: public_go_api
+        description: "Any change forbidden by the Go 1 compatibility promise (only relevant if internal/ is ever promoted to a public module)."
+        examples:
+          - "Remove an exported function"
+
+  minor_adds:
+    summary: >
+      Bump MINOR when adding functionality that does not break existing
+      users. The change must be observable; a purely internal refactor
+      with no user-visible effect is a PATCH.
+    surfaces:
+      - id: new_command
+        description: "Add a command."
+        examples:
+          - "forge doctor"
+      - id: new_flag
+        description: "Add a flag with a default that preserves existing behaviour."
+        examples:
+          - "--no-color"
+      - id: new_yaml_field
+        description: "Add an optional field to forge.yaml."
+        examples:
+          - "telemetry.endpoint"
+      - id: new_exit_code
+        description: "Add an exit code in the reserved-for-findings range."
+        examples:
+          - "ExitDriftDetected = 10"
+      - id: new_output_format
+        description: "Add a new --format value."
+        examples:
+          - "--format=yaml"
+      - id: new_platform
+        description: "Add a platform to docs/reference/platforms.yaml."
+        examples:
+          - "freebsd/amd64"
+      - id: new_alias
+        description: "Add a deprecated-but-working alias for an existing flag or command, provided the old form continues to work identically."
+        examples:
+          - "Add --log-level as an alias for --logLevel"
+
+  patch_fixes:
+    summary: >
+      Bump PATCH when fixing a defect without changing the documented
+      surface. Only users who relied on the defect observe a difference.
+    surfaces:
+      - id: formatting_bug
+        description: "Fix a bug in output formatting (e.g. column alignment, help text layout)."
+        examples:
+          - "Right-align the version column"
+      - id: classification_bug
+        description: "Fix a bug in error classification (e.g. a missing file was reported as a usage error instead of a config error)."
+        examples:
+          - "Return ExitConfig instead of ExitUsage for a missing config file"
+      - id: exit_code_derivation_bug
+        description: "Fix a bug in exit-code derivation for an already-documented error path."
+        examples:
+          - "Propagate ExitFilesystem through a wrapped error"
+      - id: dependency_upgrade
+        description: "Upgrade a dependency that does not change behaviour."
+        examples:
+          - "yaml.v3 v3.0.1 -> v3.0.2"
+      - id: help_text_clarification
+        description: "Correct help text to be clearer, provided no script parses it."
+        examples:
+          - "Fix a typo in a flag description"
+      - id: security_fix
+        description: "Fix a vulnerability without changing the documented surface."
+        examples:
+          - "Redact a field that was leaking"
+
+  tie_break:
+    rule: "If unsure whether a change is PATCH or MINOR, it is MINOR."
+    rationale: >
+      An unnecessary MINOR bump costs a slightly faster version cadence.
+      An incorrect PATCH bump breaks scripts during a 'bug fix only'
+      upgrade. The asymmetry favors MINOR.
+
+  pre_1_0:
+    policy: >
+      For v0.x.y, the MAJOR segment is permanently 0 and the SemVer
+      guarantee is relaxed: any MINOR bump may contain breaking changes.
+      PATCH bumps must not. Every v0.x.0 release that contains a
+      breaking change MUST list the change in its release notes under a
+      '### Breaking' heading.
+    transitions:
+      - from: "v0.1.0"
+        to: "v0.1.1"
+        breaking_allowed: false
+        release_notes_requirement: "standard sections only"
+      - from: "v0.1.0"
+        to: "v0.2.0"
+        breaking_allowed: true
+        release_notes_requirement: "Breaking heading required if any change is breaking"
+      - from: "v0.2.0"
+        to: "v0.2.1"
+        breaking_allowed: false
+        release_notes_requirement: "standard sections only"
+      - from: "v0.2.0"
+        to: "v0.3.0"
+        breaking_allowed: true
+        release_notes_requirement: "Breaking heading required if any change is breaking"
+      - from: "v0.9.0"
+        to: "v1.0.0"
+        breaking_allowed: true
+        release_notes_requirement: "Breaking heading required; also the stability declaration"
+    target_stable_version: "v1.0.0"
+
+  decision_table:
+    # The table from docs/reference/versioning.md §4. Exhaustive for the
+    # surfaces Forge currently exposes. A change that fits no row is a
+    # MINOR bump until a new row is added by an ADR.
+    - change: "Add a command"
+      bump: MINOR
+    - change: "Remove a command"
+      bump: MAJOR
+    - change: "Rename a command (old name kept as alias)"
+      bump: MINOR
+    - change: "Rename a command (old name removed)"
+      bump: MAJOR
+    - change: "Add a flag with a safe default"
+      bump: MINOR
+    - change: "Remove a flag"
+      bump: MAJOR
+    - change: "Rename a flag"
+      bump: MAJOR
+    - change: "Change a flag's short form"
+      bump: MAJOR
+    - change: "Change a flag's default to a value that alters observable behaviour"
+      bump: MAJOR
+    - change: "Add an optional field to forge.yaml"
+      bump: MINOR
+    - change: "Remove or rename a forge.yaml field"
+      bump: MAJOR
+    - change: "Change a forge.yaml field's type"
+      bump: MAJOR
+    - change: "Add an allowed value to a closed enum in forge.yaml"
+      bump: MINOR
+    - change: "Remove an allowed value from a closed enum"
+      bump: MAJOR
+    - change: "Add a new exit code in the findings range"
+      bump: MINOR
+    - change: "Change an existing exit code's value"
+      bump: MAJOR
+    - change: "Add a field to the --format=json envelope"
+      bump: MINOR
+    - change: "Remove or rename a field in the --format=json envelope"
+      bump: MAJOR
+    - change: "Fix a formatting bug"
+      bump: PATCH
+    - change: "Fix an error-classification bug"
+      bump: PATCH
+    - change: "Upgrade a dependency with no behaviour change"
+      bump: PATCH
+    - change: "Upgrade a dependency that changes an output format"
+      bump: MINOR
+    - change: "Add a platform to platforms.yaml"
+      bump: MINOR
+    - change: "Remove a platform from platforms.yaml"
+      bump: MAJOR
+    - change: "Change a platform's tier"
+      bump: MINOR
+    - change: "Raise a platform's minimum OS"
+      bump: MINOR
+    - change: "Lower a platform's minimum OS"
+      bump: PATCH
+    - change: "Change help text to be clearer"
+      bump: PATCH
+    - change: "Change help text in a way scripts parse"
+      bump: MAJOR
+
+# ---------------------------------------------------------------------------
+# Pre-release identifiers recognized by Forge.
+#
+# The identifier is the segment between "-" and "." in a prerelease tag.
+# An identifier not in this list is rejected by internal/version.ChannelOf.
+# Adding one is a MINOR change and requires an ADR.
+# ---------------------------------------------------------------------------
+prerelease_identifiers:
+  - identifier: alpha
+    intent: "Early preview; gather direction"
+    feature_freeze: false
+    api_stable: false
+    example: "v1.0.0-alpha.1"
+    precedence_position: 1
+
+  - identifier: beta
+    intent: "Feature-complete; stabilize"
+    feature_freeze: true
+    api_stable: false
+    example: "v1.0.0-beta.3"
+    precedence_position: 2
+
+  - identifier: rc
+    intent: "Release candidate"
+    feature_freeze: true
+    api_stable: true
+    example: "v1.0.0-rc.2"
+    precedence_position: 3
+
+# SemVer precedence: prerelease identifiers sort before the release.
+# Nightly does not participate in precedence because nightlies are not
+# published to package managers.
+precedence:
+  rule: >
+    v1.0.0-alpha.1 < v1.0.0-alpha.2 < v1.0.0-beta.1 < v1.0.0-rc.1
+    < v1.0.0 < v1.0.1 < v1.1.0 < v2.0.0
+  nightly_excluded: true
+
+# ---------------------------------------------------------------------------
+# The three release channels.
+#
+# Tag patterns are anchored regular expressions. They are disjoint by
+# construction: stable has no "-" after the patch number; prerelease
+# requires one of alpha/beta/rc followed by ".N"; nightly requires
+# "nightly." followed by exactly 8 digits.
+# ---------------------------------------------------------------------------
+channels:
+  - name: stable
+    tag_pattern: "^v\\d+\\.\\d+\\.\\d+$"
+    examples:
+      - "v1.0.0"
+      - "v1.4.2"
+      - "v2.0.0"
+    source_branch: main
+    signing_required: true
+    distribution:
+      - direct
+      - homebrew
+      - scoop
+      - winget
+      - apt
+      - docker
+    support: "Latest stable; older minors receive security fixes for 90 days."
+    description: >
+      The default channel. Users who do not opt in to a prerelease
+      channel get stable builds from every distribution channel listed
+      in docs/reference/platforms.yaml.
+
+  - name: prerelease
+    tag_pattern: "^v\\d+\\.\\d+\\.\\d+-(alpha|beta|rc)\\.\\d+$"
+    examples:
+      - "v1.0.0-alpha.1"
+      - "v1.0.0-beta.3"
+      - "v1.0.0-rc.2"
+    source_branch: "main or release/vX.Y"
+    signing_required: true
+    distribution:
+      - direct
+      - docker
+    support: "None. Prereleases gather feedback and may be withdrawn."
+    description: >
+      Preview builds for a specific upcoming release. Package managers
+      (Homebrew, Scoop, winget, apt) are not updated for prereleases.
+      The three identifiers (alpha, beta, rc) have different intents;
+      see prerelease_identifiers above.
+
+  - name: nightly
+    tag_pattern: "^v\\d+\\.\\d+\\.\\d+-nightly\\.\\d{8}$"
+    examples:
+      - "v1.5.0-nightly.20260601"
+      - "v1.5.0-nightly.20260602"
+    source_branch: main
+    signing_required: false
+    distribution:
+      - direct
+    support: "None. Nightlies are snapshots and carry no guarantee."
+    description: >
+      Snapshots of main, one per UTC day, created only when main has
+      moved since the previous nightly. Artifacts are clearly marked
+      -unsigned and are not linked from the primary download page.
+
+# ---------------------------------------------------------------------------
+# Tag-to-release mapping.
+#
+# Every tag matching the trigger is routed to exactly one channel.
+# A tag matching no channel pattern is rejected: no release is produced
+# and a CI annotation explains why. The tag is not deleted (deleting a
+# pushed tag is disruptive).
+#
+# Channel selection is a pure function of the tag. No branch name, no
+# environment variable, and no human approval influences it. This is
+# what makes the release pipeline reproducible.
+# ---------------------------------------------------------------------------
+tag_routing:
+  trigger: "^v.*$"
+  rules:
+    - pattern: "^v\\d+\\.\\d+\\.\\d+$"
+      channel: stable
+    - pattern: "^v\\d+\\.\\d+\\.\\d+-(alpha|beta|rc)\\.\\d+$"
+      channel: prerelease
+    - pattern: "^v\\d+\\.\\d+\\.\\d+-nightly\\.\\d{8}$"
+      channel: nightly
+  on_no_match: reject
+  on_multiple_match: impossible
+  notes: >
+    The three patterns are disjoint regular expressions, so a tag
+    matching more than one is impossible by construction. The
+    'impossible' value records the invariant and is asserted by
+    internal/version tests.

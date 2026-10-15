@@ -68,7 +68,71 @@ var BuildDate string
 // the package does not correct it.
 var Dirty string
 
+// BuildType is the environment the running Forge build was produced
+// in. The three defined values are:
+//
+//	"release"  the release pipeline set SOURCE_DATE_EPOCH and a tag
+//	"ci"       a non-release CI job built the binary
+//	"local"    a contributor built the binary on their machine
+//
+// It is set at link time via:
+//
+//	-X github.com/thapelomagqazana/forge/internal/version.BuildType=<value>
+//
+// When the binary is built without ldflags, BuildType is the empty
+// string. Consumers SHOULD treat the empty string as "local": a
+// binary that carries no build-type information was almost certainly
+// built outside CI.
+//
+// # Why a string and not an enum type
+//
+// The -X linker flag can only set string variables. Declaring
+// BuildType as a named string type (type BuildType string; var
+// BuildType BuildType) would work, but it would force every consumer
+// to convert. A plain string matches the shape of the other four
+// variables and keeps this package a pure declaration surface.
+//
+// The value is not validated by this package. internal/version's
+// MetadataOf normalizes an empty or unrecognized value to "local".
+// See docs/reference/versioning.md §"Version embedding".
+var BuildType string
+
+// Info is the five linker-injected values as a single value.
+//
+// It exists so callers can pass the whole set around without a
+// five-tuple. A struct is also extensible: a future field (for
+// example, a provenance flag) can be added without changing any
+// caller's signature.
+//
+// The zero Info is valid: all five fields are the empty string, which
+// is what an uninstrumented build reports.
+type Info struct {
+	// Version is the value of the package variable Version.
+	Version string
+	// Commit is the value of the package variable Commit.
+	Commit string
+	// BuildDate is the value of the package variable BuildDate.
+	BuildDate string
+	// Dirty is the value of the package variable Dirty. It is the
+	// raw string ("true", "false", or ""), not a parsed bool.
+	Dirty string
+	// BuildType is the value of the package variable BuildType. It
+	// is the raw string ("release", "ci", "local", or ""), not a
+	// parsed type.
+	BuildType string
+}
+
 // Get returns the four build-time values as a single tuple.
+//
+// # Deprecated
+//
+// Use GetAll instead. Get is preserved for callers written against
+// WBS 6.1; it returns a subset of GetAll's fields and cannot be
+// extended without breaking its signature. New code should call
+// GetAll.
+//
+// Get is removed in a future MAJOR release. The removal is scheduled
+// in docs/reference/versioning.md §"MAJOR — a breaking change".
 //
 // # Why an accessor
 //
@@ -106,4 +170,40 @@ var Dirty string
 // such tests.
 func Get() (version, commit, buildDate, dirty string) {
 	return Version, Commit, BuildDate, Dirty
+}
+
+// GetAll returns the five build-time values as an Info value.
+//
+// # Why an accessor
+//
+// Same rationale as Get: the accessor insulates callers from a future
+// change to how the values are populated (for example, reading them
+// from runtime/debug.ReadBuildInfo instead of from package
+// variables).
+//
+// # Purity
+//
+// GetAll is pure. It reads five package-level variables and returns
+// them. Two consecutive calls with no intervening mutation return
+// equal values.
+//
+// # Concurrency
+//
+// The five variables are read-only after package initialization.
+// Concurrent calls to GetAll are safe.
+//
+// # Relationship to Get
+//
+// Get returns the first four fields of the value GetAll returns.
+// Code that needs the fifth (BuildType) or that needs to pass the
+// set around as a single value should call GetAll. Code that was
+// written against WBS 6.1 may keep calling Get until it is removed.
+func GetAll() Info {
+	return Info{
+		Version:   Version,
+		Commit:    Commit,
+		BuildDate: BuildDate,
+		Dirty:     Dirty,
+		BuildType: BuildType,
+	}
 }

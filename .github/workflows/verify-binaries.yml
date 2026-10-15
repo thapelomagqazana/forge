@@ -1,0 +1,159 @@
+# Binary verification.
+#
+# Runs the ten-check smoke suite against the compiled artifacts on
+# every v* tag. The suite is the last line of defense between a
+# broken build pipeline and a published release: it inspects the
+# artifact's header, asserts the binary is static, executes the
+# binary, and enforces the size and startup budgets.
+#
+# Triggers:
+#
+#   push tags     every v* tag (the release pipeline's gate)
+#   workflow_dispatch
+#                 manual run, useful when re-verifying a tag
+#   schedule      weekly against main, to catch a toolchain or
+#                 runner-image regression between releases
+#
+# See:
+#   docs/guides/verifying-binaries.md
+#   docs/decisions/ADR-047-binary-verification-thresholds.md
+name: verify-binaries
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+  schedule:
+    # Monday 03:00 UTC. A weekly run against the tip of main catches
+    # a regression that a tagged release did not exercise (for
+    # example, a Go toolchain update that changes the binary's size
+    # or startup time).
+    - cron: "0 3 * * 1"
+
+# The workflow builds the artifacts locally, verifies them, and
+# uploads nothing. It needs read access to the repository.
+permissions:
+  contents: read
+
+# Serialize runs for the same ref. The verifier is cheap; the build
+# is not. Two concurrent runs on the same tag waste runner time.
+concurrency:
+  group: verify-binaries-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # verify
+  #
+  # Builds the six artifacts, then runs the verifier. The verifier
+  # classifies each platform as runnable or inspect-only based on
+  # the runner's GOOS/GOARCH; on the Linux x86-64 runner, only
+  # linux/amd64 receives the runtime checks.
+  #
+  # The job is one runner, not a matrix. The suite runs all six
+  # platforms in a single invocation and reports per-platform. A
+  # matrix would duplicate the build (six builders for six
+  # artifacts) and would not add coverage: the verifier already
+  # inspects every artifact from any host.
+  #
+  # A future change that runs the suite on macOS and Windows
+  # runners would upgrade the runnable set; the workflow below is
+  # the place to add those jobs.
+  # ─────────────────────────────────────────────────────────────────────────
+  verify:
+    name: Verify binaries
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          # fetch-depth: 0 is required: the build driver derives the
+          # version from `git describe --tags --always --dirty` and
+          # the build date from the commit's committer timestamp.
+          # A shallow checkout has neither.
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: true
+
+      - name: Set SOURCE_DATE_EPOCH from the commit
+        id: sde
+        run: |
+          set -euo pipefail
+          sde=$(git log -1 --format=%ct)
+          echo "SOURCE_DATE_EPOCH=$sde" >> "$GITHUB_ENV"
+          echo "SOURCE_DATE_EPOCH=$sde ($(date -u -d "@$sde" +%Y-%m-%dT%H:%M:%SZ))"
+
+      - name: Build artifacts
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          # --all builds every Tier 1 and Tier 2 platform in
+          # docs/reference/platforms.yaml. --checksums-only writes
+          # dist/SHA256SUMS after the build; the verifier does not
+          # read SHA256SUMS, but the file's presence is part of the
+          # release pipeline's contract and a user who downloads the
+          # artifacts expects it.
+          go run ./scripts/build.go --all --checksums-only
+
+      - name: Verify binaries
+        run: |
+          set -euo pipefail
+          go run ./cmd/forge-internal-verify --dist=dist --verbose
+
+      - name: Upload verification report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-binaries-report
+          path: |
+            dist/SHA256SUMS
+            dist/forge.sbom.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # summary
+  #
+  # A stable check name for branch protection. The verify job's name
+  # is "Verify binaries"; the summary job's is "verify-binaries".
+  # Branch protection rules prefer a stable name; the summary job is
+  # always named "verify-binaries" regardless of the matrix.
+  #
+  # The summary fails when the verify job fails, and succeeds
+  # otherwise. It is the only required check.
+  # ─────────────────────────────────────────────────────────────────────────
+  summary:
+    name: verify-binaries
+    needs: verify
+    if: always()
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Report
+        run: |
+          set -euo pipefail
+          result="${{ needs.verify.result }}"
+          case "$result" in
+            success)
+              echo "OK: every platform passed the verification suite"
+              ;;
+            failure)
+              echo "::error::at least one platform failed the verification suite"
+              exit 1
+              ;;
+            cancelled)
+              echo "::warning::the verify job was cancelled"
+              exit 1
+              ;;
+            *)
+              echo "::error::unexpected verify result: $result"
+              exit 1
+              ;;
+          esac

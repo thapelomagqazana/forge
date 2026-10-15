@@ -2,34 +2,41 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/thapelomagqazana/forge/schemas/version.schema.json",
   "title": "Forge version output",
-  "description": "The JSON object emitted by `forge version --format json`. Frozen by WBS 6.4.2. Any breaking change to field names requires an ADR.",
+  "description": "The JSON object emitted by `forge version --format json`. Frozen by WBS 17.4.1. Any breaking change to field names requires an ADR. See docs/reference/version-output.md for the field semantics and docs/decisions/ADR-046-version-metadata-and-provenance.md for the rationale.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "version",
     "commit",
-    "build_date",
-    "dirty"
+    "buildDate",
+    "dirty",
+    "buildType"
   ],
   "properties": {
     "version": {
       "type": "string",
-      "description": "Semantic version of the build, or the empty string for an uninstrumented build. Not validated as semver; the build system is responsible for the format.",
-      "examples": ["v0.1.0", "v1.2.3-rc.1", ""]
+      "description": "Semantic version of the build, or \"dev\" for a local build, or an empty string for an uninstrumented build. The value may contain a -dirty suffix or a commit offset (e.g. v1.4.2-3-gabc1234). Not validated as SemVer by the schema; the build system is responsible for the format.",
+      "examples": ["v0.1.0", "v1.2.3-rc.1", "v1.4.2-3-gabc1234", "v1.4.2-dirty", "dev", ""]
     },
     "commit": {
       "type": "string",
-      "description": "Short git SHA of the built commit, or the empty string when built outside a git working tree.",
-      "examples": ["a1b2c3d", ""]
+      "description": "Short Git SHA of the built commit, or \"none\" outside a git working tree, or an empty string for an uninstrumented build.",
+      "examples": ["a1b2c3d", "none", ""]
     },
-    "build_date": {
+    "buildDate": {
       "type": "string",
-      "description": "RFC 3339 UTC timestamp of the build, or the empty string for an uninstrumented build. Not validated as a timestamp by the schema; the build system is responsible for the format.",
-      "examples": ["2026-10-03T14:32:52Z", ""]
+      "description": "RFC 3339 UTC timestamp of the build, or the empty string for an uninstrumented build. The schema enforces the RFC 3339 shape and the trailing Z, because the reproducible-builds contract (docs/guides/reproducible-builds.md) requires UTC.",
+      "format": "date-time",
+      "examples": ["2026-10-03T14:32:52Z", "2026-06-01T12:00:00Z", ""]
     },
     "dirty": {
       "type": "boolean",
-      "description": "True if the build was produced from a working tree with uncommitted changes; false otherwise."
+      "description": "True if the build was produced from a working tree with uncommitted changes; false otherwise. A released binary always reports false: the release pipeline refuses to run on a dirty tree."
+    },
+    "buildType": {
+      "type": "string",
+      "enum": ["release", "ci", "local"],
+      "description": "The environment the binary was built in. `release` is set by the release pipeline; `ci` by a non-release CI job; `local` by a contributor's machine or by any build that carries no explicit value."
     }
   }
 }

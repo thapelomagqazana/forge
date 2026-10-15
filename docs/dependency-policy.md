@@ -673,6 +673,134 @@ toolchain already provides; shelling out to `go list` makes the test
 depend on `go` being on `PATH` and is slower; and `depguard` expresses
 allow/deny lists rather than a full matrix over dynamic package sets.
 
+### github.com/santhosh-tekuri/jsonschema/v6
+
+| Attribute           | Value                                                |
+|---------------------|------------------------------------------------------|
+| Module path         | `github.com/santhosh-tekuri/jsonschema/v6`           |
+| Pinned version      | `v6.0.2`                                             |
+| License             | Apache-2.0                                           |
+| Maintainer          | Santhosh Kumar Tekuri                                |
+| First introduced    | WBS 8.4.3                                            |
+| ADR                 | [ADR-008](decisions/ADR-008-config-schema-validation.md) |
+| Purpose             | JSON Schema validation for `forge.yaml`'s schema     |
+| Last reviewed       | 2026-10-15                                           |
+
+**Why jsonschema/v6:** Forge's `forge.yaml` has a published JSON
+Schema (`schemas/config.schema.json`), and the config loader must
+reject a config file that violates the schema with an error that
+names the offending field and the schema constraint it violates. The
+alternative is to hand-write the validation logic for each field,
+which duplicates the schema's constraints and drifts from them: the
+schema is the source of truth for the config's shape; a hand-written
+validator is a second source, and the two diverge.
+
+`github.com/santhosh-tekuri/jsonschema/v6` is the de facto JSON
+Schema library for Go. It implements JSON Schema Draft 2020-12, which
+is the draft Forge's `schemas/config.schema.json` declares. It
+provides four properties the loader depends on:
+
+1. **Draft 2020-12 compliance.** The schema uses `$defs`, `$ref`,
+   `prefixItems`, and `unevaluatedProperties`; a library that
+   implemented an older draft would reject the schema or misread
+   its constraints.
+2. **Descriptive validation errors.** The library's errors name the
+   JSON Pointer to the offending value and the keyword that failed,
+   which the loader surfaces in its error's context. A user who
+   misspells a field sees the field's path and the schema's
+   expectation, not a generic "invalid config".
+3. **External `$ref` resolution.** The schema's `$ref`s point to
+   files under `schemas/`; the library resolves them from the
+   filesystem without a network call. The loader's registry is a
+   local resolver; the library's API supports it.
+4. **A single binary's worth of code.** The library is pure Go; it
+   has no cgo dependency, and it does not use the `net/http`
+   package's cgo path. The release binary's `CGO_ENABLED=0` policy
+   (ADR-042) is not affected.
+
+The library is a direct dependency of the config package (WBS 8.4.3).
+It is imported by non-test code: the config loader calls the
+library's `Compile` and `Validate` methods. It is not a test-only
+dependency; the production binary links it.
+
+See ADR-008 for the alternatives considered (a hand-written
+validator, `santhosh-tekuri/jsonschema/v5`, `xeipuuv/gojsonschema`,
+and `qri-io/jsonschema`).
+
+**Transitive dependencies:** `github.com/santhosh-tekuri/jsonschema/v6`
+has one direct dependency:
+
+- `github.com/santhosh-tekuri/jsonschema/v6/internal/...` — the
+  module's own sub-packages. Not a third-party dependency.
+- `github.com/dlclark/regexp2` — an extended regular-expression
+  engine that supports the ECMA-262 regex flavor JSON Schema's
+  `pattern` keyword uses. License: MIT. Maintained by Damian
+  Clark; the library is the one `gopls` uses for its regex
+  handling.
+
+The module's `go.mod` also lists `golang.org/x/text` and
+`golang.org/x/crypto` as indirect dependencies of `regexp2` and of
+the module's `cmd/` tools. Forge's build does not compile the
+module's `cmd/` tools, so the two `golang.org/x/` modules are in
+`go.sum` but not in the production binary's link step.
+
+All transitive dependencies are pinned automatically via `go.sum`
+and require no manual maintenance. Their licenses (MIT, BSD-3-Clause)
+are on the compatible list (§5).
+
+**Version bound:** the pinned version `v6.0.2` is the newest release
+whose `go` directive is `go 1.21` or lower, which is within Forge's
+frozen minimum (`go 1.23.0`, ADR-004). A future `v6.x` release whose
+`go` directive exceeds Forge's minimum is blocked until Forge's
+minimum is raised by a superseding ADR; the version-bound check is
+the same mechanical procedure as `golang.org/x/tools`'s.
+
+**Upgrade criteria:**
+
+- **Patch upgrades** (e.g., `v6.0.2` → `v6.0.3`): permitted if the
+  release notes contain only bug fixes and no API changes, **and**
+  the candidate's `go` directive is still ≤ `1.23.0`. A short note
+  in the pull request description suffices; no ADR required.
+- **Minor upgrades** (within `v6.x`): permitted if the release notes
+  do not indicate breaking changes, **and** the candidate's `go`
+  directive is still ≤ `1.23.0`. A brief ADR is required.
+- **Major upgrades** (`v6.x` → `v7.x`): require a full ADR with a
+  migration plan. The library's major-version cadence tracks the
+  JSON Schema drafts; a `v7` would likely implement Draft 2028 or
+  a future draft, and the schema's `$schema` field would need to
+  move with it.
+- **Crossing the toolchain bound:** any upgrade whose `go` directive
+  exceeds Forge's frozen minimum is blocked until WBS 2.1.2 is
+  revised by a superseding ADR. The check is the same as
+  `golang.org/x/tools`'s: fetch the candidate's `.mod` file and
+  inspect its `go` directive.
+
+**Upgrade cadence:** Reviewed quarterly, aligned with the general
+dependency review cycle described in §4.5.
+
+**CVE history:** None affecting the pinned version. Security
+advisories for the library are published via `pkg.go.dev/vuln`; the
+registry's "Last reviewed" field is updated when the advisories are
+re-checked.
+
+**Why the dependency is not test-only:** unlike `testify` and
+`golang.org/x/tools`, this library is imported by the config package's
+production code. Its presence in the release binary is intentional:
+the config loader must validate the config at load time, and the
+validation uses the schema. A future change that moved the
+validation to a test-only path would change the binary's behavior
+(a malformed config would no longer fail at load time), which is a
+change to the config loader's contract, not to this dependency's
+status.
+
+**Alternatives considered and rejected:** ADR-008 documents the
+alternatives. The short version: a hand-written validator duplicates
+the schema's constraints and drifts; `santhosh-tekuri/jsonschema/v5`
+implements Draft 7, and Forge's schema declares Draft 2020-12;
+`xeipuuv/gojsonschema` is unmaintained and implements Draft 4;
+`qri-io/jsonschema` is an interface-first library whose API is a
+larger change to the loader than the schema-aware alternatives.
+
 ---
 
 ## 8. Module resolution policy
@@ -739,6 +867,7 @@ in sync with `go.mod`.
 | 0.3.0   | 2026-10-11 | @thapelomagqazana  | Added the `gopkg.in/yaml.v3` registry entry (§ 7). The dependency was introduced by WBS 8.4.2 (the config file loader); ADR-007 documents its rationale. The entry records the module path, pinned version (`v3.0.1`), dual MIT/Apache-2.0 license, Canonical's maintenance, no transitive dependencies, and the upgrade criteria. The registry's addition closes the `verify:deps:documented` failure that reported the dependency as undocumented. |
 | 0.4.0   | 2026-10-12 | @thapelomagqazana  | Added the `github.com/stretchr/testify` registry entry (§ 7). The dependency was introduced by WBS 9.5.1 (the acceptance tests) and is used throughout `internal/cli`'s test files. The entry records the module path, pinned version (`v1.9.0`), MIT license, Stretchr, Inc.'s maintenance, the four transitive dependencies (all permissively licensed), and the upgrade criteria. The registry's addition closes the `verify:deps:documented` failure that reported the dependency as undocumented. The section also records why a test-only dependency with a larger transitive closure than Forge's other dependencies is acceptable: the closure is permissively licensed, actively maintained, and does not affect the production binary. |
 | 0.5.0   | 2026-10-14 | @thapelomagqazana  | Added the `golang.org/x/tools` registry entry (§7). The dependency was introduced by WBS 14.1.1 (the clean-architecture guardrail, ADR-040) and extended by WBS 14.1.2 (the package-group dependency matrix, ADR-042). The entry records the module path, pinned version (`<COMPAT>`), BSD-3-Clause license, the Go team's maintenance, the two transitive dependencies (`golang.org/x/mod` and `golang.org/x/sync`, both BSD-3-Clause), and the version-bound rationale: the pinned version is the newest release whose `go` directive is ≤ Forge's frozen minimum (`go 1.23.0`), because adopting a newer release would raise the project's minimum supported Go version for a test-only dependency. |
+| 0.5.0   | 2026-10-15 | @thapelomagqazana  | Added the `github.com/santhosh-tekuri/jsonschema/v6` registry entry (§7). The dependency was introduced by WBS 8.4.3 (config schema validation); ADR-008 documents its rationale. The entry records the module path, pinned version (`v6.0.2`), Apache-2.0 license, Santhosh Kumar Tekuri's maintenance, the one transitive dependency (`github.com/dlclark/regexp2`, MIT), the two `golang.org/x/` modules that are in `go.sum` but not in the production binary, and the version-bound rationale: the pinned version's `go` directive is within Forge's frozen minimum (`go 1.23.0`). |
 
 ---
 

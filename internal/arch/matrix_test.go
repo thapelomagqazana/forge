@@ -256,6 +256,11 @@ func TestMatrixSelfImportAllowed(t *testing.T) {
 // (infrastructure.filesystem) that also owns a future, more specific path,
 // and what allows the layer-root groups (domain, infrastructure, shared) to
 // coexist with their more specific subgroups.
+//
+// The table is the canonical list of package-to-group mappings the matrix
+// relies on. Adding a package under internal/ without adding it here means
+// a future rename of the owning group fails silently rather than at the
+// point of the rename. Keep it exhaustive.
 func TestMatrixGroupOfUsesLongestPrefix(t *testing.T) {
 	m := loadCanonicalMatrix(t)
 	cases := map[string]string{
@@ -289,8 +294,9 @@ func TestMatrixGroupOfUsesLongestPrefix(t *testing.T) {
 		"internal/version":       "shared.version",
 		"internal/app/version":   "shared.version",
 
-		// Tooling.
-		"internal/arch": "architecture.tooling",
+		// Tooling — build-time metadata, not production code.
+		"internal/arch":     "architecture.tooling",
+		"internal/platform": "architecture.platform",
 
 		// Unclassified.
 		"internal/not-a-real-package": "",

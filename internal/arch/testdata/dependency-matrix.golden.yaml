@@ -9,10 +9,15 @@
 #
 # Editing rules:
 #   1. Change this file first, then regenerate the Markdown form with
-#      `go test ./internal/arch -run TestMatrixYAMLMatchesMarkdown -update`.
+#      `go test ./internal/arch -run TestMatrixYAMLMatchesMarkdown -update`
+#      and the golden with
+#      `go test ./internal/arch -run TestCanonicalMatrixGolden -update`.
 #   2. Any new exception requires a superseding ADR.
 #   3. Cycles are forbidden; ParseMatrix rejects a cyclic matrix at load time
 #      and TestMatrixAcyclic asserts the invariant on the canonical file.
+#   4. Every package under internal/ must appear in exactly one group.
+#      TestMatrixGroupsCoverEveryInternalPackage asserts this; a new
+#      internal/ package without a group fails the test.
 
 version: 1
 schema: schemas/dependency-matrix.schema.json
@@ -25,12 +30,135 @@ groups:
   # architecture.tooling covers internal/arch, the architecture-guardrail
   # package (ADR-040, ADR-042). It is development tooling, not production
   # code; it is imported only by its own tests and it imports only external
-  # packages. It is classified in the Shared layer because it is a
-  # cross-cutting tool with no dependencies on any Forge layer.
+  # packages plus the build-time metadata packages it verifies against
+  # (architecture.platform, architecture.release, architecture.distribution).
+  #
+  # Classified in the Shared layer because it is a cross-cutting tool with
+  # no dependencies on any Forge layer. Classifying it as infrastructure
+  # would be wrong: every infrastructure package would then be permitted to
+  # import it by the layer default, which is the opposite of the intended
+  # rule.
+  #
+  # The dependency from this group to architecture.platform lets the arch
+  # tests load the platform matrix as a fixture. The dependency from this
+  # group to architecture.release lets the workflow contract test compare
+  # .github/workflows/release.yml against the Go model in
+  # internal/release. The dependency from this group to
+  # architecture.distribution lets the acceptance tests compare the
+  # distribution driver's output against the model in
+  # internal/distribution. All three edges are one-way: none of
+  # architecture.platform, architecture.release, or
+  # architecture.distribution may import architecture.tooling, or the
+  # build-time tools form a cycle that the matrix rejects by construction
+  # (see TestAcyclicAlgorithm, "direct cycle is detected").
   architecture.tooling:
     layer: shared
     packages:
       - internal/arch
+
+  # architecture.platform covers internal/platform, the supported-platform
+  # matrix loader (WBS 17.1.1, ADR-040). Like architecture.tooling, it is
+  # build-time metadata: it is consumed by cmd/forge-internal-platform, by
+  # CI matrix generation, and by release tooling, but never by the
+  # user-facing forge binary.
+  #
+  # Classified in the Shared layer for the same reason as architecture.tooling:
+  # it is a cross-cutting tool that depends on no Forge layer. Classifying it
+  # as infrastructure would be wrong — every infrastructure package would then
+  # be permitted to import it by the layer default, which is the opposite of
+  # the intended rule.
+  #
+  # Production groups are denied import of this group by the closed-world
+  # default (TestMatrixDefaultsUnlistedPairsToDeny). That is intentional:
+  # runtime code must not read docs/reference/platforms.yaml.
+  #
+  # The dependencies from this group are absent: architecture.platform
+  # imports only external packages (gopkg.in/yaml.v3). The tooling and
+  # release groups declare one-way edges to this group; the reverse edges
+  # would close cycles and are rejected by the matrix.
+  architecture.platform:
+    layer: shared
+    packages:
+      - internal/platform
+
+  # architecture.release covers internal/release, the shared package that
+  # owns the artifact-naming convention, the dist/ layout, and the release
+  # workflow's job graph (WBS 17.5.2, WBS 17.5.3). Like the other
+  # architecture.* groups, it is build-time metadata: it is consumed by
+  # cmd/forge-internal-checksums, cmd/forge-internal-sign,
+  # cmd/forge-internal-sbom, cmd/forge-internal-distribute, and test/release,
+  # but never by the user-facing forge binary.
+  #
+  # Classified in the Shared layer for the same reason as the other
+  # architecture.* groups: it is a cross-cutting tool with no dependencies
+  # on any Forge layer. Classifying it as infrastructure would be wrong —
+  # every infrastructure package would then be permitted to import it by the
+  # layer default, which is the opposite of the intended rule. Classifying
+  # it as shared.version would be wrong for the same reason: it is not
+  # version metadata, and shared.version is importable by production code
+  # (presentation.cli, application, infrastructure.*), which the release
+  # naming convention must not be.
+  #
+  # Production groups are denied import of this group by the closed-world
+  # default (TestMatrixDefaultsUnlistedPairsToDeny). That is intentional:
+  # a CLI command that printed an archive name would couple the user-facing
+  # binary to the release tooling, which is the coupling this group exists
+  # to prevent.
+  #
+  # The dependency from this group to architecture.platform is one-way:
+  # internal/release names a platform.Platform to compute an archive's
+  # name, but internal/platform must not import internal/release. A mutual
+  # pair is a 2-cycle and the matrix rejects it.
+  #
+  # The dependency from this group to architecture.tooling is absent, and
+  # the reverse edge (architecture.tooling -> architecture.release) is the
+  # one the tooling's row declares. The absence is what makes the pair
+  # acyclic. The same is true of the pair with architecture.distribution:
+  # the two are peers, and neither imports the other.
+  architecture.release:
+    layer: shared
+    packages:
+      - internal/release
+
+  # architecture.distribution covers internal/distribution, the shared
+  # package that renders every distribution channel's manifest from the
+  # release's artifacts (WBS 17.5.4). Like the other architecture.*
+  # groups, it is build-time metadata: it is consumed by
+  # cmd/forge-internal-distribute and by test/distribution, but never
+  # by the user-facing forge binary.
+  #
+  # Classified in the Shared layer for the same reason as the other
+  # architecture.* groups: it is a cross-cutting tool with no
+  # dependencies on any Forge layer. Classifying it as infrastructure
+  # would be wrong — every infrastructure package would then be
+  # permitted to import it by the layer default, which is the opposite
+  # of the intended rule. Classifying it as shared.version would be
+  # wrong for the same reason: it is not version metadata, and
+  # shared.version is importable by production code (presentation.cli,
+  # application, infrastructure.*), which the distribution tooling
+  # must not be.
+  #
+  # Production groups are denied import of this group by the
+  # closed-world default (TestMatrixDefaultsUnlistedPairsToDeny). That
+  # is intentional: a CLI command that rendered a Homebrew formula
+  # would couple the user-facing binary to the release tooling, which
+  # is the coupling this group exists to prevent.
+  #
+  # internal/distribution names no platform.Platform in production
+  # code: the Release struct's Archives map is keyed by the string
+  # "goos/goarch", not by the platform type. The group therefore has
+  # no outbound edge to architecture.platform. A future change that
+  # named the type would add the edge; the current shape has none.
+  #
+  # The package is a peer of architecture.release: internal/release
+  # owns the artifact-naming convention and the workflow's job graph;
+  # internal/distribution owns the channel manifests. Neither imports
+  # the other. A future change that made one import the other would
+  # add the edge; the current shape has none.
+  architecture.distribution:
+    layer: shared
+    packages:
+      - internal/distribution
 
   presentation.cli:
     layer: presentation
@@ -140,9 +268,52 @@ groups:
       - internal/app/version
 
 matrix:
-  # architecture.tooling imports only external packages. Empty row: no
-  # outgoing substantive imports.
-  architecture.tooling: {}
+  # architecture.tooling may import architecture.platform so the arch
+  # tests can load the platform matrix as a fixture,
+  # architecture.release so the workflow contract test can compare the
+  # workflow YAML to the Go model, and architecture.distribution so the
+  # acceptance tests can compare the distribution driver's output to the
+  # model. None of the three edges is mutual: none of the three targets
+  # may import architecture.tooling, or the build-time tools form a cycle
+  # that the matrix rejects by construction (see TestAcyclicAlgorithm,
+  # "direct cycle is detected").
+  #
+  # No production group may import architecture.tooling; that is enforced
+  # by the closed-world default, not by a cell here.
+  architecture.tooling:
+    architecture.platform: allow
+    architecture.release: allow
+    architecture.distribution: allow
+
+  # architecture.platform imports only external packages (gopkg.in/yaml.v3).
+  # It must not import architecture.tooling, architecture.release, or
+  # architecture.distribution: any of the three edges would close a
+  # cycle. No production group may import architecture.platform; that is
+  # enforced by the closed-world default, not by a cell here.
+  architecture.platform: {}
+
+  # architecture.release imports internal/platform for the Platform type
+  # that names an artifact's target. It must not import architecture.tooling
+  # (the reverse edge is declared in the tooling's row, and a mutual pair
+  # is a 2-cycle the matrix rejects). It must not import
+  # architecture.distribution: the two packages are peers, and a mutual
+  # import would be a cycle. It must not import any production group. No
+  # production group may import architecture.release; that is enforced by
+  # the closed-world default.
+  architecture.release:
+    architecture.platform: allow
+
+  # architecture.distribution imports only its own package and the
+  # standard library. It does not name internal/platform's Platform type;
+  # the Release struct's Archives map is keyed by the string
+  # "goos/goarch". It must not import architecture.tooling (the reverse
+  # edge is declared in the tooling's row, and a mutual pair is a 2-cycle
+  # the matrix rejects). It must not import architecture.release or
+  # architecture.platform: the three packages are peers, and a mutual
+  # import would be a cycle. It must not import any production group. No
+  # production group may import architecture.distribution; that is
+  # enforced by the closed-world default.
+  architecture.distribution: {}
 
   presentation.cli:
     application: allow

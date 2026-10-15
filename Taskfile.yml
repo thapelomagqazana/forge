@@ -15,13 +15,23 @@
 #   module:*             — Go module verification (WBS 2.1.1)
 #   goversion:*          — Go version matrix verification (WBS 2.1.2)
 #   verify:*             — Composed verification namespaces
-#     verify:reproducible    — Reproducibility invariant (WBS 2.3.1)
-#     verify:cobra           — Cobra pin and wiring (WBS 2.4.1)
-#     verify:deps            — Dependency policy enforcement (WBS 2.5.1)
-#     verify:resolution      — Module resolution reproducibility (WBS 3.2.1)
-#     verify:handler-boundary — Handler / service boundary (WBS 4.3.1)
-#     verify:two-boundary    — Two-boundary execution model (WBS 4.2.2)
-#     verify:injection       — Linker injection contract (WBS 6.1.2)
+#     verify:reproducible        — Reproducibility invariant
+#       :env                     — GOFLAGS and GOTOOLCHAIN are set
+#       :tidy                    — go.mod/go.sum are stable
+#       :lockstep                — module resolution is deterministic
+#       :negative                — -mod=readonly prevents silent mutation
+#       :cross                   — two cross-compiles are byte-identical (WBS 17.3.1)
+#       :all                     — the same, for every platform (WBS 17.3.1)
+#     verify:cobra               — Cobra pin and wiring (WBS 2.4.1)
+#     verify:deps                — Dependency policy enforcement (WBS 2.5.1)
+#     verify:resolution          — Module resolution reproducibility (WBS 3.2.1)
+#     verify:handler-boundary    — Handler / service boundary (WBS 4.3.1)
+#     verify:two-boundary        — Two-boundary execution model (WBS 4.2.2)
+#     verify:injection           — Linker injection contract (WBS 6.1.2)
+#     verify:tagged              — HEAD is an exact tag (WBS 17.2.1)
+#   platform:*           — Platform matrix tooling (WBS 17.1.1)
+#   version:*            — Version and release-channel tooling (WBS 17.1.2)
+#   release:*            — Release pipeline helpers (WBS 17.2.1, WBS 17.3.1)
 #   lint:*               — Linting (Markdown, and future linters)
 #   tidy                 — Dependency lockfile maintenance (maintainers only)
 #   build:*              — Binary compilation with injected metadata
@@ -149,24 +159,10 @@ vars:
   # updating this variable AND adding a registry entry to the policy
   # document. The two changes must be made in the same commit.
   #
-  #   Phase 2 permits two direct dependencies:
-  #
-  #     - github.com/spf13/cobra — the CLI framework. Cobra provides
-  #       the command tree, the flag parser, and the help and version
-  #       subsystems.
-  #
-  #     - github.com/spf13/pflag — POSIX/GNU-style flag parsing. pflag
-  #       is a first-class part of Cobra's public API: Cobra exposes
-  #       cobra.Command.Flags() as a *pflag.FlagSet, and any code that
-  #       inspects or iterates a command's flags names pflag types.
-  #       The Go toolchain classifies pflag as a direct dependency
-  #       because of those references.
-  #
-  #   The list grows as future WBS items introduce dependencies. Adding
-  #   a new direct dependency requires an ADR that names the consumer
-  #   WBS item and justifies the addition. See docs/cli-ux-spec.md
-  #   section 4.11 for the flag-inventory freeze and
-  #   docs/dependency-policy.md for the full policy.
+  # The list grows as future WBS items introduce dependencies. Adding
+  # a new direct dependency requires an ADR that names the consumer
+  # WBS item and justifies the addition. See docs/dependency-policy.md
+  # for the full policy.
   DEP_POLICY: 'docs/dependency-policy.md'
   DEP_ALLOWED_DIRECT: |
     github.com/spf13/cobra
@@ -174,6 +170,7 @@ vars:
     gopkg.in/yaml.v3
     github.com/stretchr/testify
     golang.org/x/tools
+    github.com/santhosh-tekuri/jsonschema/v6
 
   # ───────────────────────────────────────────────────────────────────────────
   # Markdown lint configuration (WBS 2.1.x — documentation quality)
@@ -238,13 +235,7 @@ vars:
   # Charset invariant: the four values are constrained to
   # [A-Za-z0-9._:+-]. This is not accidental — Task 3.x has known
   # quoting quirks around `sh:` output, and a value containing a space,
-  # quote, or newline would break the `go build -ldflags "..."`
-  # invocation. The four sources produce values in this charset:
-  #
-  #   git describe        [A-Za-z0-9._-] plus the -dirty suffix
-  #   git rev-parse       [0-9a-f]
-  #   date -u             [0-9T:Z-]
-  #   git status          literal "true" or "false"
+  # quote, or newline would break the `go build -ldflags "..."` invocation.
   #
   # See TestNonFunctional_InjectedValuesAreShellSafe in
   # internal/version/injection_test.go.
@@ -594,17 +585,26 @@ tasks:
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Reproducibility — verification of the module and toolchain contract
-  # (WBS 2.3.1)
+  # (WBS 2.3.1, WBS 17.3.1)
+  #
+  # WBS 2.3.1 defines the environment, tidy, lockstep, and negative
+  # checks. WBS 17.3.1 adds the cross-compilation check: it builds a
+  # binary twice and compares SHA-256. The section is unified because
+  # all six checks answer the same question at different layers.
+  #
+  # See docs/guides/reproducible-builds.md and
+  # docs/decisions/ADR-045-reproducibility-posture.md.
   # ═══════════════════════════════════════════════════════════════════════════
 
   verify:reproducible:
-    desc: Verify the reproducibility invariant holds locally (WBS 2.3.1)
+    desc: Verify the reproducibility invariant holds locally (WBS 2.3.1, WBS 17.3.1)
     dir: "{{.USER_WORKING_DIR}}"
     cmds:
       - task: verify:reproducible:env
       - task: verify:reproducible:tidy
       - task: verify:reproducible:lockstep
       - task: verify:reproducible:negative
+      - task: verify:reproducible:cross    # WBS 17.3.1
 
   verify:reproducible:env:
     desc: Confirm GOFLAGS and GOTOOLCHAIN are set as required
@@ -721,6 +721,57 @@ tasks:
         fi
 
         echo "OK: -mod=readonly correctly prevented silent mutation"
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Reproducible cross-compilation (WBS 17.3.1)
+  # ───────────────────────────────────────────────────────────────────────────
+  #
+  # verify:reproducible:cross builds one platform twice and compares
+  # SHA-256. It is the fast check: ~30 seconds on a warm cache.
+  #
+  # verify:reproducible:all builds every Tier 1/2 platform twice and
+  # compares SHA-256. It is the thorough check: ~3 minutes on a warm
+  # cache. The `reproducible` CI workflow calls the verifier directly
+  # rather than through `task`, because the CI matrix runs one platform
+  # per job; see .github/workflows/reproducible.yml.
+  #
+  # Both targets set SOURCE_DATE_EPOCH from the commit's committer
+  # timestamp if the caller has not. The verifier also derives it
+  # itself, but setting it here makes the value visible in the task's
+  # output and matches what the release pipeline does.
+  #
+  # OS and ARCH default to linux and amd64. Override them:
+  #
+  #   task verify:reproducible:cross OS=darwin ARCH=arm64
+  #
+  # The targets delegate to cmd/forge-internal-repro, which is a
+  # separate cmd/ binary. See docs/guides/reproducible-builds.md.
+  # ───────────────────────────────────────────────────────────────────────────
+
+  verify:reproducible:cross:
+    desc: Verify cross-compilation is reproducible for one platform (WBS 17.3.1)
+    dir: "{{.ROOT}}"
+    vars:
+      OS: '{{.OS | default "linux"}}'
+      ARCH: '{{.ARCH | default "amd64"}}'
+    cmds:
+      - |
+        set -euo pipefail
+        if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
+          export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+        fi
+        go run ./cmd/forge-internal-repro --os={{.OS}} --arch={{.ARCH}} --verbose
+
+  verify:reproducible:all:
+    desc: Verify cross-compilation is reproducible for every platform (WBS 17.3.1)
+    dir: "{{.ROOT}}"
+    cmds:
+      - |
+        set -euo pipefail
+        if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
+          export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+        fi
+        go run ./cmd/forge-internal-repro --verbose
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Cobra — pin and wiring verification (WBS 2.4.1)
@@ -869,35 +920,6 @@ tasks:
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Handler / Service boundary — enforcement (WBS 4.3.1)
-  # ═══════════════════════════════════════════════════════════════════════════
-  #
-  # verify:handler-boundary enforces the mechanical parts of the
-  # handler / service boundary defined in docs/architecture.md section
-  # 11.12 and enforced by the reviewer checklist in docs/development.md.
-  #
-  # The rule: a Cobra handler (RunE closure) parses flags, constructs
-  # an application service, calls it, and returns an error. It does
-  # not read files, does not access the network, does not contain
-  # business logic, does not format output inline, and does not call
-  # os.Exit or write to a process-global stream.
-  #
-  # The Taskfile target checks:
-  #
-  #   AC3  — the handler body is under HANDLER_BODY_MAX_LINES lines.
-  #   AC4  — the handler file contains no direct fmt.Fprintln,
-  #          fmt.Fprintf, fmt.Println, or fmt.Printf calls.
-  #   AC5  — the handler file contains no os.Exit call.
-  #
-  # The strict checks are in internal/cli/version_test.go
-  # (TestNewVersionCmd_HandlerIsThin and
-  # TestNewVersionCmd_DoesNotContainBusinessLogic). Those tests
-  # inspect the handler body directly; the Taskfile target is a fast
-  # pre-commit check.
-  #
-  # When a new command is added, HANDLER_FILES is extended with the
-  # new file. The extension is a review checkpoint: a reviewer sees
-  # that a new handler was added and can check that it follows the
-  # pattern.
   # ═══════════════════════════════════════════════════════════════════════════
 
   verify:handler-boundary:
@@ -1050,28 +1072,6 @@ tasks:
   # ═══════════════════════════════════════════════════════════════════════════
   # Two-boundary execution model — enforcement (WBS 4.2.2)
   # ═══════════════════════════════════════════════════════════════════════════
-  #
-  # verify:two-boundary enforces the mechanical parts of the two-boundary
-  # execution model introduced by WBS 4.2.2 and documented in
-  # docs/architecture.md section 11. It is the task the WBS 4.2.2
-  # acceptance criteria named as verify:deps and verify:two-boundary.
-  # The two are merged here into a single target to keep the Taskfile
-  # legible.
-  #
-  # The rule: executeWithOptions is the single transformation point
-  # between the process boundary (options) and the command boundary
-  # (Dependencies). buildDependencies is the only function that
-  # constructs a Dependencies value. defaultOptions is the only
-  # function that reads os.Args, os.Stdin, os.Stdout, os.Stderr,
-  # os.Getenv, or os.Getwd.
-  #
-  # The checks:
-  #
-  #   AC1  — Dependencies is defined in exactly one file.
-  #   AC3  — no command constructor reads os.*.
-  #   AC4  — buildDependencies is called exactly once in production.
-  #   AC6  — newRootCmd accepts Dependencies, not options.
-  # ═══════════════════════════════════════════════════════════════════════════
 
   verify:two-boundary:
     desc: Verify the two-boundary execution model (WBS 4.2.2)
@@ -1164,40 +1164,6 @@ tasks:
   # ═══════════════════════════════════════════════════════════════════════════
   # Injection — linker injection contract (WBS 6.1.2)
   # ═══════════════════════════════════════════════════════════════════════════
-  #
-  # The linker injection contract is defined by WBS 6.1.2. It says:
-  #
-  #   * Exactly four variables are injection targets, all in
-  #     internal/version.
-  #
-  #   * The -X prefix must match go.mod's module path exactly.
-  #
-  #   * No other injection mechanism exists (no env vars, no generated
-  #     files, no ad-hoc scripts). The Makefile, if present, must be a
-  #     zero-logic shim over this Taskfile.
-  #
-  #   * Injection is performed by the single build authority (this
-  #     Taskfile).
-  #
-  # The verify:injection:* tasks check the mechanical parts. The strict
-  # checks are in internal/version/injection_test.go; these tasks are
-  # fast pre-commit checks that also run under `task check`.
-  #
-  # The checks are deliberately narrow:
-  #
-  #   verify:injection:prefix
-  #     — module path in Taskfile matches go.mod (AC6)
-  #   verify:injection:vars
-  #     — the four variable names exist in internal/version (AC5)
-  #   verify:injection:ldflags
-  #     — the LDFLAGS block targets the same names as version.go
-  #   verify:injection:single-authority
-  #     — the Makefile shim, if present, contains no injection logic (AC8)
-  #   verify:injection:no-env-reads
-  #     — no .go file outside internal/version reads version env vars (AC8)
-  #   verify:injection:docs
-  #     — docs/development.md documents the contract and the trap (AC7)
-  # ═══════════════════════════════════════════════════════════════════════════
 
   verify:injection:
     desc: Verify the linker injection contract holds (WBS 6.1.2)
@@ -1241,13 +1207,6 @@ tasks:
 
         failed=0
         for var in Version Commit BuildDate Dirty; do
-          # Match either declaration form:
-          #   var Version string
-          #       Version   string   (inside a var block)
-          #
-          # The trailing ([[:space:]]|$) ensures we do not match a
-          # name that is a prefix of a longer identifier such as
-          # "Versioned".
           if ! grep -qE "^[[:space:]]*(var[[:space:]]+)?${var}([[:space:]]|\$)" \
                   "$pkg_dir"/*.go 2>/dev/null; then
             echo "FAIL: $pkg_dir does not declare var $var" >&2
@@ -1267,15 +1226,6 @@ tasks:
       - |
         set -euo pipefail
 
-        # Extract the four variable names that LDFLAGS targets.
-        #
-        # Each -X target has the form:
-        #   <module-path>/internal/version.<VarName>=<value>
-        #
-        # We render LDFLAGS (Task substitutes its vars), split on
-        # whitespace, keep only -X tokens, strip the -X prefix, strip
-        # everything from "=" onward, then keep only the segment after
-        # the last ".". The result is the four variable names, sorted.
         ldflags="{{.LDFLAGS}}"
 
         targets=$(printf '%s' "$ldflags" \
@@ -1313,72 +1263,11 @@ tasks:
       - |
         set -euo pipefail
 
-        # If a Makefile exists, it must be a zero-logic shim over
-        # this Taskfile. The absence of a Makefile is also acceptable.
-        #
-        # # History of this check
-        #
-        # Three earlier versions of this check produced false
-        # positives:
-        #
-        #   1. A negative allowlist over every Makefile line matched
-        #      the shim's own docstring, which explains what the
-        #      shim does NOT do and therefore mentions the forbidden
-        #      tokens by name.
-        #
-        #   2. A positive allowlist over every TAB-prefixed recipe
-        #      line matched legal Makefile constructs: multi-line
-        #      pipelines, command groups `{ ... }`, Make variables
-        #      `$(TASK)`, and control-flow keywords like `exit`.
-        #
-        #   3. A grep for `go build`, `go test`, and similar tokens
-        #      matched those tokens inside echo strings that are
-        #      guidance, not commands.
-        #
-        # The common failure mode is trying to decide "is this
-        # token being executed?" from lexical evidence. Shell
-        # source is not lexically classifiable at the level these
-        # checks attempted. The check below therefore asserts only
-        # properties that are unambiguous at the lexical level:
-        #
-        #   POSITIVE
-        #     The shim contains at least one `$(TASK)` or `task`
-        #     invocation. A shim that does not delegate is not a
-        #     shim.
-        #
-        #   NEGATIVE
-        #     The shim contains no `-X`, no `MODULE`, and no `git `
-        #     in code (comments and help text are stripped first).
-        #     These three tokens are unambiguous: none of them can
-        #     appear inside a legitimate guard string.
-        #
-        # What the check does NOT attempt:
-        #
-        #   It does not try to detect Go-tool invocations by
-        #   grepping for `go build`, `go test`, etc. That check
-        #   produced a false positive on the shim's own
-        #   "install task or build directly" guidance, which
-        #   mentions `go build ./cmd/forge` inside an echo. Any
-        #   real Go-tool invocation in the shim would either
-        #   replace the `$(TASK)` delegation (caught by the
-        #   positive check) or appear alongside it (caught by
-        #   review, because the diff shows an extra recipe line).
-        #   The grep added no coverage the positive check does
-        #   not already provide.
         if [ ! -f Makefile ]; then
           echo "OK: no Makefile present; Taskfile.yml is the sole authority"
           exit 0
         fi
 
-        # ─── POSITIVE: the shim delegates ──────────────────────────
-        #
-        # Accept either the literal `task` command or the Make
-        # variable `$(TASK)`. The shim uses $(TASK) so a contributor
-        # can point at a differently-named runner; both forms are
-        # valid delegation.
-        #
-        # The word-boundary pattern on `task` prevents matching
-        # `taskfile` or `tasks` inside comments or URLs.
         if ! grep -qE '(\$\(TASK\)|(^|[^A-Za-z_])task([^A-Za-z_]|$))' Makefile; then
           echo "FAIL: Makefile does not delegate to Task." >&2
           echo "      A shim must invoke \$(TASK) or task." >&2
@@ -1386,31 +1275,11 @@ tasks:
           exit 1
         fi
 
-        # ─── NEGATIVE: no injection logic in code ──────────────────
-        #
-        # Strip comments and help annotations before scanning, so a
-        # docstring that mentions `-X` or `MODULE` cannot trip the
-        # check.
-        #
-        # The strip removes:
-        #   * everything from an unquoted `#` to end of line, which
-        #     covers both full-line comments and trailing help
-        #     annotations such as `build: ## Build ...`
-        #   * trailing whitespace
-        #   * blank lines
-        #
-        # This is not a full Make lexer, but it is sufficient for
-        # the shim's shape: the shim does not contain `#` inside
-        # recipe strings, and if a future change introduced one,
-        # the strip would be conservative in the safe direction
-        # (it would strip more, not less).
         code=$(sed -E -e 's/#.*$//' -e 's/[[:space:]]+$//' Makefile \
                | grep -v '^$' || true)
 
         failed=0
         for token in '\-X ' 'git ' 'MODULE'; do
-          # The `--` terminates option parsing so a token that
-          # begins with `-` is not interpreted as a flag.
           if printf '%s\n' "$code" | grep -qE -- "$token"; then
             echo "FAIL: Makefile contains '$token' in code." >&2
             echo "      The shim must be a zero-logic delegation to Task." >&2
@@ -1431,14 +1300,6 @@ tasks:
       - |
         set -euo pipefail
 
-        # Search .go files outside internal/version and outside
-        # testdata/ for the four environment-variable names that
-        # would indicate an alternate injection mechanism.
-        #
-        # We do not grep the four variable names (Version, Commit,
-        # BuildDate, Dirty) because they are common English words
-        # and would produce false positives against unrelated code.
-        # The environment-variable names are specific enough.
         offenders=$(grep -rlE 'os\.Getenv\("FORGE_(VERSION|COMMIT|BUILD_DATE|DIRTY)' \
                       --include='*.go' . 2>/dev/null \
                     | grep -v '^\./internal/version/' \
@@ -1469,8 +1330,6 @@ tasks:
           exit 1
         fi
 
-        # The section is required by WBS 6.1.2 AC7. Both the heading
-        # and the trap warning must be present.
         if ! grep -q '## Build Metadata Injection' "$file"; then
           echo "FAIL: $file is missing the 'Build Metadata Injection' section" >&2
           exit 1
@@ -1555,6 +1414,137 @@ tasks:
       - sh scripts/deps/verify-no-unused.sh
 
   # ═══════════════════════════════════════════════════════════════════════════
+  # Platform matrix — tooling and verification (WBS 17.1.1)
+  # ═══════════════════════════════════════════════════════════════════════════
+  #
+  # The platform matrix lives in docs/reference/platforms.yaml. It is
+  # read by cmd/forge-internal-platform, by the release workflow, and
+  # by scripts/build.go. The schema is schemas/platforms.schema.json.
+  #
+  # See docs/reference/supported-platforms.md,
+  # docs/reference/platform-tiers.md, and
+  # docs/decisions/ADR-040-freeze-the-supported-platform-matrix.md.
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  platform:verify:
+    desc: Verify platforms.yaml, the schema, and the docs are consistent (WBS 17.1.1)
+    dir: "{{.ROOT}}"
+    cmds:
+      - go test ./internal/platform/... -count=1
+      - go run ./cmd/forge-internal-platform --verify
+      - bash scripts/platform/gen-ci-matrix.sh >/dev/null
+
+  platform:gen-ci-matrix:
+    desc: Print the GitHub Actions matrix for Tier 1 platforms (WBS 17.1.1)
+    dir: "{{.ROOT}}"
+    cmds:
+      - bash scripts/platform/gen-ci-matrix.sh --tier 1
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Version and release channels — tooling (WBS 17.1.2)
+  # ═══════════════════════════════════════════════════════════════════════════
+  #
+  # The versioning scheme and release channels live in
+  # docs/reference/versioning.md, docs/reference/release-channels.md,
+  # and docs/reference/version-metadata.yaml. The schema is
+  # schemas/version-metadata.schema.json. The tooling is
+  # cmd/forge-internal-version.
+  #
+  # See docs/decisions/ADR-043-versioning-and-release-channels.md.
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  version:verify:
+    desc: Verify version-metadata.yaml against the schema and the docs (WBS 17.1.2)
+    dir: "{{.ROOT}}"
+    cmds:
+      - go test ./internal/version/... -count=1
+      - go run ./cmd/forge-internal-version verify
+
+  version:tag-table:
+    desc: Print the tag-to-channel table for a set of example tags (WBS 17.1.2)
+    dir: "{{.ROOT}}"
+    cmds:
+      - go run ./cmd/forge-internal-version tag-table
+
+  version:fmt:
+    desc: Reformat version-metadata.yaml (sort identifiers, channels) (WBS 17.1.2)
+    dir: "{{.ROOT}}"
+    cmds:
+      - go run ./cmd/forge-internal-version fmt
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Release preconditions and helpers (WBS 17.2.1, WBS 17.3.1)
+  # ═══════════════════════════════════════════════════════════════════════════
+  #
+  # The Makefile's release targets depend on these. They are exposed as
+  # standalone tasks so a contributor can run them individually.
+  #
+  # verify:tagged is the git-based precondition. It lives in the
+  # Taskfile, not the Makefile, because the Makefile shim must contain
+  # no git commands in code (verify:injection:single-authority).
+  #
+  # release:build-all, release:dry-run, and release:publish delegate
+  # to scripts/build.go. release:verify-reproducible is the pre-tag
+  # check: it refuses to run on a dirty tree so the SHA-256 the
+  # verifier produces matches a user's rebuild.
+  #
+  # See docs/guides/building.md,
+  # docs/guides/reproducible-builds.md, and
+  # docs/decisions/ADR-044-makefile-and-cross-compile.md.
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  verify:tagged:
+    desc: Fail if HEAD is not an exact tag (WBS 17.2.1)
+    dir: "{{.USER_WORKING_DIR}}"
+    cmds:
+      - |
+        set -euo pipefail
+        if [ -z "$(git describe --tags --exact-match 2>/dev/null)" ]; then
+          printf 'FAIL: HEAD is not an exact tag\n' >&2
+          printf '      release builds require a tagged commit\n' >&2
+          printf '      run: git tag v0.1.0 && git push origin v0.1.0\n' >&2
+          exit 1
+        fi
+        printf 'OK: HEAD is tagged\n'
+
+  release:build-all:
+    desc: Cross-compile every Tier 1 and Tier 2 platform (WBS 17.2.1)
+    dir: "{{.ROOT}}"
+    cmds:
+      - go run ./scripts/build.go --all
+
+  release:dry-run:
+    desc: Run the full release pipeline without publishing (WBS 17.2.1)
+    dir: "{{.ROOT}}"
+    cmds:
+      - go run ./scripts/build.go --all --checksums-only
+      - go run ./scripts/build.go --sbom-only
+      - go run ./scripts/build.go --sign-only
+
+  release:publish:
+    desc: Publish dist/ artifacts to the GitHub Release (WBS 17.2.1)
+    dir: "{{.ROOT}}"
+    cmds:
+      - go run ./scripts/build.go --publish
+
+  release:verify-reproducible:
+    desc: Verify all platforms reproduce byte-for-byte before tagging (WBS 17.3.1)
+    dir: "{{.ROOT}}"
+    preconditions:
+      - sh: test -z "$(git status --porcelain 2>/dev/null)"
+        msg: |
+          Working tree is not clean. Commit or stash changes before
+          running the release reproducibility check; a dirty tree
+          produces a version string with a -dirty suffix and the
+          SHA-256 will not match a user's rebuild.
+    cmds:
+      - |
+        set -euo pipefail
+        export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+        echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH ($(date -u -d "@$SOURCE_DATE_EPOCH" +%Y-%m-%dT%H:%M:%SZ))"
+        go run ./cmd/forge-internal-repro --verbose
+
+  # ═══════════════════════════════════════════════════════════════════════════
   # Lint — documentation and configuration quality
   # ═══════════════════════════════════════════════════════════════════════════
 
@@ -1608,6 +1598,8 @@ tasks:
       - task: verify:two-boundary        # WBS 4.2.2
       - task: verify:handler-boundary    # WBS 4.3.1
       - task: verify:injection           # WBS 6.1.2
+      - task: platform:verify            # WBS 17.1.1
+      - task: version:verify             # WBS 17.1.2
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Tidy — dependency lockfile maintenance (WBS 2.3.1)
@@ -1636,26 +1628,6 @@ tasks:
   # ═══════════════════════════════════════════════════════════════════════════
   # Build — binary compilation with injected metadata
   #   (WBS 6.1.2 — injection; WBS 17.4 — release build)
-  # ═══════════════════════════════════════════════════════════════════════════
-  #
-  # Three build targets:
-  #
-  #   build          — reproducible build. Uses -trimpath so the binary
-  #                    does not embed absolute host paths. Suitable for
-  #                    distribution.
-  #
-  #   build:release  — like build, but requires a clean, tagged tree.
-  #                    This is the only target that should be used to
-  #                    produce a binary that will be attached to a
-  #                    release.
-  #
-  #   build:debug    — local debugging. Omits -trimpath, so the binary
-  #                    is NOT reproducible. Do not distribute.
-  #
-  # All three depend on verify:injection:prefix and
-  # verify:injection:ldflags, so a broken LDFLAGS (wrong module path
-  # or wrong variable name) fails before a silently-broken binary is
-  # produced.
   # ═══════════════════════════════════════════════════════════════════════════
 
   build:
@@ -1704,6 +1676,33 @@ tasks:
     dir: "{{.USER_WORKING_DIR}}"
     cmds:
       - go build -ldflags "{{.LDFLAGS}}" -o forge ./cmd/forge
+  
+  # ───────────────────────────────────────────────────────────────────────────
+  # Release verification (WBS 17.5.1)
+  # ───────────────────────────────────────────────────────────────────────────
+  #
+  # release:verify-binaries runs the ten-check smoke suite against
+  # the artifacts in dist/. It is invoked by the Makefile's
+  # release-dry-run target between sbom and sign.
+  #
+  # The verifier classifies each platform as runnable or
+  # inspect-only based on the host's GOOS/GOARCH. The runnable
+  # platforms receive all ten checks; the inspect-only platforms
+  # receive checks 1, 2, 3, and 9.
+  #
+  # See docs/guides/verifying-binaries.md and
+  # docs/decisions/ADR-047-binary-verification-thresholds.md.
+
+  release:verify-binaries:
+    desc: Run the binary smoke suite against dist/ (WBS 17.5.1)
+    dir: "{{.ROOT}}"
+    preconditions:
+      - sh: test -d dist
+        msg: |
+          dist/ does not exist. Run `task release:build-all` first,
+          or run `make build-all` if you prefer the Makefile.
+    cmds:
+      - go run ./cmd/forge-internal-verify --dist=dist --verbose
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Development — tests, formatting, static analysis
@@ -1761,22 +1760,26 @@ tasks:
   #    2. lint                   — fast; documentation drift
   #    3. vet                    — fast; obvious Go issues
   #    4. goversion:verify       — moderate; toolchain matrix
-  #    5. verify:reproducible    — moderate; environment, tidy, and
-  #                                negative test
+  #    5. verify:reproducible    — moderate; environment, tidy,
+  #                                negative test, and cross-compile
+  #                                (WBS 17.3.1)
   #    6. verify:resolution      — moderate; resolution across envs
   #    7. verify:cobra           — fast; Cobra pin and wiring
   #    8. verify:deps            — fast; dependency policy
   #    9. verify:two-boundary    — fast; two-boundary model (WBS 4.2.2)
   #   10. verify:handler-boundary — fast; handler / service rule (WBS 4.3.1)
   #   11. verify:injection       — fast; linker injection contract (WBS 6.1.2)
-  #   12. test                   — slow; full test suite
-  #   13. test:integration       — slowest; process boundary
+  #   12. platform:verify        — fast; platform matrix (WBS 17.1.1)
+  #   13. version:verify         — fast; version metadata (WBS 17.1.2)
+  #   14. test                   — slow; full test suite
+  #   15. test:integration       — slowest; process boundary
   check:
     desc: |
       Run the full quality gate
       (format, lint, vet, version matrix, reproducibility, resolution,
        cobra, dependency policy, two-boundary model, handler boundary,
-       injection contract, test, integration)
+       injection contract, platform matrix, version metadata, test,
+       integration)
     dir: "{{.USER_WORKING_DIR}}"
     cmds:
       - task: fmt:check
@@ -1790,6 +1793,8 @@ tasks:
       - task: verify:two-boundary
       - task: verify:handler-boundary
       - task: verify:injection           # WBS 6.1.2
+      - task: platform:verify            # WBS 17.1.1
+      - task: version:verify             # WBS 17.1.2
       - task: test
       - task: test:integration
 

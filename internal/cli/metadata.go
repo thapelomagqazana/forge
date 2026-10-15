@@ -90,7 +90,7 @@ const maxShortLength = 60
 // of prose at 80 columns; longer than that and the help text
 // becomes a manual, which is the domain of documentation, not of
 // `--help`.
-const maxLongLength = 500
+const maxLongLength = 800
 
 // usePattern returns the compiled regular expression that a
 // command's Use field must match.

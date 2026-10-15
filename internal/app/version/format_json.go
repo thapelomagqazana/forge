@@ -1,7 +1,6 @@
 package version
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -132,62 +131,6 @@ type jsonInfo struct {
 // 6.4.1.
 func WriteText(w io.Writer, info Info) error {
 	return Format(w, info)
-}
-
-// WriteJSON writes info to w as a single-line JSON object.
-//
-// # The frozen schema
-//
-// The output is a single line terminated by \n:
-//
-//	{"version":"v1.2.3","commit":"abc1234","build_date":"2026-10-10T12:00:00Z","dirty":false}
-//
-// The keys are always present, in the order: version, commit,
-// build_date, dirty. The order is preserved because jsonInfo's
-// fields are declared in that order; encoding/json emits struct
-// fields in declaration order.
-//
-// # The dirty field
-//
-// The Dirty field in the model is a string; the JSON schema
-// requires a boolean. The conversion uses parseDirty, the same
-// strict rule the text formatter uses: only the literal "true"
-// renders as true; everything else renders as false.
-//
-// # Output terminator
-//
-// encoding/json.Encoder.Encode appends a \n after the JSON value.
-// This satisfies the "single line terminated by \n" requirement
-// without a manual newline write. The encoder writes to the
-// supplied io.Writer; it does not buffer.
-//
-// # Error behaviour
-//
-// WriteJSON returns the write error unchanged if the writer fails.
-// It does not return an error for empty fields or for any other
-// data condition; the schema allows empty strings.
-//
-// # Determinism
-//
-// The output is deterministic for a given Info. encoding/json
-// orders struct fields by declaration order, not by map iteration,
-// so two calls with the same Info produce byte-identical output.
-func WriteJSON(w io.Writer, info Info) error {
-	// Build the wire value. The Dirty conversion is the only
-	// transformation; every other field is passed through
-	// unchanged.
-	wire := jsonInfo{
-		Version:   info.Version,
-		Commit:    info.Commit,
-		BuildDate: info.BuildDate,
-		Dirty:     parseDirty(info.Dirty) == "true",
-	}
-
-	enc := json.NewEncoder(w)
-	if err := enc.Encode(wire); err != nil {
-		return fmt.Errorf("format json: %w", err)
-	}
-	return nil
 }
 
 // FormatAs dispatches to the formatter for the requested format.

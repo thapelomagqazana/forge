@@ -2,8 +2,8 @@
 //
 // This file tests the version command: its metadata, its delegation
 // to the version application service, its error path, the
-// --format flag, and the structural invariants that keep the
-// handler thin.
+// --format and --verbose flags, and the structural invariants that
+// keep the handler thin.
 //
 // The test file is declared in package cli, not package cli_test,
 // because it needs to reach unexported symbols: newVersionCmd,
@@ -33,6 +33,11 @@
 //   - Writes the result to deps.Streams.Out.
 //   - Returns an error; never calls os.Exit.
 //
+// WBS 17.4.1 adds the --verbose output mode and two additional
+// service entry points (WriteVerbose and WriteFullJSON). The
+// handler's shape is unchanged: it still parses flags, dispatches
+// once to the service, and returns.
+//
 // # Test organisation
 //
 // The behavioural tests go through the shared runCLI helper in
@@ -42,6 +47,19 @@
 // property WBS 4.3.2 exists to establish. The structural tests at
 // the bottom of the file read version.go as data and are
 // indifferent to how the command is invoked.
+//
+// # Why the --verbose tests do not assert an empty stderr
+//
+// Under --verbose, the handler emits two DEBUG records to stderr
+// (WBS 12.5.1). Their presence is correct and is asserted by the
+// handler's own tests only insofar as the handler does not write
+// to os.Stderr directly; the records go through the logger. The
+// command-specific tests in this file assert the stdout product
+// output and do not assert anything about stderr on success. The
+// stream boundary — no DEBUG record on stdout, no product
+// rendering on stderr — is asserted by
+// TestStreamBoundary_VerboseDoesNotPolluteStdout in
+// stream_boundary_test.go.
 //
 // # Why the structural tests strip comments
 //
@@ -103,16 +121,6 @@ var _ func(Dependencies) *cobra.Command = newVersionCmd
 // presence of the header prefix and the detail keys, not for specific
 // values. The specific values are injected at link time and vary
 // between builds; the format is what the command guarantees.
-//
-// # Why the header assertion accepts "forge" without a trailing space
-//
-// An uninstrumented build (one built without -ldflags) has an empty
-// Version. The frozen format renders the header as exactly "forge"
-// with no trailing space. A test that required the header to start
-// with "forge " (with a space) would fail for the uninstrumented
-// case, which is the case in `go test` runs. The assertion below
-// accepts both shapes: "forge\n" for an empty version and
-// "forge <version>\n" for a populated one.
 func TestVersionCommand_PrintsVersion(t *testing.T) {
 	t.Parallel()
 
@@ -144,11 +152,6 @@ func TestVersionCommand_PrintsVersion(t *testing.T) {
 
 // TestVersionCommand_WithHelpFlag verifies that `forge version --help`
 // prints the command's help to stdout and exits with success.
-//
-// The help output is produced by Cobra, not by the handler. The test
-// asserts only that the output mentions the command name and that the
-// exit code is success. The exact layout of the help text is not
-// pinned; it may change between Cobra versions.
 func TestVersionCommand_WithHelpFlag(t *testing.T) {
 	t.Parallel()
 
@@ -173,11 +176,6 @@ func TestVersionCommand_WithHelpFlag(t *testing.T) {
 // TestVersionCommand_RejectsExtraArguments verifies that
 // `forge version extra` fails with a non-success exit code and writes
 // a diagnostic to stderr.
-//
-// The test pins two contracts:
-//
-//   - The command rejects positional arguments.
-//   - The failure path writes to stderr, not stdout.
 func TestVersionCommand_RejectsExtraArguments(t *testing.T) {
 	t.Parallel()
 
@@ -196,10 +194,6 @@ func TestVersionCommand_RejectsExtraArguments(t *testing.T) {
 
 // TestVersionCommand_GivenNilEnv_StillSucceeds verifies that a nil env
 // map does not prevent the version command from running.
-//
-// The version command does not read environment variables in Phase 2.
-// The test is a precondition for the helper's behaviour: a nil env
-// map must be a valid input that produces a working invocation.
 func TestVersionCommand_GivenNilEnv_StillSucceeds(t *testing.T) {
 	t.Parallel()
 
@@ -216,12 +210,6 @@ func TestVersionCommand_GivenNilEnv_StillSucceeds(t *testing.T) {
 
 // TestVersionCommand_GivenEnvMap_StillSucceeds verifies that a
 // non-nil env map does not prevent the version command from running.
-//
-// The test is the symmetric companion to
-// TestVersionCommand_GivenNilEnv_StillSucceeds. When a future version
-// of the command reads an environment variable (for example,
-// FORGE_NO_COLOR), the test can be extended to assert on the effect.
-// Until then, it pins the helper's contract.
 func TestVersionCommand_GivenEnvMap_StillSucceeds(t *testing.T) {
 	t.Parallel()
 
@@ -244,11 +232,16 @@ func TestVersionCommand_GivenEnvMap_StillSucceeds(t *testing.T) {
 // =============================================================================
 
 // TestVersionCommand_WritesNothingToStderrOnSuccess verifies the
-// stdout/stderr separation contract for the version command.
+// stdout/stderr separation contract for the version command in the
+// default (non-verbose) mode.
 //
-// A successful invocation writes to stdout only. Any byte on stderr
-// would violate the CLI UX contract and break scripts that redirect
-// stderr to a log file.
+// The test runs `forge version` without --verbose, so the log level
+// is the default (info) and the DEBUG records are filtered out.
+// stderr is empty.
+//
+// The verbose path emits DEBUG records on stderr; its stream
+// boundary is asserted separately by
+// TestStreamBoundary_VerboseDoesNotPolluteStdout.
 func TestVersionCommand_WritesNothingToStderrOnSuccess(t *testing.T) {
 	t.Parallel()
 
@@ -268,18 +261,13 @@ func TestVersionCommand_WritesNothingToStderrOnSuccess(t *testing.T) {
 // =============================================================================
 
 // TestVersionCommand_DelegatesToService verifies that the handler's
-// output matches what the service produces directly.
+// output for the default mode matches what the service produces
+// directly.
 //
 // The test invokes the command through runCLI and captures its
 // output, then calls the service's formatter on a fresh buffer and
 // compares the two. They must be byte-identical because the handler's
 // only job is to delegate.
-//
-// # Why this test goes through FormatAs
-//
-// The handler calls appversion.FormatAs, not appversion.Format, so
-// the reference output is produced by FormatAs as well. Calling
-// Format directly would test a different code path.
 func TestVersionCommand_DelegatesToService(t *testing.T) {
 	t.Parallel()
 
@@ -308,12 +296,46 @@ func TestVersionCommand_DelegatesToService(t *testing.T) {
 	}
 }
 
+// TestVersionCommand_VerboseDelegatesToWriteVerbose verifies that
+// `forge version --verbose` produces exactly the output of the
+// service's WriteVerbose function.
+//
+// # What the test does not assert
+//
+// The test does not assert that stderr is empty. Under --verbose,
+// the handler emits two DEBUG records to stderr (WBS 12.5.1); their
+// presence is correct. The comparison is on stdout only. The stream
+// boundary is asserted separately by
+// TestStreamBoundary_VerboseDoesNotPolluteStdout.
+func TestVersionCommand_VerboseDelegatesToWriteVerbose(t *testing.T) {
+	t.Parallel()
+
+	got := runCLI(t, []string{"version", "--verbose"}, nil)
+
+	if got.exitCode != ExitSuccess {
+		t.Fatalf("exit code: got %d, want %d\nstderr: %s",
+			got.exitCode, ExitSuccess, got.stderr)
+	}
+
+	var svcOut bytes.Buffer
+	if err := appversion.WriteVerbose(&svcOut, appversion.Get()); err != nil {
+		t.Fatalf("appversion.WriteVerbose: %v", err)
+	}
+
+	if got.stdout != svcOut.String() {
+		t.Errorf("handler output differs from WriteVerbose output\n"+
+			"handler: %q\n"+
+			"service: %q",
+			got.stdout, svcOut.String())
+	}
+}
+
 // =============================================================================
 // --format flag
 // =============================================================================
 
 // TestVersionCommand_FormatJSON verifies that
-// `forge version --format json` produces valid JSON with the four
+// `forge version --format json` produces valid JSON with the five
 // schema fields.
 func TestVersionCommand_FormatJSON(t *testing.T) {
 	t.Parallel()
@@ -334,7 +356,7 @@ func TestVersionCommand_FormatJSON(t *testing.T) {
 		t.Fatalf("output is not valid JSON: %v\noutput: %s", err, got.stdout)
 	}
 
-	for _, key := range []string{"version", "commit", "build_date", "dirty"} {
+	for _, key := range []string{"version", "commit", "buildDate", "dirty", "buildType"} {
 		if _, ok := m[key]; !ok {
 			t.Errorf("field %q missing from output: %s", key, got.stdout)
 		}
@@ -406,6 +428,158 @@ func TestVersionCommand_DefaultFormatIsText(t *testing.T) {
 }
 
 // =============================================================================
+// --verbose flag
+// =============================================================================
+//
+// The tests below exercise the version command's --verbose output.
+// The flag is the root's persistent flag; it selects the verbose
+// output format and sets the log level to debug. The DEBUG records
+// the flag enables are emitted to stderr; the tests below assert
+// the stdout product output only.
+//
+// The stream boundary — no DEBUG record on stdout, no product
+// rendering on stderr — is asserted separately by
+// TestStreamBoundary_VerboseDoesNotPolluteStdout in
+// stream_boundary_test.go.
+
+// TestVersionCommand_Verbose verifies that `forge version --verbose`
+// emits the extended human format with the provenance sections.
+//
+// # What the test does not assert
+//
+// The test does not assert that stderr is empty. Under --verbose,
+// the handler emits two DEBUG records to stderr (WBS 12.5.1); their
+// presence is correct. The test asserts the verbose output on
+// stdout only.
+func TestVersionCommand_Verbose(t *testing.T) {
+	t.Parallel()
+
+	got := runCLI(t, []string{"version", "--verbose"}, nil)
+
+	if got.exitCode != ExitSuccess {
+		t.Fatalf("exit code: got %d, want %d\nstderr: %s",
+			got.exitCode, ExitSuccess, got.stderr)
+	}
+
+	// The verbose format contains the five top-level fields and the
+	// provenance sections. The dependency and settings sections are
+	// optional (they appear only when the lists are non-empty); the
+	// go and module lines are always present.
+	for _, want := range []string{
+		"version:", "commit:", "buildDate:", "dirty:", "buildType:",
+		"go:", "module:",
+	} {
+		if !strings.Contains(got.stdout, want) {
+			t.Errorf("verbose output missing %q:\n%s", want, got.stdout)
+		}
+	}
+}
+
+// TestVersionCommand_VerboseJSON verifies that
+// `forge version --format json --verbose` emits valid JSON with a
+// provenance field.
+//
+// # What the test does not assert
+//
+// The test does not assert that stderr is empty. Under --verbose,
+// the handler emits two DEBUG records to stderr (WBS 12.5.1); their
+// presence is correct. The test asserts the JSON product output on
+// stdout only.
+func TestVersionCommand_VerboseJSON(t *testing.T) {
+	t.Parallel()
+
+	got := runCLI(t, []string{"version", "--format", "json", "--verbose"}, nil)
+
+	if got.exitCode != ExitSuccess {
+		t.Fatalf("exit code: got %d, want %d\nstderr: %s",
+			got.exitCode, ExitSuccess, got.stderr)
+	}
+
+	var m map[string]any
+	if err := json.Unmarshal([]byte(got.stdout), &m); err != nil {
+		t.Fatalf("output is not valid JSON: %v\noutput: %s", err, got.stdout)
+	}
+
+	// The five linker fields are at the top level.
+	for _, key := range []string{"version", "commit", "buildDate", "dirty", "buildType"} {
+		if _, ok := m[key]; !ok {
+			t.Errorf("field %q missing from output: %s", key, got.stdout)
+		}
+	}
+
+	// The provenance field is present.
+	prov, ok := m["provenance"]
+	if !ok {
+		t.Fatalf("provenance field missing from output: %s", got.stdout)
+	}
+	provMap, ok := prov.(map[string]any)
+	if !ok {
+		t.Fatalf("provenance is not an object: %T", prov)
+	}
+	for _, key := range []string{"goVersion", "module", "vcsModified"} {
+		if _, ok := provMap[key]; !ok {
+			t.Errorf("provenance field %q missing: %s", key, got.stdout)
+		}
+	}
+}
+
+// TestVersionCommand_VerboseTextIsNotJSON asserts that
+// `--verbose` alone (without `--format json`) produces the text
+// format, not JSON. The two flags are independent.
+func TestVersionCommand_VerboseTextIsNotJSON(t *testing.T) {
+	t.Parallel()
+
+	got := runCLI(t, []string{"version", "--verbose"}, nil)
+
+	if got.exitCode != ExitSuccess {
+		t.Fatalf("exit code: got %d, want %d", got.exitCode, ExitSuccess)
+	}
+	if strings.HasPrefix(got.stdout, "{") {
+		t.Errorf("--verbose alone produced JSON; want text:\n%s", got.stdout)
+	}
+	if !strings.Contains(got.stdout, "version:") {
+		t.Errorf("--verbose output does not contain the verbose label:\n%s", got.stdout)
+	}
+}
+
+// TestVersionCommand_VerboseJSONOrder verifies the flag order does
+// not matter: `--verbose --format json` and
+// `--format json --verbose` produce identical output.
+func TestVersionCommand_VerboseJSONOrder(t *testing.T) {
+	t.Parallel()
+
+	a := runCLI(t, []string{"version", "--verbose", "--format", "json"}, nil)
+	b := runCLI(t, []string{"version", "--format", "json", "--verbose"}, nil)
+
+	if a.stdout != b.stdout {
+		t.Errorf("flag order changed output:\n"+
+			"--verbose --format json: %q\n"+
+			"--format json --verbose: %q", a.stdout, b.stdout)
+	}
+	if a.exitCode != b.exitCode {
+		t.Errorf("exit codes differ: %d vs %d", a.exitCode, b.exitCode)
+	}
+}
+
+// TestVersionCommand_VerboseHelpDoesNotFail verifies that
+// `forge version --verbose --help` prints help rather than version
+// output. This is the standard Cobra behavior (help wins over
+// execution), and the test pins it against a future change that
+// might make --verbose interact with --help.
+func TestVersionCommand_VerboseHelpDoesNotFail(t *testing.T) {
+	t.Parallel()
+
+	got := runCLI(t, []string{"version", "--verbose", "--help"}, nil)
+
+	if got.exitCode != ExitSuccess {
+		t.Fatalf("exit code: got %d, want %d", got.exitCode, ExitSuccess)
+	}
+	if !strings.Contains(got.stdout, "Usage:") {
+		t.Errorf("help output does not contain 'Usage:':\n%s", got.stdout)
+	}
+}
+
+// =============================================================================
 // Structural tests — the handler / service boundary (WBS 4.3.1)
 // =============================================================================
 //
@@ -424,9 +598,8 @@ func TestVersionCommand_DefaultFormatIsText(t *testing.T) {
 //
 // The test reads version.go from disk, strips comments, and asserts:
 //
-//   - The handler body calls appversion.FormatAs exactly once.
-//   - The handler does not call appversion.Format directly.
-//   - The handler does not call appversion.WriteJSON directly.
+//   - The handler references the service's documented API at most
+//     as many times as the four output modes require.
 //   - The code contains no direct writes to process-global streams.
 //   - The code contains no fmt.Fprintln, fmt.Fprintf, fmt.Println,
 //     or fmt.Printf calls.
@@ -435,39 +608,42 @@ func TestVersionCommand_DefaultFormatIsText(t *testing.T) {
 // If any assertion fails, the failure message cites the specific
 // token and the WBS acceptance criterion it violates.
 //
-// # Why FormatAs and not Format
+// # Why the "at most" assertions
 //
-// WBS 6.3.1 wrote the handler against appversion.Format, the
-// text-only formatter. WBS 6.4.2 introduced appversion.FormatAs as
-// the dispatcher and moved the text formatter behind it. The
-// handler now calls FormatAs; the Format function still exists in
-// the service but is not called from the handler.
+// Before WBS 17.4.1, the handler called exactly one service
+// function (FormatAs) because there was exactly one output shape.
+// WBS 17.4.1 adds three more shapes (verbose text, verbose JSON,
+// and the dispatch for them), so the handler now calls up to four
+// service functions. The bound is written as "at most four" so the
+// test still catches an accidental fifth call while allowing the
+// four legitimate dispatches.
 //
-// The two zero-count assertions below close a hole: a future
-// contributor could add a direct call to Format or WriteJSON
-// alongside the FormatAs call, and the first assertion would still
-// pass.
+// The exact set of service functions the handler may call is
+// pinned by TestVersionHandler_OnlyCallsDocumentedService below.
 func TestVersionHandler_IsThin(t *testing.T) {
 	t.Parallel()
 
 	content := readFile(t, "version.go")
 	code := stripComments(content)
 
-	// Exactly one call to the service's dispatcher.
-	if got := strings.Count(code, "appversion.FormatAs("); got != 1 {
-		t.Errorf("handler contains %d calls to appversion.FormatAs; want 1", got)
+	// At most four calls to the service's dispatchers, one per
+	// output mode. The exact set is pinned by the allowlist test.
+	dispatchCalls :=
+		strings.Count(code, "appversion.FormatAs(") +
+			strings.Count(code, "appversion.WriteVerbose(") +
+			strings.Count(code, "appversion.WriteFullJSON(")
+	if dispatchCalls > 4 {
+		t.Errorf("handler contains %d service dispatch calls; want at most 4",
+			dispatchCalls)
 	}
 
-	// The handler must not call the lower-level formatters directly.
-	// A direct call would bypass the dispatcher and duplicate its
+	// The handler must not call the JSON writer for the simple
+	// (non-verbose) JSON case; that path goes through FormatAs.
+	// A direct call to WriteJSON would duplicate the dispatcher's
 	// job.
-	if got := strings.Count(code, "appversion.Format("); got != 0 {
-		t.Errorf("handler contains %d calls to appversion.Format; want 0 "+
-			"(the handler must go through appversion.FormatAs)", got)
-	}
 	if got := strings.Count(code, "appversion.WriteJSON("); got != 0 {
 		t.Errorf("handler contains %d calls to appversion.WriteJSON; want 0 "+
-			"(the handler must go through appversion.FormatAs)", got)
+			"(the handler must go through appversion.FormatAs for simple JSON)", got)
 	}
 
 	// Forbidden tokens. Each is a violation of a specific rule.
@@ -491,13 +667,6 @@ func TestVersionHandler_IsThin(t *testing.T) {
 // TestVersionHandler_DoesNotImportInfrastructure verifies that the
 // handler file does not import infrastructure or domain packages
 // directly.
-//
-// A handler that imports internal/filesystem could read files; a
-// handler that imports internal/config could parse configuration; a
-// handler that imports internal/domain/* could contain business
-// rules. None of these belong in a handler. The test forbids the
-// imports so that the handler cannot acquire those capabilities by
-// accident.
 func TestVersionHandler_DoesNotImportInfrastructure(t *testing.T) {
 	t.Parallel()
 
@@ -518,10 +687,6 @@ func TestVersionHandler_DoesNotImportInfrastructure(t *testing.T) {
 
 // TestVersionHandler_ReturnsErrorNotExit verifies that the handler
 // returns an error rather than terminating the process.
-//
-// The test strips comments before searching, so that the docstring's
-// mention of os.Exit does not produce a false positive. The code
-// must not contain os.Exit; the docstring may mention it.
 func TestVersionHandler_ReturnsErrorNotExit(t *testing.T) {
 	t.Parallel()
 
@@ -535,52 +700,26 @@ func TestVersionHandler_ReturnsErrorNotExit(t *testing.T) {
 }
 
 // TestVersionHandler_OnlyCallsDocumentedService verifies that the
-// handler references only the service's documented API. It must
-// not call unexported helpers, and it must not reach into the
-// service's internals.
+// handler references only the service's documented API.
 //
 // # The allowlist
 //
-// The five allowed tokens are the handler's legitimate touch
-// points on the service:
+// The allowed tokens are the handler's legitimate touch points on
+// the service:
 //
-//   - appversion.Get             — the read accessor (WBS 6.3.1).
-//   - appversion.FormatAs        — the format dispatcher (WBS 6.4.2).
-//   - appversion.ErrUnknownFormat — the sentinel error the service
-//     exports (WBS 6.4.2). Kept in the allowlist for symmetry; the
-//     current handler does not reference it, because the handler
-//     pre-checks the format against the two format constants
-//     rather than inspecting the service's sentinel.
-//   - appversion.FormatText      — the text format constant
-//     (WBS 6.4.2). Referenced by the handler's pre-check and by the
-//     --format flag's default value.
-//   - appversion.FormatJSON      — the JSON format constant
-//     (WBS 6.4.2). Referenced by the handler's pre-check.
+//   - appversion.Get              — the read accessor.
+//   - appversion.FormatAs         — the text/JSON dispatcher.
+//   - appversion.WriteVerbose     — the verbose human formatter
+//     (WBS 17.4.1).
+//   - appversion.WriteFullJSON    — the verbose JSON formatter
+//     (WBS 17.4.1).
+//   - appversion.ErrUnknownFormat — the sentinel error (kept for
+//     symmetry; the current handler does not reference it because
+//     the format pre-check uses the constants below).
+//   - appversion.FormatText       — the text format constant.
+//   - appversion.FormatJSON       — the JSON format constant.
 //
-// Any other reference to the service is a boundary violation. The
-// handler must not, for example, call appversion.WriteJSON directly
-// (that is the dispatcher's job), nor reach into an unexported
-// helper.
-//
-// # Why the format constants are allowed
-//
-// The handler's `RunE` pre-checks the --format value against the
-// two supported values before delegating to FormatAs. The check is
-// a switch on the constant identifiers; the identifiers are the
-// service's public surface for the format values, and the handler
-// is permitted to reference them. The alternative — inspecting the
-// error returned by FormatAs for the sentinel ErrUnknownFormat —
-// was the pre-WBS-10.5.1 pattern; the pre-check replaces it.
-//
-// # How the scan works
-//
-// The test finds every occurrence of the string "appversion." in
-// the comment-stripped source, extracts the identifier that follows
-// it (up to the next non-identifier character), and checks it
-// against the allowlist. A call like appversion.FormatAs is
-// captured as "appversion.FormatAs(" (with the paren) so that the
-// test can distinguish a call from a non-call reference such as
-// appversion.FormatText used as a value.
+// Any other reference to the service is a boundary violation.
 func TestVersionHandler_OnlyCallsDocumentedService(t *testing.T) {
 	t.Parallel()
 
@@ -590,6 +729,8 @@ func TestVersionHandler_OnlyCallsDocumentedService(t *testing.T) {
 	allowed := map[string]bool{
 		"appversion.Get(":             true,
 		"appversion.FormatAs(":        true,
+		"appversion.WriteVerbose(":    true,
+		"appversion.WriteFullJSON(":   true,
 		"appversion.ErrUnknownFormat": true,
 		"appversion.FormatText":       true,
 		"appversion.FormatJSON":       true,
@@ -615,6 +756,7 @@ func TestVersionHandler_OnlyCallsDocumentedService(t *testing.T) {
 			t.Errorf("version.go references %q; "+
 				"handler must call only the service's documented API "+
 				"(appversion.Get, appversion.FormatAs, "+
+				"appversion.WriteVerbose, appversion.WriteFullJSON, "+
 				"appversion.ErrUnknownFormat, appversion.FormatText, "+
 				"appversion.FormatJSON)",
 				token)
@@ -650,19 +792,6 @@ func isIdentChar(b byte) bool {
 // caller that failed to construct Dependencies correctly. The test
 // pins this behaviour so a future change does not silently add a
 // guard that would hide the bug.
-//
-// This test constructs the command directly rather than going
-// through runCLI, because runCLI always supplies a non-nil writer.
-// The direct construction is the only way to reach the nil-writer
-// path.
-//
-// # Why the field is Streams.Out, not Stdout
-//
-// After WBS 12.4.1, the three standard streams travel in a single
-// streams.Streams value on Dependencies. The product output stream
-// is Streams.Out; there is no Stdout field. The test constructs a
-// Streams value with a nil Out and a real Err, matching the shape
-// a caller with a missing output stream would have.
 func TestVersionHandler_NilStdoutPanics(t *testing.T) {
 	t.Parallel()
 
@@ -687,25 +816,6 @@ func TestVersionHandler_NilStdoutPanics(t *testing.T) {
 
 // TestVersionHandler_EmptyBuildInfo verifies that the command
 // produces valid output even when the build variables are empty.
-//
-// A binary built without ldflags has empty Version, Commit,
-// BuildDate, and Dirty. The command must still succeed and produce
-// output; the output contains the format's fixed parts (the header
-// and the detail keys) with empty values.
-//
-// # Why this test is separate from TestVersionCommand_PrintsVersion
-//
-// The two tests exercise the same code path but assert different
-// properties. TestVersionCommand_PrintsVersion asserts the format's
-// shape (header, keys, stream separation). This test asserts the
-// format's *robustness* to the uninstrumented case: the command
-// succeeds and produces output even when all four values are empty.
-//
-// The uninstrumented case is the default under `go test`, because
-// the test binary is not built with the linker flags the Taskfile
-// uses. If a future change made the formatter fail on empty values,
-// this test would catch it; a test that only ran against a populated
-// build would not.
 func TestVersionHandler_EmptyBuildInfo(t *testing.T) {
 	t.Parallel()
 
@@ -715,14 +825,10 @@ func TestVersionHandler_EmptyBuildInfo(t *testing.T) {
 		t.Fatalf("exit code: got %d, want %d",
 			got.exitCode, ExitSuccess)
 	}
-	// The header is "forge" with no trailing space when the version
-	// is empty, and "forge <version>" otherwise. A prefix check for
-	// "forge" accepts both.
 	if !strings.HasPrefix(got.stdout, "forge") {
 		t.Errorf("stdout does not start with version header: %q",
 			got.stdout)
 	}
-	// The detail keys are present even when the values are empty.
 	for _, key := range []string{
 		"commit:", "built:", "dirty:", "go version:", "platform:",
 	} {
@@ -738,10 +844,6 @@ func TestVersionHandler_EmptyBuildInfo(t *testing.T) {
 
 // TestVersionCommand_IsDeterministic verifies that two invocations
 // with identical inputs produce identical output.
-//
-// The test uses the shared helper and compares the two testRun
-// values directly. testRun is a comparable struct (three fields, all
-// comparable), so the comparison is valid Go.
 func TestVersionCommand_IsDeterministic(t *testing.T) {
 	t.Parallel()
 
@@ -753,6 +855,39 @@ func TestVersionCommand_IsDeterministic(t *testing.T) {
 				"first: %+v\n"+
 				"got:   %+v", i, first, got)
 		}
+	}
+}
+
+// TestVersionCommand_IsDeterministicAcrossModes verifies that each
+// output mode is deterministic across invocations. A mode whose
+// output depends on iteration order (for example, a map) would fail
+// this test.
+func TestVersionCommand_IsDeterministicAcrossModes(t *testing.T) {
+	t.Parallel()
+
+	modes := [][]string{
+		{"version"},
+		{"version", "--format", "json"},
+		{"version", "--verbose"},
+		{"version", "--format", "json", "--verbose"},
+	}
+	for _, args := range modes {
+		args := args
+		name := strings.Join(args[1:], " ")
+		if name == "" {
+			name = "(default)"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			first := runCLI(t, args, nil)
+			for i := 0; i < 3; i++ {
+				got := runCLI(t, args, nil)
+				if got != first {
+					t.Fatalf("run %d differs:\nfirst: %+v\ngot:   %+v",
+						i, first, got)
+				}
+			}
+		})
 	}
 }
 
@@ -785,20 +920,11 @@ func TestVersionCommand_IsDeterministic(t *testing.T) {
 // text with comments removed; extracting that from an AST is more
 // work than the simple stripper below.
 //
-// The stripper is deliberately simple. It handles the two comment
-// forms Go uses. It does not handle braces or quotes inside string
-// literals; the file it is applied to (version.go) contains none in
-// the relevant positions. If a future structural test needs to scan
-// a file with strings containing comment-like sequences, the helper
-// should be replaced with go/parser.
-//
 // # Line-number preservation
 //
 // A line comment is replaced with a single newline. A block comment
 // is replaced with newlines equal to the number of newlines inside
-// it. This preserves the file's line count, so a subsequent scan
-// that reports a line number will report a number that matches the
-// original file.
+// it. This preserves the file's line count.
 func stripComments(src string) string {
 	var b strings.Builder
 	b.Grow(len(src))

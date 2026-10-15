@@ -2,6 +2,7 @@ package version
 
 import (
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -12,13 +13,19 @@ import (
 // Helpers
 // =============================================================================
 
-// snapshotVersionVars saves the four package variables in
+// snapshotVersionVars saves the five package variables in
 // internal/version and registers a t.Cleanup that restores them.
 //
 // Tests that mutate the variables must call this first. Because the
 // variables are package-level, tests that mutate them cannot run in
 // parallel with each other; the helper makes the save/restore
 // pattern uniform and hard to get wrong.
+//
+// # Why five variables
+//
+// WBS 6.1.1 introduced four variables (Version, Commit, BuildDate,
+// Dirty). WBS 17.4.1 added a fifth (BuildType). The helper saves all
+// five so a test that mutates any of them is isolated.
 //
 // The helper exists in this package rather than in internal/version
 // because the tests here reach into internal/version's exported
@@ -31,12 +38,14 @@ func snapshotVersionVars(t *testing.T) {
 	origCommit := forgeversion.Commit
 	origBuildDate := forgeversion.BuildDate
 	origDirty := forgeversion.Dirty
+	origBuildType := forgeversion.BuildType
 
 	t.Cleanup(func() {
 		forgeversion.Version = origVersion
 		forgeversion.Commit = origCommit
 		forgeversion.BuildDate = origBuildDate
 		forgeversion.Dirty = origDirty
+		forgeversion.BuildType = origBuildType
 	})
 }
 
@@ -44,15 +53,16 @@ func snapshotVersionVars(t *testing.T) {
 // TDD — the accessor contract
 // =============================================================================
 
-// TestBuildInfo_ReturnsTheFourVariables is the first failing test
+// TestBuildInfo_ReturnsTheFiveVariables is the first failing test
 // for the accessor.
 //
-// It sets the four package variables in internal/version to known
+// It sets the five package variables in internal/version to known
 // values and asserts that buildInfo() returns them, in order.
 //
-// This test pins the ordering: (version, commit, buildDate, dirty).
-// A future refactor that reorders the return values fails here.
-func TestBuildInfo_ReturnsTheFourVariables(t *testing.T) {
+// This test pins the ordering: (version, commit, buildDate, dirty,
+// buildType). A future refactor that reorders the return values
+// fails here.
+func TestBuildInfo_ReturnsTheFiveVariables(t *testing.T) {
 	// Not parallel: mutates package state.
 	snapshotVersionVars(t)
 
@@ -60,8 +70,9 @@ func TestBuildInfo_ReturnsTheFourVariables(t *testing.T) {
 	forgeversion.Commit = "abc1234"
 	forgeversion.BuildDate = "2026-10-10T12:00:00Z"
 	forgeversion.Dirty = "false"
+	forgeversion.BuildType = "release"
 
-	version, commit, buildDate, dirty := buildInfo()
+	version, commit, buildDate, dirty, buildType := buildInfo()
 
 	if version != "1.2.3" {
 		t.Errorf("version: got %q, want %q", version, "1.2.3")
@@ -75,6 +86,9 @@ func TestBuildInfo_ReturnsTheFourVariables(t *testing.T) {
 	if dirty != "false" {
 		t.Errorf("dirty: got %q, want %q", dirty, "false")
 	}
+	if buildType != "release" {
+		t.Errorf("buildType: got %q, want %q", buildType, "release")
+	}
 }
 
 // TestBuildInfo_IsPure verifies that two consecutive calls with no
@@ -83,14 +97,14 @@ func TestBuildInfo_ReturnsTheFourVariables(t *testing.T) {
 func TestBuildInfo_IsPure(t *testing.T) {
 	t.Parallel()
 
-	v1, c1, b1, d1 := buildInfo()
-	v2, c2, b2, d2 := buildInfo()
+	v1, c1, b1, d1, k1 := buildInfo()
+	v2, c2, b2, d2, k2 := buildInfo()
 
-	if v1 != v2 || c1 != c2 || b1 != b2 || d1 != d2 {
+	if v1 != v2 || c1 != c2 || b1 != b2 || d1 != d2 || k1 != k2 {
 		t.Fatalf("buildInfo is not pure:\n"+
-			"first:  (%q, %q, %q, %q)\n"+
-			"second: (%q, %q, %q, %q)",
-			v1, c1, b1, d1, v2, c2, b2, d2)
+			"first:  (%q, %q, %q, %q, %q)\n"+
+			"second: (%q, %q, %q, %q, %q)",
+			v1, c1, b1, d1, k1, v2, c2, b2, d2, k2)
 	}
 }
 
@@ -104,23 +118,26 @@ func TestBuildInfo_HasNoSideEffects(t *testing.T) {
 	forgeversion.Commit = "deadbee"
 	forgeversion.BuildDate = "2026-10-10T12:00:00Z"
 	forgeversion.Dirty = "true"
+	forgeversion.BuildType = "release"
 
-	before := [4]string{
+	before := [5]string{
 		forgeversion.Version,
 		forgeversion.Commit,
 		forgeversion.BuildDate,
 		forgeversion.Dirty,
+		forgeversion.BuildType,
 	}
 
-	_, _, _, _ = buildInfo()
-	_, _, _, _ = buildInfo()
-	_, _, _, _ = buildInfo()
+	_, _, _, _, _ = buildInfo()
+	_, _, _, _, _ = buildInfo()
+	_, _, _, _, _ = buildInfo()
 
-	after := [4]string{
+	after := [5]string{
 		forgeversion.Version,
 		forgeversion.Commit,
 		forgeversion.BuildDate,
 		forgeversion.Dirty,
+		forgeversion.BuildType,
 	}
 
 	if before != after {
@@ -133,7 +150,7 @@ func TestBuildInfo_HasNoSideEffects(t *testing.T) {
 // =============================================================================
 
 // TestGet_ComposesInfoFromBuildInfo verifies that Get reads the
-// four values through buildInfo and returns them in an Info value.
+// five values through buildInfo and returns them in an Info value.
 //
 // The test sets the package variables to known values and asserts
 // that Get reflects them. This is the ATDD acceptance test for the
@@ -146,6 +163,7 @@ func TestGet_ComposesInfoFromBuildInfo(t *testing.T) {
 	forgeversion.Commit = "abc1234"
 	forgeversion.BuildDate = "2026-10-10T12:00:00Z"
 	forgeversion.Dirty = "false"
+	forgeversion.BuildType = "release"
 
 	got := Get()
 
@@ -161,12 +179,15 @@ func TestGet_ComposesInfoFromBuildInfo(t *testing.T) {
 	if got.Dirty != "false" {
 		t.Errorf("Dirty: got %q, want %q", got.Dirty, "false")
 	}
+	if got.BuildType != "release" {
+		t.Errorf("BuildType: got %q, want %q", got.BuildType, "release")
+	}
 }
 
 // TestGet_PreservesEmptyStrings verifies that Get does not
 // substitute sentinels for empty values. An uninstrumented build
-// has empty Version, Commit, BuildDate, and Dirty; Get must return
-// those empties unchanged.
+// has empty Version, Commit, BuildDate, Dirty, and BuildType; Get
+// must return those empties unchanged.
 //
 // This is the ATDD acceptance test for the "no substitution"
 // policy documented in internal/version (WBS 6.1.1).
@@ -178,6 +199,7 @@ func TestGet_PreservesEmptyStrings(t *testing.T) {
 	forgeversion.Commit = ""
 	forgeversion.BuildDate = ""
 	forgeversion.Dirty = ""
+	forgeversion.BuildType = ""
 
 	got := Get()
 
@@ -192,6 +214,9 @@ func TestGet_PreservesEmptyStrings(t *testing.T) {
 	}
 	if got.Dirty != "" {
 		t.Errorf("Dirty: got %q, want empty", got.Dirty)
+	}
+	if got.BuildType != "" {
+		t.Errorf("BuildType: got %q, want empty", got.BuildType)
 	}
 }
 
@@ -227,6 +252,40 @@ func TestGet_PreservesDirtyAsString(t *testing.T) {
 	}
 }
 
+// TestGet_PreservesBuildTypeAsString verifies that Get does not
+// parse or normalise the BuildType value. The model stores the raw
+// string; normalization to "local" happens in MetadataOf, not in
+// Get.
+//
+// This is the analogue of TestGet_PreservesDirtyAsString for the
+// fifth linker variable.
+func TestGet_PreservesBuildTypeAsString(t *testing.T) {
+	// Not parallel: mutates package state.
+	snapshotVersionVars(t)
+
+	cases := []string{
+		"release",
+		"ci",
+		"local",
+		"production",
+		"RELEASE",
+		"",
+	}
+
+	for _, raw := range cases {
+		raw := raw
+		t.Run("raw="+raw, func(t *testing.T) {
+			// Not parallel: mutates package state.
+			forgeversion.BuildType = raw
+			got := Get().BuildType
+			if got != raw {
+				t.Errorf("BuildType=%q round-tripped as %q; Get must not normalise",
+					raw, got)
+			}
+		})
+	}
+}
+
 // =============================================================================
 // BDD — behaviour specifications
 // =============================================================================
@@ -248,10 +307,11 @@ func TestBehaviour_UninstrumentedBuildReportsEmptyInfo(t *testing.T) {
 	forgeversion.Commit = ""
 	forgeversion.BuildDate = ""
 	forgeversion.Dirty = ""
+	forgeversion.BuildType = ""
 
 	got := Get()
 
-	if got.Version != "" || got.Commit != "" || got.BuildDate != "" || got.Dirty != "" {
+	if got.Version != "" || got.Commit != "" || got.BuildDate != "" || got.Dirty != "" || got.BuildType != "" {
 		t.Fatalf("uninstrumented build reported non-empty Info: %+v", got)
 	}
 }
@@ -259,7 +319,7 @@ func TestBehaviour_UninstrumentedBuildReportsEmptyInfo(t *testing.T) {
 // TestBehaviour_InstrumentedBuildReportsInjectedInfo encodes the
 // BDD scenario:
 //
-//	Given a binary built with ldflags that inject all four values
+//	Given a binary built with ldflags that inject all five values
 //	When Get() is called
 //	Then every field of Info matches what was injected.
 func TestBehaviour_InstrumentedBuildReportsInjectedInfo(t *testing.T) {
@@ -270,6 +330,7 @@ func TestBehaviour_InstrumentedBuildReportsInjectedInfo(t *testing.T) {
 	forgeversion.Commit = "abc1234"
 	forgeversion.BuildDate = "2026-10-10T12:00:00Z"
 	forgeversion.Dirty = "true"
+	forgeversion.BuildType = "release"
 
 	got := Get()
 
@@ -285,6 +346,9 @@ func TestBehaviour_InstrumentedBuildReportsInjectedInfo(t *testing.T) {
 	if got.Dirty != "true" {
 		t.Errorf("Dirty: got %q, want %q", got.Dirty, "true")
 	}
+	if got.BuildType != "release" {
+		t.Errorf("BuildType: got %q, want %q", got.BuildType, "release")
+	}
 }
 
 // TestBehaviour_GetIsSafeForConcurrentUse encodes the BDD scenario:
@@ -294,6 +358,11 @@ func TestBehaviour_InstrumentedBuildReportsInjectedInfo(t *testing.T) {
 //	Then no data race is reported and all callers see the same Info.
 //
 // Run with `go test -race` to exercise the race detector.
+//
+// The comparison uses reflect.DeepEqual because Info contains a
+// Provenance value whose Dependencies and Settings fields are
+// slices. Go's == operator does not work on structs containing
+// slices.
 func TestBehaviour_GetIsSafeForConcurrentUse(t *testing.T) {
 	t.Parallel()
 
@@ -308,7 +377,7 @@ func TestBehaviour_GetIsSafeForConcurrentUse(t *testing.T) {
 			defer func() { done <- struct{}{} }()
 			for i := 0; i < iterations; i++ {
 				got := Get()
-				if got != want {
+				if !reflect.DeepEqual(got, want) {
 					t.Errorf("concurrent Get diverged:\nwant: %+v\ngot:  %+v",
 						want, got)
 					return
@@ -326,7 +395,7 @@ func TestBehaviour_GetIsSafeForConcurrentUse(t *testing.T) {
 // =============================================================================
 
 // TestEdge_ArbitraryStringsArePreserved verifies that the accessor
-// does not validate, trim, or parse any of the four values. Any
+// does not validate, trim, or parse any of the five values. Any
 // string round-trips unchanged. This is the negative contract for
 // the "no validation" policy documented in internal/version.
 func TestEdge_ArbitraryStringsArePreserved(t *testing.T) {
@@ -339,6 +408,7 @@ func TestEdge_ArbitraryStringsArePreserved(t *testing.T) {
 		commit    string
 		buildDate string
 		dirty     string
+		buildType string
 	}{
 		{
 			name:      "empty",
@@ -346,6 +416,7 @@ func TestEdge_ArbitraryStringsArePreserved(t *testing.T) {
 			commit:    "",
 			buildDate: "",
 			dirty:     "",
+			buildType: "",
 		},
 		{
 			name:      "whitespace",
@@ -353,6 +424,7 @@ func TestEdge_ArbitraryStringsArePreserved(t *testing.T) {
 			commit:    " ",
 			buildDate: " ",
 			dirty:     " ",
+			buildType: " ",
 		},
 		{
 			name:      "surrounding spaces",
@@ -360,6 +432,7 @@ func TestEdge_ArbitraryStringsArePreserved(t *testing.T) {
 			commit:    " abc ",
 			buildDate: " 2026-10-10 ",
 			dirty:     " true ",
+			buildType: " release ",
 		},
 		{
 			name:      "non-ASCII",
@@ -367,6 +440,7 @@ func TestEdge_ArbitraryStringsArePreserved(t *testing.T) {
 			commit:    "café",
 			buildDate: "2026-10-10T12:00:00Z",
 			dirty:     "false",
+			buildType: "release",
 		},
 		{
 			name:      "embedded newline",
@@ -374,6 +448,7 @@ func TestEdge_ArbitraryStringsArePreserved(t *testing.T) {
 			commit:    "abc\ndef",
 			buildDate: "2026-10-10",
 			dirty:     "false",
+			buildType: "release",
 		},
 		{
 			name:      "long strings",
@@ -381,6 +456,7 @@ func TestEdge_ArbitraryStringsArePreserved(t *testing.T) {
 			commit:    strings.Repeat("c", 4096),
 			buildDate: strings.Repeat("d", 4096),
 			dirty:     strings.Repeat("t", 4096),
+			buildType: strings.Repeat("k", 4096),
 		},
 	}
 
@@ -392,6 +468,7 @@ func TestEdge_ArbitraryStringsArePreserved(t *testing.T) {
 			forgeversion.Commit = tc.commit
 			forgeversion.BuildDate = tc.buildDate
 			forgeversion.Dirty = tc.dirty
+			forgeversion.BuildType = tc.buildType
 
 			got := Get()
 
@@ -407,12 +484,15 @@ func TestEdge_ArbitraryStringsArePreserved(t *testing.T) {
 			if got.Dirty != tc.dirty {
 				t.Errorf("Dirty: got %q, want %q", got.Dirty, tc.dirty)
 			}
+			if got.BuildType != tc.buildType {
+				t.Errorf("BuildType: got %q, want %q", got.BuildType, tc.buildType)
+			}
 		})
 	}
 }
 
 // TestBoundary_EmptyIndividualFieldIsPreserved asserts that setting
-// only one of the four variables to empty does not affect the
+// only one of the five variables to empty does not affect the
 // others. This catches a future implementation that, for example,
 // substitutes a default when Version is empty.
 func TestBoundary_EmptyIndividualFieldIsPreserved(t *testing.T) {
@@ -423,6 +503,7 @@ func TestBoundary_EmptyIndividualFieldIsPreserved(t *testing.T) {
 	forgeversion.Commit = "abc1234"
 	forgeversion.BuildDate = "2026-10-10T12:00:00Z"
 	forgeversion.Dirty = "false"
+	forgeversion.BuildType = "release"
 
 	got := Get()
 
@@ -437,6 +518,9 @@ func TestBoundary_EmptyIndividualFieldIsPreserved(t *testing.T) {
 	}
 	if got.Dirty != "false" {
 		t.Errorf("Dirty: got %q, want %q", got.Dirty, "false")
+	}
+	if got.BuildType != "release" {
+		t.Errorf("BuildType: got %q, want %q", got.BuildType, "release")
 	}
 }
 
@@ -467,44 +551,116 @@ func TestCorner_DirtyUnknownVsClean(t *testing.T) {
 	}
 }
 
+// TestCorner_BuildTypeUnknownVsLocal asserts the analogous corner
+// case for BuildType: the accessor preserves the empty string
+// (unknown) and "local" (explicitly local) as distinct values.
+//
+// The normalization to "local" happens later, in MetadataOf; Get
+// itself does not normalize.
+func TestCorner_BuildTypeUnknownVsLocal(t *testing.T) {
+	// Not parallel: mutates package state.
+	snapshotVersionVars(t)
+
+	// Unknown: uninstrumented build.
+	forgeversion.BuildType = ""
+	unknown := Get().BuildType
+	if unknown != "" {
+		t.Fatalf("unknown BuildType = %q, want empty", unknown)
+	}
+
+	// Local: explicitly local build.
+	forgeversion.BuildType = "local"
+	local := Get().BuildType
+	if local != "local" {
+		t.Fatalf("local BuildType = %q, want %q", local, "local")
+	}
+
+	if unknown == local {
+		t.Fatalf("unknown and local must be distinguishable; both were %q", unknown)
+	}
+}
+
 // =============================================================================
 // Non-functional
 // =============================================================================
 
-// TestNonFunctional_GetIsAllocationFreeOnHeap asserts that Get does
-// not allocate on the heap. Info contains only strings, so the
-// compiler should keep the value on the stack.
-func TestNonFunctional_GetIsAllocationFreeOnHeap(t *testing.T) {
+// TestNonFunctional_GetAllocsAreBounded asserts that Get's
+// allocation count is bounded by a small constant.
+//
+// # Why the bound is not zero
+//
+// Before WBS 17.4.1, Get returned only the five linker strings.
+// The compiler kept the value on the stack and the test asserted
+// zero allocations. WBS 17.4.1 added the provenance to Info; the
+// provenance contains Dependencies and Settings slices, which are
+// heap-allocated by the library's ReadProvenance.
+//
+// The allocation is small and bounded: one Provenance value, two
+// slice headers, and the slice elements. For the Forge binary the
+// slices are short (typically fewer than twenty entries).
+//
+// # What the test catches
+//
+// A change that allocates a variable amount (a map, a growing
+// slice built element by element, a reflected struct) exceeds the
+// bound. A change that adds one more small allocation per call
+// might not, and that is acceptable: the property pinned here is
+// "no unbounded allocation", not "byte-identical allocation count".
+//
+// # The exact number
+//
+// maxAllocs is set to 8, which is the measurement for the test
+// binary (Go 1.23, linux/amd64) plus one unit of slack. A future
+// toolchain whose ReadBuildInfo allocates differently may require
+// raising the number; the failure message names the new value and
+// the raise is a one-line edit.
+func TestNonFunctional_GetAllocsAreBounded(t *testing.T) {
 	// Not parallel: allocation measurement is sensitive to
 	// concurrent activity.
+	const maxAllocs = 8
 	allocs := testing.AllocsPerRun(1000, func() {
 		_ = Get()
 	})
-	if allocs > 0 {
-		t.Errorf("Get allocated %v times per run; want 0", allocs)
+	if allocs > maxAllocs {
+		t.Errorf("Get allocated %v times per run; want at most %d",
+			allocs, maxAllocs)
 	}
 }
 
 // TestNonFunctional_BuildInfoIsAllocationFreeOnHeap asserts the
 // same for the lower-level accessor.
+//
+// # Why this bound is zero
+//
+// buildInfo reads five strings from the library's GetAll and
+// returns them as a tuple. The library's GetAll returns a struct of
+// five strings; the compiler keeps both the struct and the tuple on
+// the stack. No heap allocation occurs.
+//
+// This property is what makes buildInfo the right primitive for the
+// CLI's command-tree construction path, which runs before any
+// logging is configured. A future change that adds allocation to
+// buildInfo (for example, reading the provenance) would break this
+// property and the test would fail.
 func TestNonFunctional_BuildInfoIsAllocationFreeOnHeap(t *testing.T) {
 	// Not parallel: see above.
 	allocs := testing.AllocsPerRun(1000, func() {
-		_, _, _, _ = buildInfo()
+		_, _, _, _, _ = buildInfo()
 	})
 	if allocs > 0 {
 		t.Errorf("buildInfo allocated %v times per run; want 0", allocs)
 	}
 }
 
-// TestNonFunctional_BuildInfoDoesNotImportRuntimeDocumented is a
-// compile-time contract that buildInfo is the only function in this
-// package that imports internal/version directly.
+// TestNonFunctional_BuildInfoIsolatesTheImport is a compile-time
+// contract that buildinfo.go is the only file in this package that
+// imports internal/version directly.
 //
 // The check is textual: it reads buildinfo.go and asserts that the
 // import line is present, and reads service.go and asserts that the
 // import line is absent. This pins the "isolate the import in one
-// file" property documented on buildInfo.
+// file" property documented on buildInfo and in
+// docs/architecture.md § 11.11.
 func TestNonFunctional_BuildInfoIsolatesTheImport(t *testing.T) {
 	t.Parallel()
 
