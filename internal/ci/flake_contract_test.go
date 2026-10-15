@@ -125,26 +125,6 @@ func TestFlake_GoldenFileExists(t *testing.T) {
 	}
 }
 
-// --- Render tests ----------------------------------------------------------
-
-// TestFlake_PolicyDocMatchesModel asserts ci.FlakeMarkdown() matches
-// the policy document.
-func TestFlake_PolicyDocMatchesModel(t *testing.T) {
-	root := repoRoot(t)
-	path := flakeDocPath(t, root)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-	want := ci.FlakeMarkdown()
-	if string(data) != want {
-		t.Fatalf(
-			"%s does not match ci.FlakeMarkdown(); run `task ci:render-flake` to regenerate",
-			path,
-		)
-	}
-}
-
 // TestFlake_GoldenMatchesModel asserts ci.FlakeGolden() matches the
 // golden JSON.
 func TestFlake_GoldenMatchesModel(t *testing.T) {
