@@ -158,7 +158,7 @@ jobs:
           cache-key-suffix: tier1-format
 
       - name: Set up Go
-        uses: actions/setup-go@0b12d6b521d83fc7f755e7cfc93634d3f36cbe55 # v5.1.0
+        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
         with:
           go-version-file: go.mod
           check-latest: false
@@ -228,7 +228,7 @@ jobs:
           cache-key-suffix: tier1-vet
 
       - name: Set up Go
-        uses: actions/setup-go@0b12d6b521d83fc7f755e7cfc93634d3f36cbe55 # v5.1.0
+        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
         with:
           go-version-file: go.mod
           check-latest: false
@@ -274,7 +274,7 @@ jobs:
           cache-key-suffix: tier1-lint
 
       - name: Set up Go
-        uses: actions/setup-go@0b12d6b521d83fc7f755e7cfc93634d3f36cbe55 # v5.1.0
+        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
         with:
           go-version-file: go.mod
           check-latest: false
@@ -316,7 +316,7 @@ jobs:
           cache-key-suffix: tier1-test-short
 
       - name: Set up Go
-        uses: actions/setup-go@0b12d6b521d83fc7f755e7cfc93634d3f36cbe55 # v5.1.0
+        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
         with:
           go-version-file: go.mod
           check-latest: false
@@ -348,7 +348,7 @@ jobs:
           cache-key-suffix: tier1-build
 
       - name: Set up Go
-        uses: actions/setup-go@0b12d6b521d83fc7f755e7cfc93634d3f36cbe55 # v5.1.0
+        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
         with:
           go-version-file: go.mod
           check-latest: false

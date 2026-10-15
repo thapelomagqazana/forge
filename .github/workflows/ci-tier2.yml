@@ -194,7 +194,7 @@ jobs:
           cache-key-suffix: test-matrix-${{ matrix.os }}-${{ matrix.go }}
 
       - name: Set up Go (${{ matrix.go }})
-        uses: actions/setup-go@0b12d6b521d83fc7f755e7cfc93634d3f36cbe55 # v5.1.0
+        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
         with:
           go-version: ${{ matrix.go == 'min' && '1.23' || '1.24' }}
           check-latest: false
@@ -240,7 +240,7 @@ jobs:
           cache-key-suffix: cross-compile
 
       - name: Set up Go
-        uses: actions/setup-go@0b12d6b521d83fc7f755e7cfc93634d3f36cbe55 # v5.1.0
+        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
         with:
           go-version-file: go.mod
           check-latest: false
@@ -317,7 +317,7 @@ jobs:
           cache-key-suffix: smoke-${{ matrix.os }}-${{ matrix.go }}
 
       - name: Set up Go (${{ matrix.go }})
-        uses: actions/setup-go@0b12d6b521d83fc7f755e7cfc93634d3f36cbe55 # v5.1.0
+        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
         with:
           go-version: ${{ matrix.go == 'min' && '1.23' || '1.24' }}
           check-latest: false
@@ -382,7 +382,7 @@ jobs:
           cache-key-suffix: release-dry-run
 
       - name: Set up Go
-        uses: actions/setup-go@0b12d6b521d83fc7f755e7cfc93634d3f36cbe55 # v5.1.0
+        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
         with:
           go-version-file: go.mod
           check-latest: false
