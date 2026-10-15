@@ -49,8 +49,7 @@ architecture. It exists so that:
    considered and why they are absent.
 
 For the *why* behind the layering, see
-[`docs/architecture/filesystem-layering.md`](../architecture/filesystem-layering.md)
-and [ADR-035](../decisions/ADR-035-filesystem-enforcement-by-construction.md).
+[`docs/architecture/filesystem-layering.md`](../architecture/filesystem-layering.md).
 
 ---
 
@@ -671,8 +670,6 @@ the implementation.
 - [`docs/architecture/filesystem-layering.md`](../architecture/filesystem-layering.md)
   — the two-layer model, the enforcement-by-construction
   argument, and the CI lint that enforces the layering.
-- [`docs/decisions/ADR-035-filesystem-enforcement-by-construction.md`](../decisions/ADR-035-filesystem-enforcement-by-construction.md)
-  — the decision record that ratifies the two-layer model.
 - [`docs/decisions/ADR-011-closed-error-category-taxonomy.md`](../decisions/ADR-011-closed-error-category-taxonomy.md)
   — the closure argument for the error taxonomy, which the
   operation surface mirrors.

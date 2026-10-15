@@ -2,7 +2,7 @@
 
 > **Status:** Accepted
 > **Owner:** Security
-> **Related:** [ADR-051](../decisions/ADR-051-security-workflow.md), [CI Tiers](ci-tiers.md), [Platform Tiers](platform-tiers.md)
+> **Related:** [CI Tiers](ci-tiers.md), [Platform Tiers](platform-tiers.md)
 
 This document describes the security scanning workflow
 (`.github/workflows/security.yml`). The workflow is rendered

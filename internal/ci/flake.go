@@ -243,7 +243,7 @@ func FlakeMarkdown() string {
 	b.WriteString("# Flake Policy\n\n")
 	b.WriteString("> **Status:** Accepted\n")
 	b.WriteString("> **Owner:** Release Engineering\n")
-	b.WriteString("> **Related:** [ADR-052](../decisions/ADR-052-pr-concurrency-and-flake-policy.md), [CI Tiers](ci-tiers.md)\n\n")
+	b.WriteString("> **Related:** [CI Tiers](ci-tiers.md)\n\n")
 	b.WriteString("This document describes the repository's policy for flaky tests. ")
 	b.WriteString("It is rendered from `internal/ci/flake.go`; a golden-file test asserts the two agree.\n\n")
 

@@ -13,7 +13,6 @@
     - Release channels:       docs/reference/release-channels.md
     - Verifying releases:     docs/reference/verifying-releases.md
     - Supply chain ADR:       docs/decisions/ADR-048-supply-chain-integrity.md
-    - Release channels ADR:   docs/decisions/ADR-043-versioning-and-release-channels.md
     - Security policy:        SECURITY.md
     - Rollback guide:         docs/guides/rollback.md
     - Dry-run guide:          docs/guides/release-dry-run.md
@@ -489,5 +488,3 @@ workflow that breaks one is a defect.
 | [`docs/reference/release-channels.md`](release-channels.md) | The channel mapping and the support window. |
 | [`docs/reference/versioning.md`](versioning.md) | The tag-to-version contract. |
 | [`SECURITY.md`](../../SECURITY.md) | The credentials and their handling. |
-| [`docs/decisions/ADR-043-versioning-and-release-channels.md`](../decisions/ADR-043-versioning-and-release-channels.md) | The channel routing. |
-| [`docs/decisions/ADR-048-supply-chain-integrity.md`](../decisions/ADR-048-supply-chain-integrity.md) | The supply-chain design. |

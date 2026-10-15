@@ -340,7 +340,6 @@ go version -m ./forge | grep -c "/home/"   # should print 0
 | [`docs/reference/platforms.yaml`](../reference/platforms.yaml) | The platform matrix the driver reads |
 | [`docs/reference/versioning.md`](../reference/versioning.md) | The version string semantics the driver embeds |
 | [`docs/reference/release-channels.md`](../reference/release-channels.md) | The channels the release pipeline routes |
-| [`docs/decisions/ADR-044-makefile-and-cross-compile.md`](../decisions/ADR-044-makefile-and-cross-compile.md) | Why a Makefile shim and a Go driver |
 | [`Taskfile.yml`](../../Taskfile.yml) | The development task definitions |
 | [`scripts/build.go`](../../scripts/build.go) | The cross-compile driver |
 | [`internal/version/version.go`](../../internal/version/version.go) | The four linker variables |

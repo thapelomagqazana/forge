@@ -2,7 +2,7 @@
 
 > **Status:** Accepted
 > **Owner:** Release Engineering
-> **Related:** [ADR-049](../decisions/ADR-049-ci-cache-strategy.md), [CI Tiers](ci-tiers.md), [CI Architecture](../architecture/ci-architecture.md)
+> **Related:** [CI Tiers](ci-tiers.md), [CI Architecture](../architecture/ci-architecture.md)
 
 This document describes the caching strategy the CI tier
 workflows use. It is rendered from `internal/ci/cache.go`; a

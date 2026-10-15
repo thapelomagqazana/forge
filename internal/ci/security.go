@@ -507,7 +507,7 @@ func SecurityMarkdown() string {
 	b.WriteString("# Security Workflow Reference\n\n")
 	b.WriteString("> **Status:** Accepted\n")
 	b.WriteString("> **Owner:** Security\n")
-	b.WriteString("> **Related:** [ADR-051](../decisions/ADR-051-security-workflow.md), [CI Tiers](ci-tiers.md), [Platform Tiers](platform-tiers.md)\n\n")
+	b.WriteString("> **Related:** [CI Tiers](ci-tiers.md), [Platform Tiers](platform-tiers.md)\n\n")
 	b.WriteString("This document describes the security scanning workflow\n")
 	b.WriteString("(`.github/workflows/security.yml`). The workflow is rendered\n")
 	b.WriteString("from `internal/ci/security.go`; a golden-file test asserts the\n")

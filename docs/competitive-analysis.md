@@ -578,9 +578,7 @@ prototype validation in later phases.
    [`docs/research/findings.md`](./research/findings.md).
 3. Update hypothesis statuses in
    [`docs/research/evidence-matrix.md`](./research/evidence-matrix.md).
-4. If the wedge is refuted, update this document and
-   [ADR-001](./decisions/ADR-001-forge-as-foundation-manager.md).
-5. Feed validated findings into
+4. Feed validated findings into
    [`docs/product-discovery.md`](./product-discovery.md) § 6.
 
 ---

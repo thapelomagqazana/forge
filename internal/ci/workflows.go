@@ -699,7 +699,7 @@ func PinnedActions() map[string]string {
 var pinnedActions = map[string]string{
 	// Actions shared by multiple workflows.
 	"actions/checkout":          "11bd71901bbe5b1630ceea73d27597364c9af683", // v4.2.2
-	"actions/setup-go":          "0b12d6b521d83fc7f755e7cfc93634d3f36cbe55", // v5.1.0
+	"actions/setup-go":          "41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed", // v5.1.0
 	"actions/upload-artifact":   "b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882", // v4.4.3
 	"actions/download-artifact": "fa0a91b85d4f404e444e00e005971372dc801d16", // v4.1.8
 	"actions/cache":             "3624ceb22c1c5a301c8db4169662070a689d9ea8", // v4.1.2
@@ -721,7 +721,7 @@ var pinnedActions = map[string]string{
 	"ossf/scorecard-action":             "62b2cac7ed8198b15735ed49ab1e5cf35480ba46", // v2.4.0
 
 	// Actions used by docs.yml.
-	"lycheeverse/lychee-action": "f81184c8a1a5b1f0c9c9c9c9c9c9c9c9c9c9c9c9", // replace with a real release SHA
+	"lycheeverse/lychee-action": "e7477775783ea5526144ba13e8db5eec57747ce8", // replace with a real release SHA
 
 	// Reusable workflow: the SLSA generator.
 	"slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml": "v2.0.0",

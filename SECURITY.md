@@ -239,9 +239,6 @@ policy.
 | Windows Authenticode certificate | `FORGE_AUTHENTICODE_SUBJECT`, `FORGE_AUTHENTICODE_SHA1` | Signs windows binaries. | On certificate expiry (code-signing certificates are valid for one to three years). |
 | cosign keyless | None. | Signs archives. | Not applicable: keyless uses a short-lived certificate per run. |
 
-The pipeline's design is recorded in
-[`docs/decisions/ADR-048-supply-chain-integrity.md`](docs/decisions/ADR-048-supply-chain-integrity.md).
-
 ### Why the GPG key is not passphrase-protected
 
 The private half is stored in a GitHub Actions secret, which is

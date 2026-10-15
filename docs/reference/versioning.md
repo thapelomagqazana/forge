@@ -360,7 +360,6 @@ corrected.
 | [`version-metadata.yaml`](./version-metadata.yaml) | Machine-readable form of this document and `release-channels.md` |
 | [`../templates/release-notes.md`](../templates/release-notes.md) | Human template every release fills in |
 | [`../../schemas/version.schema.json`](../../schemas/version.schema.json) | JSON Schema for `version-metadata.yaml` |
-| [`../decisions/ADR-043-versioning-and-release-channels.md`](../decisions/ADR-043-versioning-and-release-channels.md) | Architectural decision record |
 | [`../reference/exit-codes.yaml`](./exit-codes.yaml) | The exit-code table that MAJOR bumps may change |
 | [`../reference/platforms.yaml`](./platforms.yaml) | The platform matrix that MINOR bumps may extend |
 | [`../../internal/version/`](../../internal/version/) | Implementation: `ChannelOf`, `Metadata`, `Validate` |

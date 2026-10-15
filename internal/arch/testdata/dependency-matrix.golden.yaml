@@ -5,7 +5,6 @@
 # are asserted equal by TestMatrixYAMLMatchesMarkdown in internal/arch.
 #
 # Schema: schemas/dependency-matrix.schema.json
-# ADR:    docs/decisions/ADR-042-package-group-dependency-matrix.md
 #
 # Editing rules:
 #   1. Change this file first, then regenerate the Markdown form with

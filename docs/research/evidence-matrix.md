@@ -1036,7 +1036,6 @@ Synthesis is complete when:
 | [Product Discovery](../product-discovery.md) | Defines the hypotheses being classified |
 | [Requirements Register](../requirements-register.md) | Where derived requirements are recorded |
 | [Phase 1 Exit Report](../phase-1-exit-report.md) | Where the Go/No-Go decision is recorded |
-| [ADR-001](../decisions/ADR-001-forge-as-foundation-manager.md) | The foundational decision this synthesis validates |
 
 ---
 

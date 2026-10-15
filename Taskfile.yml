@@ -599,8 +599,7 @@ tasks:
   # binary twice and compares SHA-256. The section is unified because
   # all six checks answer the same question at different layers.
   #
-  # See docs/guides/reproducible-builds.md and
-  # docs/decisions/ADR-045-reproducibility-posture.md.
+  # See docs/guides/reproducible-builds.md.
   # ═══════════════════════════════════════════════════════════════════════════
 
   verify:reproducible:
@@ -1456,8 +1455,6 @@ tasks:
   # and docs/reference/version-metadata.yaml. The schema is
   # schemas/version-metadata.schema.json. The tooling is
   # cmd/forge-internal-version.
-  #
-  # See docs/decisions/ADR-043-versioning-and-release-channels.md.
   # ═══════════════════════════════════════════════════════════════════════════
 
   version:verify:
@@ -1497,7 +1494,6 @@ tasks:
   #
   # See docs/guides/building.md,
   # docs/guides/reproducible-builds.md, and
-  # docs/decisions/ADR-044-makefile-and-cross-compile.md.
   # ═══════════════════════════════════════════════════════════════════════════
 
   verify:tagged:

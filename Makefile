@@ -34,8 +34,7 @@
 # you are tempted to add cross-compile logic to a target, put it in
 # scripts/build.go instead and call that.
 #
-# See WBS 6.1.2, WBS 17.2.1, docs/guides/building.md, and
-# docs/decisions/ADR-044-makefile-and-cross-compile.md.
+# See WBS 6.1.2, WBS 17.2.1, docs/guides/building.md.
 # =============================================================================
 
 TASK ?= task

@@ -2,7 +2,7 @@
 
 > **Status:** Accepted
 > **Owner:** Release Engineering
-> **Related:** [ADR-052](../decisions/ADR-052-pr-concurrency-and-flake-policy.md), [CI Tiers](ci-tiers.md)
+> **Related:** [CI Tiers](ci-tiers.md)
 
 Every CI job declares an explicit `timeout-minutes`. The value is a
 backstop against a hung job, not a budget enforcement: the budget is

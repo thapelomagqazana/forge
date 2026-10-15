@@ -56,12 +56,6 @@ func costDocPath(t *testing.T, root string) string {
 	return filepath.Join(root, "docs", "reference", "ci-cost-budget.md")
 }
 
-// costADRPath returns the path to the ADR.
-func costADRPath(t *testing.T, root string) string {
-	t.Helper()
-	return filepath.Join(root, "docs", "decisions", "ADR-053-ci-cost-budget.md")
-}
-
 // costGoldenPath returns the path to the golden JSON.
 func costGoldenPath(t *testing.T, root string) string {
 	t.Helper()

@@ -2,7 +2,7 @@
 
 > **Status:** Accepted
 > **Owner:** Release Engineering
-> **Related:** [ADR-052](../decisions/ADR-052-pr-concurrency-and-flake-policy.md), [CI Tiers](ci-tiers.md)
+> **Related:** [CI Tiers](ci-tiers.md)
 
 This document describes the concurrency policy each workflow declares. It is rendered from `internal/ci/concurrency.go`; a golden-file test asserts the two agree.
 

@@ -440,7 +440,7 @@ func CacheStrategyMarkdown() string {
 	b.WriteString("# CI Cache Strategy\n\n")
 	b.WriteString("> **Status:** Accepted\n")
 	b.WriteString("> **Owner:** Release Engineering\n")
-	b.WriteString("> **Related:** [ADR-049](../decisions/ADR-049-ci-cache-strategy.md), [CI Tiers](ci-tiers.md), [CI Architecture](../architecture/ci-architecture.md)\n\n")
+	b.WriteString("> **Related:** [CI Tiers](ci-tiers.md), [CI Architecture](../architecture/ci-architecture.md)\n\n")
 	b.WriteString("This document describes the caching strategy the CI tier\n")
 	b.WriteString("workflows use. It is rendered from `internal/ci/cache.go`; a\n")
 	b.WriteString("golden-file test asserts the two agree.\n\n")

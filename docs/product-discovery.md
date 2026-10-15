@@ -1108,9 +1108,7 @@ This hypothesis is disproved if:
 Unknown
 
 **Confidence**
-Initial: High. This is the central hypothesis for Forge's product
-identity per
-[ADR-001](./decisions/ADR-001-forge-as-foundation-manager.md).
+Initial: High.
 
 ### 7.5 HYP-005 — Existing template tooling handles updates poorly
 

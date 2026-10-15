@@ -3,7 +3,7 @@
 > **Status:** Accepted
 > **Owner:** Release Engineering
 > **Reviewers:** Security, Documentation
-> **Related:** [ADR-043](../decisions/ADR-043-ci-workflow-architecture.md), [Release Process](../reference/release-process.md), [Platform Tiers](../reference/platform-tiers.md)
+> **Related:** [Release Process](../reference/release-process.md), [Platform Tiers](../reference/platform-tiers.md)
 
 ## Purpose
 

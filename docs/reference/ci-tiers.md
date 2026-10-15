@@ -2,7 +2,7 @@
 
 > **Status:** Accepted
 > **Owner:** Release Engineering
-> **Related:** [ADR-044](../decisions/ADR-044-ci-tier-model.md), [CI Architecture](../architecture/ci-architecture.md)
+> **Related:** [CI Architecture](../architecture/ci-architecture.md)
 
 The four tiers below are the contract between the CI architecture and the
 contributors who depend on it. A tier is a class of checks with a shared

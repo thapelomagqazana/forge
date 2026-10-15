@@ -697,7 +697,6 @@ filesystem that is case-sensitive.
 
 ## See Also
 
-- [ADR-035 — Filesystem Enforcement by Construction](../decisions/ADR-035-filesystem-enforcement-by-construction.md)
 - [Path Normalization & Canonicalization](./path-normalization.md)
 - [Filesystem API Reference](./filesystem-api.md)
 - [Filesystem Layering](../architecture/filesystem-layering.md)

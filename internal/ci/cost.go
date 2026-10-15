@@ -533,7 +533,7 @@ func CostMarkdown() string {
 	b.WriteString("# CI Cost Budget\n\n")
 	b.WriteString("> **Status:** Accepted\n")
 	b.WriteString("> **Owner:** Release Engineering\n")
-	b.WriteString("> **Related:** [ADR-053](../decisions/ADR-053-ci-cost-budget.md), [CI Tiers](ci-tiers.md), [CI Cache Strategy](ci-cache-strategy.md)\n\n")
+	b.WriteString("> **Related:** [CI Tiers](ci-tiers.md), [CI Cache Strategy](ci-cache-strategy.md)\n\n")
 	b.WriteString("This document describes the repository's CI cost budget and the ")
 	b.WriteString("techniques the repository uses to stay within it. It is rendered from ")
 	b.WriteString("`internal/ci/cost.go`; a golden-file test asserts the two agree.\n\n")

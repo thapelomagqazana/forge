@@ -845,7 +845,7 @@ func TiersTable() string {
 	b.WriteString("# CI Tier Model\n\n")
 	b.WriteString("> **Status:** Accepted\n")
 	b.WriteString("> **Owner:** Release Engineering\n")
-	b.WriteString("> **Related:** [ADR-044](../decisions/ADR-044-ci-tier-model.md), [CI Architecture](../architecture/ci-architecture.md)\n\n")
+	b.WriteString("> **Related:** [CI Architecture](../architecture/ci-architecture.md)\n\n")
 	b.WriteString("The four tiers below are the contract between the CI architecture and the\n")
 	b.WriteString("contributors who depend on it. A tier is a class of checks with a shared\n")
 	b.WriteString("goal, a shared timing budget, and a shared blocking status per trigger\n")

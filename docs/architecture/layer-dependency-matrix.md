@@ -3,7 +3,6 @@
 > **Status:** Adopted
 > **Owner:** Architecture Owner
 > **Canonical model:** [clean-architecture.md](./clean-architecture.md)
-> **ADR:** [ADR-040 — Clean Architecture Layer Model](../decisions/ADR-040-clean-architecture-layer-model.md)
 > **Enforced by:** [`internal/arch/layers.go`](../../internal/arch/layers.go) · [`internal/arch/layers_test.go`](../../internal/arch/layers_test.go) · [`scripts/arch/verify-layers.sh`](../../scripts/arch/verify-layers.sh)
 > **Traceability:** FR-ARCH-001, NFR-ARCHITECTURE-001
 > **WBS:** 14.1.1
@@ -312,7 +311,6 @@ RemovalPhase) to `DefaultGrandfathers`.
 ## 11. Cross-references
 
 - [clean-architecture.md](./clean-architecture.md) — the prose spec and the rationale for the model.
-- [ADR-040 — Clean Architecture Layer Model](../decisions/ADR-040-clean-architecture-layer-model.md) — the decision record and the appendix mapping existing packages.
 - [`internal/arch/layers.go`](../../internal/arch/layers.go) — `allowedImport`, `DefaultRules`, `DefaultGrandfathers`, `MatrixGolden`.
 - [`internal/arch/layers_test.go`](../../internal/arch/layers_test.go) — `TestLayerMatrixGolden`, `TestNoUpwardImports`, `TestEveryInternalPackageIsClassified`, `TestClassify`.
 - [`internal/arch/testdata/layer_diagram.golden.txt`](../../internal/arch/testdata/layer_diagram.golden.txt) — the byte-compared golden form.

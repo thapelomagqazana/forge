@@ -541,4 +541,3 @@ available separately.
 | [`docs/reference/release-channels.md`](../reference/release-channels.md) | The channels and the support window. |
 | [`docs/guides/reproducible-builds.md`](../guides/reproducible-builds.md) | Rebuilding an archive from source. |
 | [`SECURITY.md`](../../SECURITY.md) | The release key's fingerprint. |
-| [`docs/decisions/ADR-049-distribution-channels.md`](../decisions/ADR-049-distribution-channels.md) | The six-channel set's rationale. |

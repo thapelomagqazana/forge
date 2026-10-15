@@ -2,7 +2,7 @@
 
 > **Status:** Accepted
 > **Owner:** Release Engineering
-> **Related:** [ADR-053](../decisions/ADR-053-ci-cost-budget.md), [CI Tiers](ci-tiers.md), [CI Cache Strategy](ci-cache-strategy.md)
+> **Related:** [CI Tiers](ci-tiers.md), [CI Cache Strategy](ci-cache-strategy.md)
 
 This document describes the repository's CI cost budget and the techniques the repository uses to stay within it. It is rendered from `internal/ci/cost.go`; a golden-file test asserts the two agree.
 

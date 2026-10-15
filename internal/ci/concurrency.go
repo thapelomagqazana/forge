@@ -513,7 +513,7 @@ func ConcurrencyMarkdown() string {
 	b.WriteString("# Concurrency Policy\n\n")
 	b.WriteString("> **Status:** Accepted\n")
 	b.WriteString("> **Owner:** Release Engineering\n")
-	b.WriteString("> **Related:** [ADR-052](../decisions/ADR-052-pr-concurrency-and-flake-policy.md), [CI Tiers](ci-tiers.md)\n\n")
+	b.WriteString("> **Related:** [CI Tiers](ci-tiers.md)\n\n")
 	b.WriteString("This document describes the concurrency policy each workflow declares. ")
 	b.WriteString("It is rendered from `internal/ci/concurrency.go`; a golden-file test asserts the two agree.\n\n")
 

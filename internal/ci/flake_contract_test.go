@@ -79,12 +79,6 @@ func timeoutDocPath(t *testing.T, root string) string {
 	return filepath.Join(root, "docs", "reference", "timeout-policy.md")
 }
 
-// flakeADRPath returns the path to the ADR.
-func flakeADRPath(t *testing.T, root string) string {
-	t.Helper()
-	return filepath.Join(root, "docs", "decisions", "ADR-052-pr-concurrency-and-flake-policy.md")
-}
-
 // flakeGoldenPath returns the path to the golden JSON.
 func flakeGoldenPath(t *testing.T, root string) string {
 	t.Helper()
