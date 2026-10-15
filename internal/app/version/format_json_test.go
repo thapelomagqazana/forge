@@ -1,10 +1,11 @@
 // Package version contains unit tests for the version application
 // service.
 //
-// This file pins the JSON output format frozen by WBS 6.4.2. Every
-// byte of the JSON encoder's output is part of the contract; a
-// change to any byte fails a test in this file and requires a new
-// ADR (per the WBS's "field name changes require an ADR" rule).
+// This file pins the JSON output format. The shape is frozen by
+// WBS 17.4.1: five fields (version, commit, buildDate, dirty,
+// buildType), camelCase, in that order. A change to any field name,
+// any JSON type, or the order fails a test in this file and
+// requires a new ADR.
 //
 // # Test organisation
 //
@@ -47,14 +48,14 @@ import (
 // TestWriteJSON_FullOutput pins the exact byte-for-byte output of
 // the JSON encoder for a fully populated Info.
 //
-// This is the ATDD acceptance test for WBS 6.4.2. Every byte of
-// the output is asserted; a change to the format fails this test
-// and requires a new ADR.
+// This is the ATDD acceptance test for the WBS 17.4.1 shape. Every
+// byte of the output is asserted; a change to the format fails this
+// test and requires a new ADR.
 //
 // The field order is part of the contract: encoding/json emits
-// struct fields in declaration order, and jsonInfo declares the
-// four fields in the schema's order (version, commit, build_date,
-// dirty).
+// struct fields in declaration order, and the library's Metadata
+// declares the five fields in the schema's order (version, commit,
+// buildDate, dirty, buildType).
 func TestWriteJSON_FullOutput(t *testing.T) {
 	t.Parallel()
 
@@ -63,6 +64,7 @@ func TestWriteJSON_FullOutput(t *testing.T) {
 		Commit:    "abc1234",
 		BuildDate: "2026-10-10T12:00:00Z",
 		Dirty:     "false",
+		BuildType: "release",
 	}
 
 	var buf bytes.Buffer
@@ -70,19 +72,20 @@ func TestWriteJSON_FullOutput(t *testing.T) {
 		t.Fatalf("WriteJSON: %v", err)
 	}
 
-	want := `{"version":"v1.2.3","commit":"abc1234","build_date":"2026-10-10T12:00:00Z","dirty":false}` + "\n"
+	want := `{"version":"v1.2.3","commit":"abc1234","buildDate":"2026-10-10T12:00:00Z","dirty":false,"buildType":"release"}` + "\n"
 
 	if got := buf.String(); got != want {
 		t.Errorf("output mismatch:\ngot:  %q\nwant: %q", got, want)
 	}
 }
 
-// TestWriteJSON_FieldNames pins the four field names. The test
+// TestWriteJSON_FieldNames pins the five field names. The test
 // decodes the output into a map and asserts that the keys are
-// exactly the schema's four.
+// exactly the schema's five.
 //
-// This catches a renaming of a field (for example, build_date to
-// buildDate) even if the value is otherwise correct.
+// This catches a renaming of a field (for example, buildDate to
+// build_date, or buildType to build_type) even if the value is
+// otherwise correct.
 func TestWriteJSON_FieldNames(t *testing.T) {
 	t.Parallel()
 
@@ -91,6 +94,7 @@ func TestWriteJSON_FieldNames(t *testing.T) {
 		Commit:    "abc1234",
 		BuildDate: "2026-10-10T12:00:00Z",
 		Dirty:     "true",
+		BuildType: "release",
 	}
 
 	var buf bytes.Buffer
@@ -103,7 +107,7 @@ func TestWriteJSON_FieldNames(t *testing.T) {
 		t.Fatalf("output is not valid JSON: %v\noutput: %s", err, buf.String())
 	}
 
-	want := []string{"version", "commit", "build_date", "dirty"}
+	want := []string{"version", "commit", "buildDate", "dirty", "buildType"}
 	if len(m) != len(want) {
 		t.Errorf("field count: got %d, want %d\noutput: %s",
 			len(m), len(want), buf.String())
@@ -156,11 +160,52 @@ func TestWriteJSON_DirtyIsBoolean(t *testing.T) {
 	}
 }
 
+// TestWriteJSON_BuildTypeIsString pins the type of the `buildType`
+// field and asserts the three defined values round-trip. An
+// unrecognized value in the Info is normalized to "local" by the
+// service's Metadata conversion.
+func TestWriteJSON_BuildTypeIsString(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"release", "release"},
+		{"ci", "ci"},
+		{"local", "local"},
+		{"", "local"},        // empty normalizes to local
+		{"unknown", "local"}, // unrecognized normalizes to local
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run("in="+tc.in, func(t *testing.T) {
+			t.Parallel()
+
+			var buf bytes.Buffer
+			if err := WriteJSON(&buf, Info{BuildType: tc.in}); err != nil {
+				t.Fatalf("WriteJSON: %v", err)
+			}
+
+			var m map[string]any
+			if err := json.Unmarshal(buf.Bytes(), &m); err != nil {
+				t.Fatalf("output is not valid JSON: %v", err)
+			}
+			got, ok := m["buildType"].(string)
+			if !ok {
+				t.Fatalf("field 'buildType' is %T, want string\noutput: %s",
+					m["buildType"], buf.String())
+			}
+			if got != tc.want {
+				t.Errorf("buildType: got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestWriteJSON_IsSingleLine pins the "single line, terminated by
 // \n" contract.
-//
-// The output must contain exactly one \n, at the end. Any other
-// newline would break consumers that read one line per record.
 func TestWriteJSON_IsSingleLine(t *testing.T) {
 	t.Parallel()
 
@@ -169,6 +214,7 @@ func TestWriteJSON_IsSingleLine(t *testing.T) {
 		Commit:    "abc1234",
 		BuildDate: "2026-10-10T12:00:00Z",
 		Dirty:     "false",
+		BuildType: "release",
 	}
 
 	var buf bytes.Buffer
@@ -200,6 +246,7 @@ func TestWriteJSON_AllFieldsPopulated(t *testing.T) {
 		Commit:    "abc1234",
 		BuildDate: "2026-10-10T12:00:00Z",
 		Dirty:     "true",
+		BuildType: "release",
 	}
 
 	var buf bytes.Buffer
@@ -207,32 +254,36 @@ func TestWriteJSON_AllFieldsPopulated(t *testing.T) {
 		t.Fatalf("WriteJSON: %v", err)
 	}
 
-	var got jsonInfo
+	var got map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
 		t.Fatalf("output is not valid JSON: %v", err)
 	}
 
-	if got.Version != info.Version {
-		t.Errorf("version: got %q, want %q", got.Version, info.Version)
+	if got["version"] != "v1.2.3" {
+		t.Errorf("version: got %v, want v1.2.3", got["version"])
 	}
-	if got.Commit != info.Commit {
-		t.Errorf("commit: got %q, want %q", got.Commit, info.Commit)
+	if got["commit"] != "abc1234" {
+		t.Errorf("commit: got %v, want abc1234", got["commit"])
 	}
-	if got.BuildDate != info.BuildDate {
-		t.Errorf("build_date: got %q, want %q", got.BuildDate, info.BuildDate)
+	if got["buildDate"] != "2026-10-10T12:00:00Z" {
+		t.Errorf("buildDate: got %v, want 2026-10-10T12:00:00Z", got["buildDate"])
 	}
-	if !got.Dirty {
-		t.Errorf("dirty: got %v, want true", got.Dirty)
+	if got["dirty"] != true {
+		t.Errorf("dirty: got %v, want true", got["dirty"])
+	}
+	if got["buildType"] != "release" {
+		t.Errorf("buildType: got %v, want release", got["buildType"])
 	}
 }
 
 // TestWriteJSON_AllFieldsEmpty asserts that a zero-value Info
-// produces a valid JSON object with all four keys present and
+// produces a valid JSON object with all five keys present and
 // their zero values.
 //
 // This is the uninstrumented-build case. The keys must be present
 // even when their values are the empty string or false; a consumer
-// that reads `obj.commit` should never see `undefined`.
+// that reads `obj.commit` should never see `undefined`. The
+// buildType field is normalized to "local" for an empty input.
 func TestWriteJSON_AllFieldsEmpty(t *testing.T) {
 	t.Parallel()
 
@@ -241,7 +292,7 @@ func TestWriteJSON_AllFieldsEmpty(t *testing.T) {
 		t.Fatalf("WriteJSON: %v", err)
 	}
 
-	want := `{"version":"","commit":"","build_date":"","dirty":false}` + "\n"
+	want := `{"version":"","commit":"","buildDate":"","dirty":false,"buildType":"local"}` + "\n"
 
 	if got := buf.String(); got != want {
 		t.Errorf("output mismatch:\ngot:  %q\nwant: %q", got, want)
@@ -256,11 +307,6 @@ func TestWriteJSON_AllFieldsEmpty(t *testing.T) {
 // literal "true" in the model renders as JSON `true`. Every other
 // value — including "1", "TRUE", "yes", and the empty string —
 // renders as JSON `false`.
-//
-// This is the negative test for the strict parsing rule. The rule
-// is documented on parseDirty and enforced by WBS 6.1.2. The JSON
-// formatter uses the same rule as the text formatter; the two
-// formats agree on the boolean value.
 func TestWriteJSON_DirtyParsingRuleIsStrict(t *testing.T) {
 	t.Parallel()
 
@@ -289,12 +335,12 @@ func TestWriteJSON_DirtyParsingRuleIsStrict(t *testing.T) {
 				t.Fatalf("WriteJSON: %v", err)
 			}
 
-			var got jsonInfo
+			var got map[string]any
 			if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
 				t.Fatalf("output is not valid JSON: %v", err)
 			}
-			if got.Dirty != tc.want {
-				t.Errorf("Dirty=%q → JSON %v, want %v", tc.raw, got.Dirty, tc.want)
+			if got["dirty"] != tc.want {
+				t.Errorf("Dirty=%q → JSON %v, want %v", tc.raw, got["dirty"], tc.want)
 			}
 		})
 	}
@@ -302,10 +348,6 @@ func TestWriteJSON_DirtyParsingRuleIsStrict(t *testing.T) {
 
 // TestWriteJSON_WriterErrorIsPropagated verifies that WriteJSON
 // returns the writer's error, wrapped.
-//
-// The wrapping is done by WriteJSON itself (fmt.Errorf with %w on
-// the encoder's error). The test asserts that the original error is
-// reachable via errors.Is.
 func TestWriteJSON_WriterErrorIsPropagated(t *testing.T) {
 	t.Parallel()
 
@@ -324,10 +366,6 @@ func TestWriteJSON_WriterErrorIsPropagated(t *testing.T) {
 
 // TestWriteJSON_UnicodeIsPreserved verifies that non-ASCII values
 // round-trip through the encoder.
-//
-// encoding/json escapes some characters by default (notably `<`,
-// `>`, and `&`), but not non-ASCII letters. The test checks that
-// the encoding is valid and that the decoded value is unchanged.
 func TestWriteJSON_UnicodeIsPreserved(t *testing.T) {
 	t.Parallel()
 
@@ -338,18 +376,17 @@ func TestWriteJSON_UnicodeIsPreserved(t *testing.T) {
 		t.Fatalf("WriteJSON: %v", err)
 	}
 
-	var got jsonInfo
+	var got map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
 		t.Fatalf("output is not valid JSON: %v", err)
 	}
-	if got.Version != "1.0.0-α" {
-		t.Errorf("version round-trip: got %q, want %q", got.Version, "1.0.0-α")
+	if got["version"] != "1.0.0-α" {
+		t.Errorf("version round-trip: got %v, want %q", got["version"], "1.0.0-α")
 	}
 }
 
 // TestWriteJSON_QuotesAreEscaped verifies that a value containing
-// a double quote is escaped by encoding/json. The result must be
-// valid JSON.
+// a double quote is escaped by encoding/json.
 func TestWriteJSON_QuotesAreEscaped(t *testing.T) {
 	t.Parallel()
 
@@ -360,19 +397,18 @@ func TestWriteJSON_QuotesAreEscaped(t *testing.T) {
 		t.Fatalf("WriteJSON: %v", err)
 	}
 
-	var got jsonInfo
+	var got map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
 		t.Fatalf("output is not valid JSON: %v\noutput: %s", err, buf.String())
 	}
-	if got.Version != `v1.2.3"quoted"` {
-		t.Errorf("version round-trip: got %q, want %q", got.Version, `v1.2.3"quoted"`)
+	if got["version"] != `v1.2.3"quoted"` {
+		t.Errorf("version round-trip: got %v, want %q", got["version"], `v1.2.3"quoted"`)
 	}
 }
 
 // TestWriteJSON_ControlCharactersAreEscaped verifies that a value
-// containing a newline is escaped by encoding/json. The result must
-// remain a single-line JSON object; an unescaped newline would
-// break the "single line" contract.
+// containing a newline is escaped. The result must remain a
+// single-line JSON object.
 func TestWriteJSON_ControlCharactersAreEscaped(t *testing.T) {
 	t.Parallel()
 
@@ -388,18 +424,17 @@ func TestWriteJSON_ControlCharactersAreEscaped(t *testing.T) {
 		t.Errorf("output contains %d newlines, want 1\noutput: %q", n, out)
 	}
 
-	var got jsonInfo
+	var got map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
 		t.Fatalf("output is not valid JSON: %v", err)
 	}
-	if got.Version != "v1.2.3\nmalicious" {
-		t.Errorf("version round-trip: got %q, want %q", got.Version, "v1.2.3\nmalicious")
+	if got["version"] != "v1.2.3\nmalicious" {
+		t.Errorf("version round-trip: got %v, want %q", got["version"], "v1.2.3\nmalicious")
 	}
 }
 
 // TestWriteJSON_VeryLongValueDoesNotPanic verifies that a very long
-// value does not cause the encoder to panic or truncate. The
-// encoder writes whatever it is given.
+// value does not cause the encoder to panic or truncate.
 func TestWriteJSON_VeryLongValueDoesNotPanic(t *testing.T) {
 	t.Parallel()
 
@@ -411,12 +446,13 @@ func TestWriteJSON_VeryLongValueDoesNotPanic(t *testing.T) {
 		t.Fatalf("WriteJSON: %v", err)
 	}
 
-	var got jsonInfo
+	var got map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
 		t.Fatalf("output is not valid JSON: %v", err)
 	}
-	if got.Version != long {
-		t.Errorf("version length: got %d, want %d", len(got.Version), len(long))
+	v, _ := got["version"].(string)
+	if len(v) != len(long) {
+		t.Errorf("version length: got %d, want %d", len(v), len(long))
 	}
 }
 
@@ -493,8 +529,6 @@ func TestFormatAs_UnknownFormat(t *testing.T) {
 			if !errors.Is(err, ErrUnknownFormat) {
 				t.Errorf("FormatAs(%q) = %v, want ErrUnknownFormat", format, err)
 			}
-			// The buffer must be empty; the dispatcher must not
-			// write anything before failing.
 			if buf.Len() != 0 {
 				t.Errorf("FormatAs(%q) wrote %d bytes before failing: %q",
 					format, buf.Len(), buf.String())
@@ -512,12 +546,37 @@ func TestFormatAs_UnknownFormat(t *testing.T) {
 //
 // The golden files are the long-term record of the JSON schema. A
 // change to the schema requires updating the golden files, opening
-// an ADR, and citing WBS 6.4.2 in the commit message.
+// an ADR, and citing WBS 17.4.1 in the commit message.
 //
 // The JSON format has no runtime-dependent line, so the golden
-// files contain the exact bytes the encoder produces. There is no
-// normalisation step, unlike the text format's golden files (see
-// normaliseRuntimeLines in format_test.go).
+// files contain the exact bytes the encoder produces.
+//
+// # Regenerating the golden files
+//
+// Run with the package-level -update flag:
+//
+//	go test ./internal/app/version/ -run TestWriteJSON_Golden -update
+//
+// The flag causes each subtest to write its actual output to the
+// golden file instead of comparing. Inspect the diff after the
+// command; the files are expected to change only when the schema
+// changed. A change to a golden file without a corresponding change
+// to the encoder, the schema, or the ADR is a defect.
+//
+// # Why the flag is package-level
+//
+// Go registers flags per test binary, not per test function. Every
+// golden test in this package reads the same -update flag (declared
+// in testhelper_test.go). The flag's name and semantics match the
+// ones used in internal/arch and internal/forgeerr.
+//
+// # Why the test is parallel
+//
+// The subtests read the golden files but do not share state with
+// each other. The only write happens under -update, and the test
+// runner serializes writes to distinct files by subtest name; two
+// subtests never write the same file. Marking the test parallel is
+// safe and keeps the suite fast.
 func TestWriteJSON_Golden(t *testing.T) {
 	t.Parallel()
 
@@ -538,6 +597,7 @@ func TestWriteJSON_Golden(t *testing.T) {
 				Commit:    "abc1234",
 				BuildDate: "2026-10-10T12:00:00Z",
 				Dirty:     "false",
+				BuildType: "release",
 			},
 			golden: "testdata/format/full.json.golden",
 		},
@@ -548,6 +608,7 @@ func TestWriteJSON_Golden(t *testing.T) {
 				Commit:    "abc1234",
 				BuildDate: "2026-10-10T12:00:00Z",
 				Dirty:     "true",
+				BuildType: "local",
 			},
 			golden: "testdata/format/dirty.json.golden",
 		},
@@ -564,13 +625,26 @@ func TestWriteJSON_Golden(t *testing.T) {
 			}
 
 			got := buf.String()
+
+			// Under -update, write the actual output to the
+			// golden file and stop. The write is atomic from the
+			// test runner's perspective: each subtest writes a
+			// distinct file, and no other subtest reads the file
+			// it writes.
+			if *update {
+				writeGolden(t, tc.golden, got)
+				return
+			}
+
 			want := readGolden(t, tc.golden)
 
 			if got != want {
 				t.Errorf("golden mismatch for %s:\ngot:  %q\nwant: %q\n"+
-					"if the change is intentional, update the golden file "+
-					"by hand, open an ADR for the schema change, and cite "+
-					"WBS 6.4.2 in the commit message",
+					"if the change is intentional, regenerate the golden "+
+					"file with `go test ./internal/app/version/ "+
+					"-run TestWriteJSON_Golden -update`, open an ADR for "+
+					"the schema change, and cite WBS 17.4.1 in the commit "+
+					"message",
 					tc.golden, got, want)
 			}
 		})

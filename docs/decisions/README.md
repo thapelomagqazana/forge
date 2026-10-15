@@ -36,11 +36,14 @@ This index is auto-generated. Do not edit it manually.
 
 | ID | Title | Date |
 |----|-------|------|
-| [ADR-039](./ADR-039-the-filesystem-api-is-frozen-by-a-decision-table.md) | ADR-039: 'The Filesystem API Is Frozen by a Decision Table' | 2026-10-14 |
-| [ADR-038](./ADR-038-no-silent-overwrite-ever.md) | ADR-038: 'No Silent Overwrite Ever' | 2026-10-14 |
-| [ADR-037](./ADR-037-toctou-is-narrowed-not-closed.md) | ADR-037: 'TOCTOU Is Narrowed, Not Closed' | 2026-10-14 |
-| [ADR-036](./ADR-036-symlink-policy-target-may-be-a-link-contents-may-not.md) | ADR-036: 'Symlink Policy: Target May Be a Link, Contents May Not' | 2026-10-14 |
-| [ADR-035](./ADR-035-two-layer-filesystem-architecture-primitives-and-policy-are-separate-packages.md) | ADR-035: 'Two-Layer Filesystem Architecture: Primitives and Policy Are Separate Packages' | 2026-10-14 |
+| [ADR-042](./ADR-042-release-builds-use-cgo-enabled-0.md) | ADR-042: 'Release Builds Use CGO_ENABLED=0' | 2026-10-15 |
+| [ADR-041](./ADR-041-local-and-release-builds-are-separate-target-families.md) | ADR-041: 'Local and Release Builds Are Separate Target Families' | 2026-10-15 |
+| [ADR-040](./ADR-040-forge-is-distributed-as-a-binary-project.md) | ADR-040: 'Forge Is Distributed as a Binary Project' | 2026-10-15 |
+| [ADR-039](./ADR-039-the-filesystem-api-is-frozen-by-a-decision-table.md) | ADR-039: The Filesystem API Is Frozen by a Decision Table | 2026-10-14 |
+| [ADR-038](./ADR-038-no-silent-overwrite-ever.md) | ADR-038: No Silent Overwrite Ever | 2026-10-14 |
+| [ADR-037](./ADR-037-toctou-is-narrowed-not-closed.md) | ADR-037: TOCTOU Is Narrowed, Not Closed | 2026-10-14 |
+| [ADR-036](./ADR-036-symlink-policy-target-may-be-a-link-contents-may-not.md) | ADR-036: Symlink Policy: Target May Be a Link, Contents May Not | 2026-10-14 |
+| [ADR-035](./ADR-035-two-layer-filesystem-architecture-primitives-and-policy-are-separate-packages.md) | ADR-035: Two-Layer Filesystem Architecture: Primitives and Policy Are Separate Packages | 2026-10-14 |
 | [ADR-010](./ADR-010-forge-config-interaction-with-the-global-flags.md) | ADR-010: `forge config` Interaction with the Global Flags | 2026-10-12 |
 | [ADR-009](./ADR-009-forge-config-output-format.md) | ADR-009: `forge config` Output Format | 2026-10-12 |
 | [ADR-008](./ADR-008-forge-config-command-scope.md) | ADR-008: `forge config` Command Scope | 2026-10-12 |

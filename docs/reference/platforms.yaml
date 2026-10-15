@@ -1,0 +1,136 @@
+# Forge Supported Platform Matrix — machine-readable form.
+#
+# This file is the source of truth for build scripts, CI matrix generation,
+# and release tooling. It is validated against schemas/platforms.schema.json
+# in CI by `task platform:verify`.
+#
+# Schema version: 1
+# Matrix version: 1.0.0
+# Additive policy: see docs/reference/supported-platforms.md.
+#
+# Invariants enforced by internal/platform.Platform.Validate:
+#   - channels is sorted ascending and has no duplicates
+#   - signing_host_requirements is sorted ascending and has no duplicates
+#   - build_tags (in policy) is sorted ascending and has no duplicates
+# If you edit this file by hand, run `task platform:fmt` before committing.
+
+schema_version: 1
+matrix_version: "1.0.0"
+applies_to: ">=1.0.0"
+
+# Global policy applied to every release build.
+policy:
+  cgo_enabled: 0
+  build_tags: []
+  ldflags:
+    - "-s"
+    - "-w"
+    - "-X github.com/forge-dev/forge/internal/version.version={{.Version}}"
+    - "-X github.com/forge-dev/forge/internal/version.commit={{.Commit}}"
+    - "-X github.com/forge-dev/forge/internal/version.buildDate={{.Date}}"
+    - "-X github.com/forge-dev/forge/internal/version.dirty={{.Dirty}}"
+
+# The frozen matrix. Order is stable and used by CI matrix generation.
+platforms:
+  - name: linux-amd64
+    goos: linux
+    goarch: amd64
+    tier: 1
+    min_os: "glibc 2.28+"
+    libc: glibc
+    static: true
+    signing: none
+    channels: [apt, direct, docker]
+    docker_platform: "linux/amd64"
+    ci_runner: "ubuntu-22.04"
+    notes: "Primary Linux target. Built on the oldest supported glibc."
+
+  - name: linux-arm64
+    goos: linux
+    goarch: arm64
+    tier: 1
+    min_os: "glibc 2.28+"
+    libc: glibc
+    static: true
+    signing: none
+    channels: [apt, direct, docker]
+    docker_platform: "linux/arm64"
+    ci_runner: "ubuntu-22.04-arm"
+    notes: "ARM64 server and AWS Graviton."
+
+  - name: darwin-amd64
+    goos: darwin
+    goarch: amd64
+    tier: 2
+    min_os: "macOS 12"
+    libc: system
+    static: true
+    signing: notarization
+    channels: [direct, homebrew]
+    ci_runner: "macos-13"
+    signing_host_requirements:
+      - "Developer ID Application certificate"
+      - "Xcode CLI tools (xcode-select --install)"
+      - "notarytool credentials in keychain"
+    notes: "Intel Macs. Tier 2 because Apple has deprecated Intel."
+
+  - name: darwin-arm64
+    goos: darwin
+    goarch: arm64
+    tier: 1
+    min_os: "macOS 12"
+    libc: system
+    static: true
+    signing: notarization
+    channels: [direct, homebrew]
+    ci_runner: "macos-14"
+    signing_host_requirements:
+      - "Developer ID Application certificate"
+      - "Xcode CLI tools (xcode-select --install)"
+      - "notarytool credentials in keychain"
+    notes: "Apple Silicon. Primary macOS target."
+
+  - name: windows-amd64
+    goos: windows
+    goarch: amd64
+    tier: 1
+    min_os: "Windows 10 21H2"
+    libc: system
+    static: true
+    signing: authenticode
+    channels: [direct, scoop, winget]
+    ci_runner: "windows-2022"
+    signing_host_requirements:
+      - "Code-signing certificate in CurrentUser\\My store"
+      - "signtool.exe (Windows SDK)"
+    notes: "Primary Windows target."
+
+  - name: windows-arm64
+    goos: windows
+    goarch: arm64
+    tier: 2
+    min_os: "Windows 11"
+    libc: system
+    static: true
+    signing: authenticode
+    channels: [direct, winget]
+    ci_runner: "windows-2022"
+    signing_host_requirements:
+      - "Code-signing certificate in CurrentUser\\My store"
+      - "signtool.exe (Windows SDK)"
+    notes: "Windows on ARM. Cross-compiled from windows-2022."
+
+# Channels are declared once and referenced by name above.
+channels:
+  direct:
+    description: "Direct download from https://forge.dev/download"
+  homebrew:
+    description: "Homebrew tap: forge/homebrew-tap"
+  scoop:
+    description: "Scoop bucket: forge/scoop-bucket"
+  winget:
+    description: "winget-pkgs: forge.forge"
+  apt:
+    description: "APT repo: https://packages.forge.dev"
+  docker:
+    description: "ghcr.io/forge/forge"

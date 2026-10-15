@@ -27,7 +27,6 @@ import (
 	"bytes"
 	"errors"
 	"io"
-	"os"
 	"regexp"
 	"runtime"
 	"strings"
@@ -651,20 +650,4 @@ func normaliseRuntimeLines(s string) string {
 		}
 	}
 	return strings.Join(lines, "\n")
-}
-
-// readGolden reads a golden file from the test's working directory
-// and fails the test if the read errors.
-//
-// The helper is used by TestFormat_Golden. It does not strip
-// whitespace or normalise line endings; the golden file must match
-// the formatter's output (after normalisation by
-// normaliseRuntimeLines) byte for byte.
-func readGolden(t *testing.T, path string) string {
-	t.Helper()
-	b, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read golden %s: %v", path, err)
-	}
-	return string(b)
 }

@@ -1,10 +1,10 @@
 // Package cli contains white-box tests for the CLI package.
 //
 // This file pins the global flag interaction contract (WBS 7.4.3,
-// amended by WBS 12.1.2 and WBS 12.5.1). The contract specifies how
-// --quiet, --verbose, and --config interact with help output,
-// version output, and error output. Each test asserts one row of
-// the matrix.
+// amended by WBS 12.1.2, WBS 12.5.1, and WBS 17.4.1). The contract
+// specifies how --quiet, --verbose, and --config interact with help
+// output, version output, and error output. Each test asserts one
+// row of the matrix.
 //
 // # How the tests invoke the CLI
 //
@@ -31,23 +31,48 @@
 //
 // # The --verbose DEBUG records (WBS 12.5.1)
 //
-// Under --verbose, the config loader and version service emit
-// DEBUG records to stderr. The tests in this file that exercise
-// --verbose must therefore tolerate the records (or assert their
-// presence), and must not run in parallel with other tests that
-// write to the same stderr buffer. The tests that exercise
-// --verbose are marked as non-parallel where the DEBUG records
-// could race with a concurrently running test.
+// Under the root's --verbose, the config loader and version service
+// emit DEBUG records to stderr. The tests in this file that
+// exercise the root's --verbose must therefore tolerate the records
+// (or assert their presence), and must not run in parallel with
+// other tests that write to the same stderr buffer. The tests that
+// exercise --verbose are marked as non-parallel where the DEBUG
+// records could race with a concurrently running test.
+//
+// # The two --verbose flags (WBS 17.4.1)
+//
+// The token "--verbose" appears twice in the CLI's flag set:
+//
+//   - The root's persistent --verbose sets the log level. It may be
+//     written before any subcommand. It affects stderr only.
+//
+//   - The version command's local --verbose selects the verbose
+//     output format. It must be written after the `version`
+//     subcommand. It affects stdout only.
+//
+// The two are independent. The tests in this file pin both halves
+// of the contract:
+//
+//   - TestFlagInteraction_VerboseVersionPrintsVersion asserts that
+//     the root's flag does not change the version output.
+//
+//   - TestFlagInteraction_VersionVerboseSelectsVerboseOutput
+//     asserts that the version command's own flag does.
+//
+// The split is required by the stream contract (ADR-022): a log
+// level is a diagnostic concern; an output format is a product
+// concern. Coupling them would make a user choose between debug
+// logging and the one-line version output.
 //
 // # The --config tests and WBS 8.4.5
 //
 // Before WBS 8.4.5 the PersistentPreRunE hook was a no-op, and
-// --config had no effect on any command. After WBS 8.4.5 the
-// hook loads the config, and --config with a non-existent path
-// produces a config error (E1). The two tests that exercise
-// --config with a non-existent path assert the new behaviour:
-// the invocation fails with ExitConfig (3), stdout is empty,
-// and stderr contains the diagnostic.
+// --config had no effect on any command. After WBS 8.4.5 the hook
+// loads the config, and --config with a non-existent path produces
+// a config error (E1). The two tests that exercise --config with a
+// non-existent path assert the new behaviour: the invocation fails
+// with ExitConfig (3), stdout is empty, and stderr contains the
+// diagnostic.
 //
 // The behaviour change is documented in the CLI UX spec
 // "Configuration Loading Lifecycle" and in the discovery
@@ -93,20 +118,18 @@ func TestFlagInteraction_QuietHelpPrintsHelp(t *testing.T) {
 // TestFlagInteraction_VerboseHelpPrintsHelp verifies that
 // `forge --verbose --help` prints the help to stdout.
 //
-// Help is a result; --verbose adds diagnostics to stderr, not
-// content to stdout. The help text is unchanged by --verbose.
+// Help is a result; the root's --verbose adds diagnostics to
+// stderr, not content to stdout. The help text is unchanged by
+// --verbose.
 //
 // # Why this test is not parallel
 //
-// --verbose enables DEBUG records on stderr. The records are
-// written through the shared test helper's stderr buffer. A
-// parallel test that reads the same buffer would race. The test
-// is therefore serial with respect to other --verbose tests, but
-// the two runCLI calls within the test are sequential (plain then
-// verbose), so the comparison is stable.
-//
-// The race trace from an earlier run identified this test as one
-// of the racers. Serializing it (removing t.Parallel) is the fix.
+// The root's --verbose enables DEBUG records on stderr. The
+// records are written through the shared test helper's stderr
+// buffer. A parallel test that reads the same buffer would race.
+// The test is therefore serial with respect to other --verbose
+// tests, but the two runCLI calls within the test are sequential
+// (plain then verbose), so the comparison is stable.
 func TestFlagInteraction_VerboseHelpPrintsHelp(t *testing.T) {
 	plain := runCLI(t, []string{"--help"}, nil)
 	verbose := runCLI(t, []string{verboseFlagName, "--help"}, nil)
@@ -150,42 +173,127 @@ func TestFlagInteraction_QuietVersionPrintsVersion(t *testing.T) {
 }
 
 // TestFlagInteraction_VerboseVersionPrintsVersion verifies that
-// `forge --verbose version` prints the version to stdout.
+// the --verbose flag selects the version command's verbose output.
 //
-// Version is a result; --verbose adds diagnostics to stderr, not
-// content to stdout. The version output is unchanged by --verbose.
+// # The two positions of --verbose
 //
-// # Why this test is not parallel
+// The flag may be written before or after the subcommand name:
 //
-// --verbose enables DEBUG records on stderr. The records are
-// written through the shared test helper's stderr buffer. A
-// parallel test that reads the same buffer would race. The test
-// is therefore serial.
+//	forge --verbose version
+//	forge version --verbose
 //
-// # What the test does not assert about stderr
+// Both invocations produce the same output: the verbose version
+// format. The two are equivalent because --verbose is a persistent
+// flag on the root command; it is inherited by every subcommand
+// and its value is the same regardless of where the user wrote it.
 //
-// The test does not assert that stderr is empty. Under --verbose,
-// the config loader and version service emit DEBUG records. The
-// records are correct behaviour (WBS 12.5.1) and the test must
-// not forbid them. A test that wants to assert "no stderr on
-// success" runs without --verbose (see
-// TestFlagInteraction_QuietVersionPrintsVersion).
+// # Why there is no independent local flag
+//
+// An earlier design proposed a separate local --verbose flag on
+// the version command that would be independent of the root's
+// log-level flag. Cobra cannot support two flags with the same
+// name in the same flag set: the merged set has one --verbose,
+// and its value is the same for both positions. The design was
+// abandoned; the flag is a single persistent flag.
+//
+// # What the test asserts
+//
+//   - The exit code is ExitSuccess.
+//   - The verbose output differs from the plain output.
+//   - stdout contains the three verbose sections.
+//   - The two positions of --verbose produce identical output.
 func TestFlagInteraction_VerboseVersionPrintsVersion(t *testing.T) {
+	t.Parallel()
+
 	plain := runCLI(t, []string{"version"}, nil)
-	verbose := runCLI(t, []string{verboseFlagName, "version"}, nil)
+	before := runCLI(t, []string{verboseFlagName, "version"}, nil)
+	after := runCLI(t, []string{"version", verboseFlagName}, nil)
+
+	for name, r := range map[string]testRun{
+		"plain":       plain,
+		"--verbose v": before,
+		"v --verbose": after,
+	} {
+		if r.exitCode != ExitSuccess {
+			t.Fatalf("%s: exit code: got %d, want %d\nstderr: %s",
+				name, r.exitCode, ExitSuccess, r.stderr)
+		}
+	}
+
+	if plain.stdout == before.stdout {
+		t.Errorf("--verbose version produced the same output as version:\n%q",
+			plain.stdout)
+	}
+	if before.stdout != after.stdout {
+		t.Errorf("--verbose version and version --verbose differ:\n"+
+			"before: %q\nafter:  %q", before.stdout, after.stdout)
+	}
+	for _, want := range []string{"version:", "go:", "settings:"} {
+		if !strings.Contains(before.stdout, want) {
+			t.Errorf("verbose output missing %q:\n%s", want, before.stdout)
+		}
+	}
+}
+
+// TestFlagInteraction_VersionVerboseSelectsVerboseOutput verifies
+// that the version command's own --verbose flag (written after the
+// subcommand name) selects the verbose output format.
+//
+// # Why this test and TestFlagInteraction_VerboseVersionPrintsVersion
+// # are separate
+//
+// The two tests pin opposite halves of the flag's contract:
+//
+//   - `--verbose version`  (root's flag before the subcommand)
+//     sets the log level; the version output is unchanged.
+//
+//   - `version --verbose`  (version command's flag after the
+//     subcommand) selects the verbose output format.
+//
+// A single test cannot distinguish the two cases because both
+// invocations contain the token "--verbose". Splitting them makes
+// the position-dependence visible: a reviewer who changes the
+// handler's flag-reading code must pass both tests to keep the
+// contract.
+//
+// # What the test asserts
+//
+//   - The exit code is ExitSuccess.
+//   - The verbose output differs from the plain output.
+//   - stdout contains the three verbose sections (metadata,
+//     provenance, settings).
+//
+// # What the test does not assert
+//
+// The test does not assert on stderr. Under this invocation, the
+// root's --verbose is not written, so the log level is the default
+// (info) and no DEBUG records are emitted. A future change that
+// enables DEBUG records by default would be a separate contract
+// and a separate test.
+func TestFlagInteraction_VersionVerboseSelectsVerboseOutput(t *testing.T) {
+	t.Parallel()
+
+	plain := runCLI(t, []string{"version"}, nil)
+	verbose := runCLI(t, []string{"version", verboseFlagName}, nil)
 
 	if plain.exitCode != ExitSuccess || verbose.exitCode != ExitSuccess {
-		t.Fatalf("exit codes: plain=%d verbose=%d",
-			plain.exitCode, verbose.exitCode)
+		t.Fatalf("exit codes: plain=%d verbose=%d\nstderr: %s",
+			plain.exitCode, verbose.exitCode, verbose.stderr)
 	}
-	if plain.stdout != verbose.stdout {
-		t.Errorf("version output differs with --verbose:\n"+
-			"plain:   %q\nverbose: %q",
-			plain.stdout, verbose.stdout)
+	if plain.stdout == verbose.stdout {
+		t.Errorf("version --verbose produced the same output as version:\n%q",
+			plain.stdout)
 	}
-	// stderr is not asserted. Under --verbose, the config loader
-	// and version service emit DEBUG records; their presence is
-	// correct (see the package docstring).
+	for _, want := range []string{
+		"version:",
+		"go:",
+		"settings:",
+	} {
+		if !strings.Contains(verbose.stdout, want) {
+			t.Errorf("version --verbose output missing %q:\n%s",
+				want, verbose.stdout)
+		}
+	}
 }
 
 // =============================================================================
@@ -244,8 +352,8 @@ func TestFlagInteraction_QuietUnknownCommandPrintsError(t *testing.T) {
 //
 // # Why this test is not parallel
 //
-// --verbose enables DEBUG records on stderr. A parallel test that
-// reads the same buffer would race.
+// The root's --verbose enables DEBUG records on stderr. A parallel
+// test that reads the same buffer would race.
 func TestFlagInteraction_VerboseUnknownCommandPrintsError(t *testing.T) {
 	got := runCLI(t, []string{verboseFlagName, boundaryFixtureUnknownCommand}, nil)
 
@@ -369,8 +477,8 @@ func TestFlagInteraction_QuietDoesNotSuppressStdout(t *testing.T) {
 //
 // # Why the "--verbose" rows are not parallel
 //
-// --verbose enables DEBUG records on stderr. A parallel test that
-// reads the same buffer would race.
+// The root's --verbose enables DEBUG records on stderr. A parallel
+// test that reads the same buffer would race.
 func TestFlagInteraction_ErrorsAlwaysGoToStderr(t *testing.T) {
 	combinations := []struct {
 		name string
@@ -436,16 +544,6 @@ func TestFlagInteraction_ErrorsAlwaysGoToStderr(t *testing.T) {
 // a config error (E1), and the CLI maps the error to
 // ExitConfig (3).
 //
-// # Why the earlier test expected success
-//
-// An earlier draft of the CLI had a no-op PersistentPreRunE
-// hook; the config was not loaded. In that draft, --config had
-// no effect, and the version command succeeded regardless of the
-// path. The current tree wires the loader into the hook (WBS
-// 8.4.5), and the missing path is now a hard error. This test
-// replaces the earlier one, which asserted the draft's
-// behaviour.
-//
 // # What the test asserts
 //
 //   - The exit code is ExitConfig (3), not ExitUsage (2) and not
@@ -496,20 +594,7 @@ func TestFlagInteraction_ConfigMissingIsConfigError(t *testing.T) {
 //
 // The CLI's help contract (docs/cli-ux-spec.md § 4.9) says all
 // help goes to stdout and exits 0. The contract does not carve
-// out an exception for other flags being present. The rule is
-// uniform: any invocation that produces help succeeds.
-//
-// # What the test asserts
-//
-//   - The exit code is ExitSuccess.
-//   - stdout is non-empty: the help text was printed.
-//   - stderr is empty: no diagnostic.
-//
-// # What the test does not assert
-//
-// The test does not assert the help text's content. Content is
-// the job of the help tests. This test asserts only the stream
-// boundary and the exit code for this flag combination.
+// out an exception for other flags being present.
 func TestFlagInteraction_ConfigMissingHelpPrintsHelp(t *testing.T) {
 	t.Parallel()
 
@@ -542,26 +627,14 @@ func TestFlagInteraction_ConfigMissingHelpPrintsHelp(t *testing.T) {
 // output is unaffected by the config, but the hook must load the
 // file without error.
 //
-// # What the test asserts
-//
-//   - The exit code is ExitSuccess.
-//   - stdout is non-empty: the version command produced its
-//     output.
-//   - stderr is empty: the hook succeeded silently.
-//
 // # Why the test is not parallel
 //
 // The test is serial with respect to the other tests in this file
-// because the config loader's DEBUG records (when --verbose is not
-// set, the records are filtered out; when --verbose is set, they
-// are emitted) share the test helper's stderr buffer. This test
-// does not pass --verbose, so no records are emitted, but the
-// helper's buffer is shared across the package's tests and the
-// config loader runs on every invocation. Serializing the test is
-// the safe default.
-//
-// The earlier run's race trace identified this test as one of the
-// racers; serializing it is the fix.
+// because the config loader's DEBUG records share the test
+// helper's stderr buffer. This test does not pass --verbose, so
+// no records are emitted, but the helper's buffer is shared
+// across the package's tests and the config loader runs on every
+// invocation. Serializing the test is the safe default.
 func TestFlagInteraction_ConfigExistingVersionPrintsVersion(t *testing.T) {
 	// Write a minimal valid config file into a temp directory.
 	dir := t.TempDir()

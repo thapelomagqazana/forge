@@ -25,9 +25,8 @@
 // Those are tested by the white-box tests in root_test.go,
 // execute_test.go, version_test.go, deps_test.go, registry_test.go,
 // contract_test.go, validate_test.go, flags_test.go,
-// exitcodes_test.go, exitcodes_semantics_test.go,
-// exitcodes_compat_test.go, and mapping_test.go, which live in
-// package cli (not cli_test).
+// exitcodes_test.go, exitcodes_compat_test.go, and mapping_test.go,
+// which live in package cli (not cli_test).
 //
 // # Why structural tests
 //
@@ -52,6 +51,20 @@
 // Without structural tests, these constraints decay silently. With
 // them, any violation fails CI immediately and forces a deliberate
 // decision.
+//
+// # Why the Cobra-import tests parse imports, not substrings
+//
+// The two tests that enforce the Cobra package boundary
+// (TestRootFileImportsCobra and
+// TestCobraImportedOnlyInCliPackage) parse each file's import
+// declarations with go/parser and inspect the import paths.
+//
+// An earlier version scanned each file for the literal string
+// `"github.com/spf13/cobra"`. The substring scan produced a false
+// positive on a doc comment that named the import path in prose
+// (for example, a package docstring that explains what the package
+// does *not* import). Parsing the imports distinguishes "the code
+// imports Cobra" from "a comment mentions Cobra".
 package cli_test
 
 import (
@@ -299,9 +312,43 @@ func TestNoOrphanedFiles(t *testing.T) {
 // Import discipline
 // =============================================================================
 
-// cobraImportPath is the canonical import path for Cobra. Used by
-// multiple tests below.
-const cobraImportPath = `"github.com/spf13/cobra"`
+// cobraImportPath is the canonical import path for Cobra. Used by the
+// import tests below.
+//
+// The constant is the *unquoted* import path. The earlier version of
+// this file held the quoted form (`"github.com/spf13/cobra"`) and
+// used strings.Contains over the file's bytes; that version produced
+// a false positive on a doc comment that named the import path. The
+// current tests compare the constant to the parsed import path, so
+// the unquoted form is the natural one.
+const cobraImportPath = "github.com/spf13/cobra"
+
+// fileImports reports whether the Go source in data imports the
+// given path.
+//
+// It parses the file's import declarations with go/parser in
+// ImportsOnly mode and compares each import path to the argument. A
+// doc comment or a string literal that mentions the path does not
+// count.
+//
+// The helper returns (false, nil) for a file that parses but does
+// not import the path. It returns (false, err) for a file that does
+// not parse; the caller decides whether the parse failure is fatal.
+func fileImports(path string, data []byte, importPath string) (bool, error) {
+	fset := token.NewFileSet()
+	parsed, err := parser.ParseFile(fset, path, data, parser.ImportsOnly)
+	if err != nil {
+		return false, err
+	}
+	for _, imp := range parsed.Imports {
+		// imp.Path.Value includes the surrounding quotes; strip them.
+		p := strings.Trim(imp.Path.Value, `"`)
+		if p == importPath {
+			return true, nil
+		}
+	}
+	return false, nil
+}
 
 // TestRootFileImportsCobra verifies that root.go imports Cobra. This
 // is the positive half of the AC6 requirement from WBS 2.4.1: Cobra
@@ -311,14 +358,30 @@ const cobraImportPath = `"github.com/spf13/cobra"`
 // that constructs the root command. The version handler also imports
 // Cobra (see version.go), which is expected; the test asserts only
 // that root.go is among the importers, not that it is the only one.
+//
+// # Why the test parses imports
+//
+// An earlier version scanned root.go for the literal string
+// `"github.com/spf13/cobra"`. The substring would also match a doc
+// comment that named the path. The current version parses root.go's
+// import declarations and compares each import path; a comment does
+// not satisfy the assertion.
 func TestRootFileImportsCobra(t *testing.T) {
 	t.Parallel()
 
-	content := readFile(t, "root.go")
+	dir := packageDir(t)
+	path := filepath.Join(dir, "root.go")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read root.go: %v", err)
+	}
 
-	if !strings.Contains(content, cobraImportPath) {
-		t.Fatalf("root.go does not import Cobra; expected to find %s",
-			cobraImportPath)
+	ok, err := fileImports(path, data, cobraImportPath)
+	if err != nil {
+		t.Fatalf("parse root.go: %v", err)
+	}
+	if !ok {
+		t.Fatalf("root.go does not import %s", cobraImportPath)
 	}
 }
 
@@ -349,6 +412,19 @@ func TestRootFileImportsCobra(t *testing.T) {
 // the CLI framework, and a future replacement of Cobra would touch
 // every service. The rule exists to keep the CLI framework at the
 // CLI layer.
+//
+// # Why the scan parses imports, not substrings
+//
+// An earlier version scanned each file for the literal string
+// `"github.com/spf13/cobra"`. The substring appears in a doc comment
+// that names the import (for example, a package docstring that
+// explains what the package does *not* import). The substring scan
+// produced a false positive: the file did not import Cobra, but the
+// substring matched the comment.
+//
+// The current version parses each file's import declarations with
+// go/parser and inspects only the import paths. A comment or a
+// string literal that names the path does not trigger the failure.
 func TestCobraImportedOnlyInCliPackage(t *testing.T) {
 	t.Parallel()
 
@@ -382,11 +458,19 @@ func TestCobraImportedOnlyInCliPackage(t *testing.T) {
 		if strings.HasPrefix(rel, allowedPrefix) {
 			return nil
 		}
+
 		data, readErr := os.ReadFile(path)
 		if readErr != nil {
 			return nil
 		}
-		if strings.Contains(string(data), cobraImportPath) {
+		ok, parseErr := fileImports(path, data, cobraImportPath)
+		if parseErr != nil {
+			// A file that does not parse is a separate defect; the
+			// compiler will report it. Skip it here so the walk can
+			// report every offender at once.
+			return nil
+		}
+		if ok {
 			offenders = append(offenders, rel)
 		}
 		return nil
@@ -1346,6 +1430,20 @@ var singleImportPattern = regexp.MustCompile(`(?m)^import\s+"([^"]+)"`)
 // Both block imports (`import (...)`) and single-line imports
 // (`import "path"`) are handled. The function returns the raw import
 // paths without quotes.
+//
+// # Why a regex, not go/parser
+//
+// The callers in this file pass content read with readFile; the
+// helper is used by the TestStdlibOnlyFor* tests, which need the raw
+// import paths and do not benefit from the go/parser AST. A regex is
+// sufficient for the files in this package: they do not use
+// build-tag-guarded imports with unusual syntax.
+//
+// The Cobra-import tests use fileImports, which parses the file with
+// go/parser. The two helpers exist for different needs: parseImportPaths
+// returns every import path in the file (for the "stdlib only" checks);
+// fileImports answers "does this file import X?" (for the boundary
+// checks).
 func parseImportPaths(t *testing.T, content string) []string {
 	t.Helper()
 

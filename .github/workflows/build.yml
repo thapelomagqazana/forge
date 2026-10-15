@@ -1,0 +1,206 @@
+# Reusable build workflow.
+#
+# Called by release.yml (every v* tag) and by any future caller that
+# needs a cross-platform build (nightly scheduler, manual
+# workflow_dispatch, pre-release smoke test).
+#
+# It builds the Tier 1 platforms declared in
+# docs/reference/platforms.yaml, embeds the version metadata via
+# -ldflags, packages each platform's archive, and uploads it as a
+# workflow artifact. It does NOT publish, sign, or tag.
+#
+# Outputs:
+#   hashes — the base64-encoded `sha256sum forge-*` over every archive.
+#            The release workflow's provenance job consumes it as
+#            slsa-github-generator's `base64-subjects`.
+#
+# Permissions are declared on the workflow, not inherited from the
+# caller. A caller cannot widen them.
+name: build
+
+on:
+  workflow_call:
+    inputs:
+      channel:
+        description: "Release channel: stable | prerelease | nightly"
+        required: true
+        type: string
+      version:
+        description: "The version string to embed (e.g. v1.4.2)"
+        required: true
+        type: string
+    outputs:
+      hashes:
+        description: "Base64-encoded sha256sum over every archive"
+        value: ${{ jobs.hashes.outputs.value }}
+
+permissions:
+  contents: read
+
+jobs:
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # matrix
+  #
+  # Generate the build matrix from platforms.yaml. This is a separate
+  # job so the build job's matrix can be populated from a JSON string
+  # produced by a command, which GH Actions does not support inline.
+  # ─────────────────────────────────────────────────────────────────────────
+  matrix:
+    name: Generate build matrix
+    runs-on: ubuntu-22.04
+    outputs:
+      include: ${{ steps.gen.outputs.include }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: false
+      - id: gen
+        name: Read platforms.yaml
+        run: |
+          set -euo pipefail
+          out=$(go run ./cmd/forge-internal-platform \
+                  --format=gha-matrix --tier 1)
+          echo "include=$(echo "$out" | tr -d '\n')" >> "$GITHUB_OUTPUT"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # build
+  #
+  # Cross-compile each platform. The job runs on ubuntu-22.04 for
+  # every platform: Go cross-compiles cleanly with CGO_ENABLED=0, and
+  # the Tier 1 platforms are all static builds.
+  #
+  # Each matrix entry produces one archive and uploads it as a
+  # workflow artifact named forge-<goos>-<goarch>. The archive's name
+  # does not carry the version; the version is embedded in the binary
+  # and appears in the release's URL path.
+  # ─────────────────────────────────────────────────────────────────────────
+  build:
+    name: Build ${{ matrix.name }}
+    needs: matrix
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.matrix.outputs.include) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0    # required for git describe
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: true
+
+      - name: Read the module path
+        id: module
+        run: |
+          set -euo pipefail
+          echo "path=$(go list -m)" >> "$GITHUB_OUTPUT"
+
+      - name: Compute build metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse --short HEAD)"        >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+          VERSION: ${{ inputs.version }}
+          COMMIT: ${{ steps.meta.outputs.commit }}
+          BUILD_DATE: ${{ steps.meta.outputs.build_date }}
+          MODULE: ${{ steps.module.outputs.path }}
+        run: |
+          set -euo pipefail
+          suffix=""
+          if [ "$GOOS" = "windows" ]; then suffix=".exe"; fi
+          mkdir -p dist
+          go build \
+            -trimpath \
+            -ldflags "-s -w \
+              -X ${MODULE}/internal/version.Version=${VERSION} \
+              -X ${MODULE}/internal/version.Commit=${COMMIT} \
+              -X ${MODULE}/internal/version.BuildDate=${BUILD_DATE} \
+              -X ${MODULE}/internal/version.Dirty=false" \
+            -o "dist/forge${suffix}" \
+            ./cmd/forge
+
+      - name: Smoke test the binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -euo pipefail
+          if [ "$GOOS" != "linux" ] || [ "$GOARCH" != "$(go env GOARCH)" ]; then
+            echo "Skipping smoke test (cross-compiled)"
+            exit 0
+          fi
+          ./dist/forge version --format=json
+          echo "Smoke test passed"
+
+      - name: Package
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -euo pipefail
+          # The archive's name does not carry the version. The
+          # convention is frozen by internal/release/release.go's
+          # ArchiveName and by docs/reference/verifying-releases.md.
+          name="forge-${GOOS}-${GOARCH}"
+          case "$GOOS" in
+            windows)
+              (cd dist && zip "${name}.zip" "forge.exe")
+              rm -f dist/forge.exe
+              ;;
+            *)
+              tar -C dist -czf "${name}.tar.gz" "forge"
+              rm -f dist/forge
+              ;;
+          esac
+          ls -la dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: forge-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/forge-*
+          if-no-files-found: error
+          retention-days: 14
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # hashes
+  #
+  # Aggregate the matrix's archives into a single base64-encoded
+  # `sha256sum forge-*` value. The release workflow's provenance job
+  # consumes it as slsa-github-generator's `base64-subjects`.
+  #
+  # The job is separate from the build job because a matrix job's
+  # `outputs:` is per-matrix-entry; the last entry to finish wins. The
+  # aggregator downloads every artifact and computes the union.
+  # ─────────────────────────────────────────────────────────────────────────
+  hashes:
+    name: Compute subject hashes
+    needs: build
+    runs-on: ubuntu-22.04
+    outputs:
+      value: ${{ steps.hash.outputs.value }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - id: hash
+        name: Compute the union of every archive's SHA-256
+        run: |
+          set -euo pipefail
+          cd dist
+          value=$(sha256sum forge-* | base64 -w0)
+          echo "value=$value" >> "$GITHUB_OUTPUT"
+          echo "Aggregated $(find . -type f | wc -l) file(s)"

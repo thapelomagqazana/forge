@@ -1,0 +1,302 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/thapelomagqazana/forge/schemas/version-metadata.schema.json",
+  "title": "Forge version and release metadata",
+  "description": "The machine-readable versioning and release-channel policy. Validated in CI by `task version:verify`. This schema is distinct from schemas/version.schema.json, which validates the output of `forge version --format=json`. See docs/reference/versioning.md and docs/reference/release-channels.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "metadata_version",
+    "applies_to",
+    "embedding",
+    "json_output",
+    "semver",
+    "prerelease_identifiers",
+    "precedence",
+    "channels",
+    "tag_routing"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Schema version. Bumped only on incompatible schema changes."
+    },
+    "metadata_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Semantic version of the metadata contents. Bumped on every additive change."
+    },
+    "applies_to": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Forge version range this metadata applies to (semver range)."
+    },
+
+    "embedding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["variables"],
+      "properties": {
+        "variables": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "description": "The four variables injected at link time. Order is the field order of forge version --format=json and is part of the contract.",
+          "items": { "$ref": "#/$defs/embeddingVar" }
+        }
+      }
+    },
+
+    "json_output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["field_order", "example", "html_escaping"],
+      "properties": {
+        "field_order": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "The order of fields in the JSON object. Observable and part of the contract."
+        },
+        "example": {
+          "type": "string",
+          "minLength": 1,
+          "description": "A single-line example of the JSON output."
+        },
+        "html_escaping": {
+          "type": "boolean",
+          "const": false,
+          "description": "MUST be false. <, >, and & survive verbatim."
+        }
+      }
+    },
+
+    "semver": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "grammar",
+        "v_prefix",
+        "build_metadata_in_tags",
+        "major_breaks",
+        "minor_adds",
+        "patch_fixes",
+        "tie_break",
+        "pre_1_0",
+        "decision_table"
+      ],
+      "properties": {
+        "grammar": { "type": "string", "minLength": 1 },
+        "v_prefix": { "type": "string", "enum": ["mandatory", "optional", "forbidden"] },
+        "build_metadata_in_tags": { "type": "string", "enum": ["forbidden", "allowed", "ignored"] },
+
+        "major_breaks":   { "$ref": "#/$defs/segmentRule" },
+        "minor_adds":     { "$ref": "#/$defs/segmentRule" },
+        "patch_fixes":    { "$ref": "#/$defs/segmentRule" },
+
+        "tie_break": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["rule", "rationale"],
+          "properties": {
+            "rule":      { "type": "string", "minLength": 1 },
+            "rationale": { "type": "string", "minLength": 1 }
+          }
+        },
+
+        "pre_1_0": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["policy", "transitions", "target_stable_version"],
+          "properties": {
+            "policy":                { "type": "string", "minLength": 1 },
+            "target_stable_version": { "type": "string", "pattern": "^v\\d+\\.\\d+\\.\\d+$" },
+            "transitions": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "$ref": "#/$defs/pre1Transition" }
+            }
+          }
+        },
+
+        "decision_table": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["change", "bump"],
+            "properties": {
+              "change": { "type": "string", "minLength": 1 },
+              "bump":   { "type": "string", "enum": ["MAJOR", "MINOR", "PATCH"] }
+            }
+          }
+        }
+      }
+    },
+
+    "prerelease_identifiers": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/prereleaseIdentifier" }
+    },
+
+    "precedence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rule", "nightly_excluded"],
+      "properties": {
+        "rule":             { "type": "string", "minLength": 1 },
+        "nightly_excluded": { "type": "boolean" }
+      }
+    },
+
+    "channels": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": { "$ref": "#/$defs/channel" }
+    },
+
+    "tag_routing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["trigger", "rules", "on_no_match", "on_multiple_match", "notes"],
+      "properties": {
+        "trigger": { "type": "string", "minLength": 1 },
+        "rules": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": { "$ref": "#/$defs/routingRule" }
+        },
+        "on_no_match":       { "type": "string", "enum": ["reject", "ignore", "warn"] },
+        "on_multiple_match": { "type": "string", "enum": ["impossible", "reject", "first-wins"] },
+        "notes":             { "type": "string", "minLength": 1 }
+      }
+    }
+  },
+
+  "$defs": {
+    "embeddingVar": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "source", "example", "required", "description"],
+      "properties": {
+        "name":        { "type": "string", "minLength": 1 },
+        "source":      { "type": "string", "minLength": 1 },
+        "example":     { "type": "string" },
+        "required":    { "type": "boolean" },
+        "description": { "type": "string", "minLength": 1 },
+        "allowed": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "constraints": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "examples": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string" }
+        }
+      }
+    },
+
+    "segmentRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["summary", "surfaces"],
+      "properties": {
+        "summary": { "type": "string", "minLength": 1 },
+        "surfaces": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "description", "examples"],
+            "properties": {
+              "id":          { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+              "description": { "type": "string", "minLength": 1 },
+              "examples": {
+                "type": "array",
+                "minItems": 1,
+                "items": { "type": "string", "minLength": 1 }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "pre1Transition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "to", "breaking_allowed", "release_notes_requirement"],
+      "properties": {
+        "from":              { "type": "string", "pattern": "^v\\d+\\.\\d+\\.\\d+$" },
+        "to":                { "type": "string", "pattern": "^v\\d+\\.\\d+\\.\\d+$" },
+        "breaking_allowed":  { "type": "boolean" },
+        "release_notes_requirement": { "type": "string", "minLength": 1 }
+      }
+    },
+
+    "prereleaseIdentifier": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "identifier", "intent", "feature_freeze", "api_stable",
+        "example", "precedence_position"
+      ],
+      "properties": {
+        "identifier":          { "type": "string", "pattern": "^[a-z][a-z0-9]*$" },
+        "intent":              { "type": "string", "minLength": 1 },
+        "feature_freeze":      { "type": "boolean" },
+        "api_stable":          { "type": "boolean" },
+        "example":             { "type": "string", "minLength": 1 },
+        "precedence_position": { "type": "integer", "minimum": 1 }
+      }
+    },
+
+    "channel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name", "tag_pattern", "examples", "source_branch",
+        "signing_required", "distribution", "support", "description"
+      ],
+      "properties": {
+        "name":             { "type": "string", "enum": ["stable", "prerelease", "nightly"] },
+        "tag_pattern":      { "type": "string", "minLength": 1 },
+        "examples":         { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "source_branch":    { "type": "string", "minLength": 1 },
+        "signing_required": { "type": "boolean" },
+        "distribution":     { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "support":          { "type": "string", "minLength": 1 },
+        "description":      { "type": "string", "minLength": 1 }
+      }
+    },
+
+    "routingRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pattern", "channel"],
+      "properties": {
+        "pattern": { "type": "string", "minLength": 1 },
+        "channel": { "type": "string", "enum": ["stable", "prerelease", "nightly"] }
+      }
+    }
+  }
+}

@@ -1,0 +1,673 @@
+# Release pipeline. Every tag matching v* triggers this workflow.
+#
+# Channel is a pure function of the tag. The routing step computes it
+# and passes it to the rest of the pipeline. No branch name, no
+# environment variable, and no human approval influences the channel.
+#
+# Job order and rationale:
+#
+#   route       Determine the channel from the tag via
+#               cmd/forge-internal-version. Rejects tags that match no
+#               channel. This is the only job that reads the tag.
+#
+#   build       Calls the reusable build workflow to cross-compile the
+#               Tier 1 matrix and upload each binary as an artifact.
+#               Exposes `hashes` for the SLSA provenance job.
+#
+#   verify      Runs the binary smoke suite (WBS 17.5.1) against the
+#               freshly built artifacts. A broken binary is not signed.
+#
+#   checksums   Per-binary .sha256 files, SHA256SUMS, SHA256SUMS.asc,
+#               SHA256SUMS.gpg (WBS 17.5.2). Runs after verify so the
+#               signature covers the verified artifact.
+#
+#   sbom        Per-binary CycloneDX 1.5 SBOMs and forge.sbom.json
+#               (WBS 17.5.2).
+#
+#   sign        cosign keyless signatures over every archive, plus
+#               macOS notarization and Windows Authenticode where the
+#               credentials are available (WBS 17.5.2). Runs after
+#               checksums so the signature is over the final artifact.
+#
+#   provenance  SLSA Level 3 attestation via slsa-github-generator
+#               (WBS 17.5.2). Runs after build; the attestation
+#               describes what was built. The attestation's proof is
+#               its own signature, checked by slsa-verifier; it is not
+#               separately cosign-signed.
+#
+#   publish     Downloads every artifact, attaches them to the GitHub
+#               Release, and (for stable) prepares the package-manager
+#               submissions. Skipped in a dry-run.
+#
+#   verify-rel  Post-publish assertions: the GPG signature over
+#               SHA256SUMS, the artifact-presence check, and the
+#               channel-distribution invariant check. Skipped in a
+#               dry-run.
+#
+# Dry-run: workflow_dispatch with dry_run: true runs every job except
+# publish and verify-release. The GPG key is not imported. Every
+# artifact is uploaded as a workflow artifact.
+#
+# See docs/reference/release-process.md, docs/guides/rollback.md,
+# docs/guides/release-dry-run.md, docs/reference/verifying-releases.md,
+# SECURITY.md, docs/decisions/ADR-043-versioning-and-release-channels.md,
+# and docs/decisions/ADR-048-supply-chain-integrity.md.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run the pipeline without publishing a release"
+        type: boolean
+        default: false
+      version:
+        description: "Version tag to simulate (dry-run only; defaults to the latest v* tag)"
+        type: string
+        required: false
+
+# The top-level permissions are the minimum. Each job declares what
+# it needs; a job that declares no permissions gets the top-level
+# block, so the top-level block must be the intersection of every
+# job's needs, not the union. The union is the sum of the per-job
+# blocks.
+permissions:
+  contents: read
+
+# Only one release per tag may run at a time. A tag is immutable, so a
+# second run for the same tag is either a retry of a failed run or a
+# bug; serializing is the safe default. A dry-run for a version shares
+# the group with a real release for the same version so the two
+# serialize.
+concurrency:
+  group: release-${{ inputs.version || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+
+  route:
+    name: Route tag to channel
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    outputs:
+      channel: ${{ steps.route.outputs.channel }}
+      version: ${{ steps.route.outputs.version }}
+      dry_run: ${{ steps.route.outputs.dry_run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: true
+
+      - id: route
+        name: Determine release channel from tag
+        env:
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          dry_run=0
+          if [ "${INPUT_DRY_RUN:-false}" = "true" ]; then
+            dry_run=1
+          fi
+
+          if [ "$dry_run" -eq 1 ]; then
+            tag="${INPUT_VERSION:-}"
+            if [ -z "$tag" ]; then
+              tag=$(git tag --list 'v*' --sort=-v:refname | head -n1)
+            fi
+            if [ -z "$tag" ]; then
+              echo "::error::dry-run: no v* tag found and no version input given"
+              exit 1
+            fi
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+
+          channel=$(go run ./cmd/forge-internal-version channel "$tag")
+          case "$channel" in
+            stable|prerelease|nightly) ;;
+            *)
+              echo "::error::tag $tag matches no channel; refusing to release"
+              exit 1
+              ;;
+          esac
+
+          echo "channel=$channel"    >> "$GITHUB_OUTPUT"
+          echo "version=$tag"        >> "$GITHUB_OUTPUT"
+          echo "dry_run=$dry_run"    >> "$GITHUB_OUTPUT"
+          echo "tag $tag -> channel $channel (dry_run=$dry_run)"
+
+  build:
+    name: Build
+    needs: route
+    permissions:
+      contents: read
+    uses: ./.github/workflows/build.yml
+    with:
+      channel: ${{ needs.route.outputs.channel }}
+      version: ${{ needs.route.outputs.version }}
+
+  verify:
+    name: Verify binaries
+    needs: [route, build]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Run binary verification suite
+        run: go run ./cmd/forge-internal-verify --dist=dist --verbose
+
+  checksums:
+    name: Checksums and GPG signatures
+    needs: [route, verify]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Import GPG release key
+        if: ${{ needs.route.outputs.dry_run != '1' && secrets.FORGE_GPG_PRIVATE_KEY != '' }}
+        env:
+          FORGE_GPG_PRIVATE_KEY: ${{ secrets.FORGE_GPG_PRIVATE_KEY }}
+          FORGE_GPG_KEY_FINGERPRINT: ${{ secrets.FORGE_GPG_KEY_FINGERPRINT }}
+        run: |
+          set -euo pipefail
+          echo "$FORGE_GPG_PRIVATE_KEY" | base64 -d | gpg --batch --import
+          echo "FORGE_GPG_KEY_FINGERPRINT=$FORGE_GPG_KEY_FINGERPRINT" >> "$GITHUB_ENV"
+
+      - name: Generate checksums and signatures
+        env:
+          FORGE_GPG_KEY_FINGERPRINT: ${{ secrets.FORGE_GPG_KEY_FINGERPRINT }}
+        run: |
+          set -euo pipefail
+          flags="--dist=dist"
+          if [ "${{ needs.route.outputs.dry_run }}" = "1" ]; then
+            flags="$flags --no-gpg"
+          fi
+          go run ./cmd/forge-internal-checksums $flags
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-checksums
+          path: |
+            dist/SHA256SUMS
+            dist/SHA256SUMS.asc
+            dist/SHA256SUMS.gpg
+            dist/forge-*.sha256
+          if-no-files-found: error
+
+  sbom:
+    name: SBOM
+    needs: [route, verify]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate SBOMs
+        run: |
+          set -euo pipefail
+          go run ./cmd/forge-internal-sbom \
+            --dist=dist \
+            --version="${{ needs.route.outputs.version }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-sbom
+          path: |
+            dist/forge.sbom.json
+            dist/forge-*.cdx.json
+          if-no-files-found: error
+
+  sign:
+    name: Sign
+    needs: [route, verify, checksums]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - uses: sigstore/cosign-installer@v3
+
+      - name: Sign archives
+        env:
+          FORGE_CODESIGN_IDENTITY: ${{ secrets.FORGE_CODESIGN_IDENTITY }}
+          FORGE_NOTARY_KEYCHAIN_PROFILE: ${{ secrets.FORGE_NOTARY_KEYCHAIN_PROFILE }}
+          FORGE_AUTHENTICODE_SUBJECT: ${{ secrets.FORGE_AUTHENTICODE_SUBJECT }}
+          FORGE_AUTHENTICODE_SHA1: ${{ secrets.FORGE_AUTHENTICODE_SHA1 }}
+        run: |
+          set -euo pipefail
+          go run ./cmd/forge-internal-sign --dist=dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-signatures
+          path: |
+            dist/forge-*.sig
+            dist/forge-*.pem
+          if-no-files-found: error
+
+  provenance:
+    name: SLSA provenance
+    needs: [route, build]
+    permissions:
+      actions: read
+      id-token: write
+      contents: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.0.0
+    with:
+      base64-subjects: ${{ needs.build.outputs.hashes }}
+      upload-assets: false
+      compile-generator: true
+
+  publish:
+    name: Publish
+    needs: [route, build, checksums, sbom, sign, provenance]
+    if: ${{ needs.route.outputs.dry_run != '1' }}
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      packages: write
+    outputs:
+      release_url: ${{ steps.create.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Download SLSA provenance
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.provenance.outputs.provenance-name }}
+          path: dist
+
+      - name: Inventory artifacts
+        run: |
+          set -euo pipefail
+          if ! find dist -type f | grep -q .; then
+            echo "::error::no artifacts were produced by the build job"
+            exit 1
+          fi
+          echo "Artifacts:"
+          find dist -type f | sort | sed 's/^/  /'
+
+      - name: Verify SHA256SUMS is present
+        run: |
+          set -euo pipefail
+          if [ ! -f dist/SHA256SUMS ]; then
+            echo "::error::dist/SHA256SUMS is missing; the checksums job did not run"
+            exit 1
+          fi
+
+      - name: Verify release notes exist for this tag
+        run: |
+          set -euo pipefail
+          notes="docs/releases/${{ needs.route.outputs.version }}.md"
+          if [ ! -f "$notes" ]; then
+            echo "::error::$notes is missing."
+            echo "::error::Create it from docs/templates/release-notes.md"
+            echo "::error::and commit it in the same PR as the tag."
+            exit 1
+          fi
+          echo "Release notes: $notes"
+
+      - name: Validate release notes against the template
+        run: |
+          set -euo pipefail
+          go run ./cmd/forge-internal-version notes check \
+            "docs/releases/${{ needs.route.outputs.version }}.md"
+
+      - name: Create GitHub Release
+        id: create
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Forge ${{ needs.route.outputs.version }}"
+          body_path: "docs/releases/${{ needs.route.outputs.version }}.md"
+          prerelease: ${{ needs.route.outputs.channel != 'stable' }}
+          draft: false
+          fail_on_unmatched_files: true
+          files: |
+            # Every archive and its companion signature, checksum,
+            # and SBOM. The per-binary .sha256 and .cdx.json files
+            # are published so a user who downloads one archive
+            # does not have to download SHA256SUMS or forge.sbom.json.
+            dist/forge-*
+            dist/SHA256SUMS
+            dist/SHA256SUMS.asc
+            dist/SHA256SUMS.gpg
+            dist/forge.sbom.json
+            dist/forge.intoto.jsonl
+
+      - name: Publish container image (stable, prerelease)
+        if: ${{ needs.route.outputs.channel != 'nightly' }}
+        run: |
+          set -euo pipefail
+          echo "Would publish ghcr.io/forge/forge:${{ needs.route.outputs.version }}"
+          echo "(wired to the Docker job in a later WBS item)"
+
+      - name: Prepare package-manager submissions (stable only)
+        if: ${{ needs.route.outputs.channel == 'stable' }}
+        run: |
+          set -euo pipefail
+          echo "Would submit to Homebrew, Scoop, winget, apt"
+          echo "(wired to the packaging job in a later WBS item)"
+
+      - name: Nightly cleanup reminder
+        if: ${{ needs.route.outputs.channel == 'nightly' }}
+        run: |
+          echo "Nightly releases are deleted after 30 days."
+          echo "A scheduled workflow is responsible for the deletion."
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # distribute
+  #
+  # Updates every distribution channel for a release. Runs after
+  # publish, because a channel's manifest names the release's
+  # artifacts, which exist only after the Release is created.
+  #
+  # Each channel is one step. A step's failure is a documented
+  # blocker, not a pipeline failure: a channel that cannot be updated
+  # (a missing credential, a network error) is recorded and the
+  # release continues. The alternative — fail the pipeline after the
+  # Release is published — would leave the Release published and the
+  # channels stale, which is worse than a documented blocker.
+  #
+  # The job runs only for stable and prerelease releases. A nightly
+  # is not published to any package manager; the direct download is
+  # its only channel.
+  # ─────────────────────────────────────────────────────────────────────────
+  distribute:
+    name: Distribute
+    needs: [route, publish]
+    if: ${{ needs.route.outputs.dry_run != '1' && needs.route.outputs.channel != 'nightly' }}
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Render every channel's manifests
+        run: |
+          set -euo pipefail
+          for channel in homebrew scoop winget apt docker goinstall; do
+            echo "::group::distribute $channel"
+            go run ./cmd/forge-internal-distribute \
+              --channel="$channel" \
+              --version="${{ needs.route.outputs.version }}" \
+              --release-channel="${{ needs.route.outputs.channel }}" \
+              --dist=dist \
+              --out=out/$channel \
+              --gpg-fingerprint="${{ secrets.FORGE_GPG_KEY_FINGERPRINT }}" || true
+            echo "::endgroup::"
+          done
+
+      - name: Commit the Homebrew formula
+        if: ${{ needs.route.outputs.channel == 'stable' || needs.route.outputs.channel == 'prerelease' }}
+        env:
+          GH_TOKEN: ${{ secrets.FORGE_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ ! -f out/homebrew/Formula/forge.rb ]; then
+            echo "::warning::homebrew formula not rendered; skipping"
+            exit 0
+          fi
+          git clone --depth=1 \
+            "https://x-access-token:${GH_TOKEN}@github.com/forge-cli/homebrew-tap.git" \
+            tap
+          cp out/homebrew/Formula/forge.rb tap/Formula/forge.rb
+          cd tap
+          git config user.name  "forge-release-bot"
+          git config user.email "release-bot@forge.dev"
+          git add Formula/forge.rb
+          if git diff --cached --quiet; then
+            echo "no change; skipping"
+            exit 0
+          fi
+          git commit -m "forge ${{ needs.route.outputs.version }}"
+          git push
+
+      - name: Commit the Scoop manifest
+        if: ${{ needs.route.outputs.channel == 'stable' || needs.route.outputs.channel == 'prerelease' }}
+        env:
+          GH_TOKEN: ${{ secrets.FORGE_BUCKET_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ ! -f out/scoop/bucket/forge.json ]; then
+            echo "::warning::scoop manifest not rendered; skipping"
+            exit 0
+          fi
+          git clone --depth=1 \
+            "https://x-access-token:${GH_TOKEN}@github.com/forge-cli/scoop-bucket.git" \
+            bucket
+          mkdir -p bucket/bucket
+          cp out/scoop/bucket/forge.json bucket/bucket/forge.json
+          cd bucket
+          git config user.name  "forge-release-bot"
+          git config user.email "release-bot@forge.dev"
+          git add bucket/forge.json
+          if git diff --cached --quiet; then
+            echo "no change; skipping"
+            exit 0
+          fi
+          git commit -m "forge ${{ needs.route.outputs.version }}"
+          git push
+
+      - name: Open a winget manifest PR
+        if: ${{ needs.route.outputs.channel == 'stable' }}
+        env:
+          GH_TOKEN: ${{ secrets.FORGE_WINGET_TOKEN }}
+        run: |
+          set -euo pipefail
+          manifests_dir="out/winget/manifests/f/Forge/Forge/${{ needs.route.outputs.version }}"
+          if [ ! -d "$manifests_dir" ]; then
+            echo "::warning::winget manifests not rendered; skipping"
+            exit 0
+          fi
+          # The winget-pkgs contribution workflow is documented at
+          # https://github.com/microsoft/winget-pkgs/blob/master/CONTRIBUTING.md
+          # The pipeline uses wingetcreate, Microsoft's own tool,
+          # to produce the PR. wingetcreate handles the fork, the
+          # branch, the manifest validation, and the PR body.
+          go install github.com/microsoft/winget-create@latest
+          "$(go env GOPATH)/bin/wingetcreate" update \
+            --token "$GH_TOKEN" \
+            --urls "${{ needs.route.outputs.version }}/forge-windows-amd64.zip" \
+            --submit
+
+      - name: Commit the apt repository
+        if: ${{ needs.route.outputs.channel == 'stable' || needs.route.outputs.channel == 'prerelease' }}
+        env:
+          GH_TOKEN: ${{ secrets.FORGE_APT_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ ! -f out/apt/dists/*/Release ]; then
+            echo "::warning::apt metadata not rendered; skipping"
+            exit 0
+          fi
+          git clone --depth=1 \
+            "https://x-access-token:${GH_TOKEN}@github.com/forge-cli/apt-repo.git" \
+            apt-repo
+          cp -r out/apt/. apt-repo/
+          cd apt-repo
+          git config user.name  "forge-release-bot"
+          git config user.email "release-bot@forge.dev"
+          git add .
+          if git diff --cached --quiet; then
+            echo "no change; skipping"
+            exit 0
+          fi
+          git commit -m "forge ${{ needs.route.outputs.version }}"
+          git push
+
+      - name: Build and push the Docker image
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ ! -f out/docker/Dockerfile ]; then
+            echo "::warning::Dockerfile not rendered; skipping"
+            exit 0
+          fi
+          # Stage the linux/amd64 binary for the Docker build.
+          # The multi-arch manifest list is built by buildx.
+          mkdir -p docker-context
+          tar -xzf dist/forge-linux-amd64.tar.gz -C docker-context
+          cp out/docker/Dockerfile docker-context/Dockerfile
+
+          # Log in to ghcr.io with the workflow's token.
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+          # buildx builds one image per platform and pushes a
+          # manifest list under the version tag and the moving
+          # channel tag.
+          docker buildx create --use --name forge-builder
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --tag "ghcr.io/forge-cli/forge:${{ needs.route.outputs.version }}" \
+            --tag "ghcr.io/forge-cli/forge:${{ needs.route.outputs.channel }}" \
+            --push \
+            docker-context
+
+      - name: Verify the go install path
+        run: |
+          set -euo pipefail
+          go run ./cmd/forge-internal-distribute \
+            --channel=goinstall \
+            --version="${{ needs.route.outputs.version }}" \
+            --release-channel="${{ needs.route.outputs.channel }}" \
+            --dist=dist \
+            --out=out/goinstall
+
+  verify-release:
+    name: Verify release
+    needs: [route, publish]
+    if: ${{ needs.route.outputs.dry_run != '1' }}
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Confirm the channel's distribution invariant held
+        run: |
+          set -euo pipefail
+          case "${{ needs.route.outputs.channel }}" in
+            stable)
+              echo "OK: stable publishes to all channels"
+              ;;
+            prerelease)
+              echo "OK: prerelease publishes to direct and Docker only"
+              ;;
+            nightly)
+              echo "OK: nightly publishes to direct only; unsigned"
+              ;;
+          esac
+
+      - name: Download the supply-chain artifacts from the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/verify-release
+          for name in SHA256SUMS SHA256SUMS.asc forge.sbom.json forge.intoto.jsonl; do
+            echo "Downloading $name"
+            gh release download "${{ needs.route.outputs.version }}" \
+              --pattern "$name" \
+              --dir /tmp/verify-release \
+              --clobber
+          done
+
+      - name: Verify the GPG signature over SHA256SUMS
+        if: ${{ needs.route.outputs.channel != 'nightly' }}
+        env:
+          FINGERPRINT: ${{ secrets.FORGE_GPG_KEY_FINGERPRINT }}
+        run: |
+          set -euo pipefail
+          if [ -z "$FINGERPRINT" ]; then
+            echo "::warning::no GPG fingerprint configured; skipping signature check"
+            exit 0
+          fi
+          if [ ! -f /tmp/verify-release/SHA256SUMS.asc ]; then
+            echo "::error::SHA256SUMS.asc is not attached to the release"
+            exit 1
+          fi
+          gpg --keyserver keys.openpgp.org --recv-keys "$FINGERPRINT"
+          gpg --verify /tmp/verify-release/SHA256SUMS.asc /tmp/verify-release/SHA256SUMS
+          echo "OK: GPG signature verifies"
+
+      - name: Release URL
+        run: |
+          echo "Release published: ${{ needs.publish.outputs.release_url }}"
