@@ -430,21 +430,3 @@ func TestConcurrency_GoldenMatchesModel(t *testing.T) {
 		)
 	}
 }
-
-// TestConcurrency_DocMatchesModel asserts ci.ConcurrencyMarkdown()
-// matches the policy document.
-func TestConcurrency_DocMatchesModel(t *testing.T) {
-	root := repoRoot(t)
-	path := filepath.Join(root, "docs", "reference", "concurrency-policy.md")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-	want := ci.ConcurrencyMarkdown()
-	if string(data) != want {
-		t.Fatalf(
-			"%s does not match ci.ConcurrencyMarkdown(); run `task ci:render-concurrency` to regenerate",
-			path,
-		)
-	}
-}

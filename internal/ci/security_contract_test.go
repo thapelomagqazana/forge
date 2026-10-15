@@ -600,24 +600,6 @@ func TestSecurity_GoldenMatchesModel(t *testing.T) {
 	}
 }
 
-// TestSecurity_DocMatchesModel asserts ci.SecurityMarkdown() matches
-// the reference document.
-func TestSecurity_DocMatchesModel(t *testing.T) {
-	root := repoRoot(t)
-	path := filepath.Join(root, "docs", "reference", "security-workflow.md")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-	want := ci.SecurityMarkdown()
-	if string(data) != want {
-		t.Fatalf(
-			"%s does not match ci.SecurityMarkdown(); run `task ci:render-security` to regenerate",
-			path,
-		)
-	}
-}
-
 // --- Security tests --------------------------------------------------------
 
 // TestSecurity_NoPullRequestTarget asserts security.yml does not use

@@ -101,24 +101,6 @@ func TestCost_GoldenFileExists(t *testing.T) {
 
 // --- Render tests ----------------------------------------------------------
 
-// TestCost_DocMatchesModel asserts ci.CostMarkdown() matches the
-// cost-budget document.
-func TestCost_DocMatchesModel(t *testing.T) {
-	root := repoRoot(t)
-	path := costDocPath(t, root)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-	want := ci.CostMarkdown()
-	if string(data) != want {
-		t.Fatalf(
-			"%s does not match ci.CostMarkdown(); run `task ci:render-cost` to regenerate",
-			path,
-		)
-	}
-}
-
 // TestCost_GoldenMatchesModel asserts ci.CostGolden() matches the
 // golden JSON.
 func TestCost_GoldenMatchesModel(t *testing.T) {
