@@ -144,7 +144,7 @@ jobs:
       contents: read
     steps:
       - name: Check out the repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Provision the caches explicitly. The cache workflow restores
       # the Go module cache, the Go build cache, and the
@@ -158,7 +158,7 @@ jobs:
           cache-key-suffix: tier1-format
 
       - name: Set up Go
-        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           check-latest: false
@@ -217,7 +217,7 @@ jobs:
       contents: read
     steps:
       - name: Check out the repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Provision the caches explicitly. The suffix `tier1-vet`
       # differentiates this job's cache from the other jobs'.
@@ -228,7 +228,7 @@ jobs:
           cache-key-suffix: tier1-vet
 
       - name: Set up Go
-        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           check-latest: false
@@ -261,7 +261,7 @@ jobs:
       contents: read
     steps:
       - name: Check out the repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Provision the caches explicitly. The suffix `tier1-lint`
       # differentiates this job's cache from the other jobs'. The
@@ -274,7 +274,7 @@ jobs:
           cache-key-suffix: tier1-lint
 
       - name: Set up Go
-        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           check-latest: false
@@ -282,7 +282,7 @@ jobs:
           cache: false
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@ec5d18412c0aeab7936cb16880d708ba2a64e1ae # v6.2.0
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v1.62.2
           only-new-issues: false
@@ -304,7 +304,7 @@ jobs:
       contents: read
     steps:
       - name: Check out the repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Provision the caches explicitly. The suffix
       # `tier1-test-short` differentiates this job's cache from the
@@ -316,7 +316,7 @@ jobs:
           cache-key-suffix: tier1-test-short
 
       - name: Set up Go
-        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           check-latest: false
@@ -337,7 +337,7 @@ jobs:
       contents: read
     steps:
       - name: Check out the repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Provision the caches explicitly. The suffix `tier1-build`
       # differentiates this job's cache from the other jobs'.
@@ -348,7 +348,7 @@ jobs:
           cache-key-suffix: tier1-build
 
       - name: Set up Go
-        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           check-latest: false
