@@ -369,7 +369,6 @@ The following are tested by the suite:
 ## 8. References
 
 - [`output-streams.md`](output-streams.md) — the stdout/stderr contract.
-- [`exit-codes.md`](exit-codes.md) — exit-code taxonomy.
 - [`error-codes.md`](error-codes.md) — error code registry.
 - [`../architecture/output-vs-logging.md`](../architecture/output-vs-logging.md)
   — the two-layer output/logging architecture.
@@ -377,8 +376,6 @@ The following are tested by the suite:
   — configuration precedence.
 - [ADR-021](../decisions/ADR-021-json-error-envelope-for-format-json.md)
   — the JSON error envelope.
-- [ADR-022](../decisions/ADR-022-output-logging-separation.md)
-  — output/logging separation.
 - Twelve-Factor App §III — Config.
 - `log/slog` — Go structured logging.
 - WBS 12.1.2, FR-CLI-LOG-002, FR-CLI-LOG-003, Phase 6 WBS §1.3.

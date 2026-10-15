@@ -87,7 +87,7 @@ a project directory with templated file names and contents [https://cookiecutter
 **Strengths:**
 
 - Mature, widely used, Python ecosystem
-- Variable substitution in file names and contents [https://onlinelibrary.wiley.com/doi/full/10.1002/spe.70024#2]
+- Variable substitution in file names and contents
 - Pre- and post-generation hooks [https://cookiecutter.readthedocs.io/_/downloads/en/latest/pdf/#12#1]
 - Large library of community templates
 
@@ -98,7 +98,7 @@ a project directory with templated file names and contents [https://cookiecutter
 - **Python-specific.** Although the generated projects can be any
   language, the tool itself requires a Python interpreter [https://cookiecutter.readthedocs.io/_/downloads/en/latest/pdf/#12#1].
 - **Hooks are arbitrary code execution.** Pre-gen and post-gen hooks
-  run shell scripts or Python code without sandboxing [https://onlinelibrary.wiley.com/doi/full/10.1002/spe.70024#2].
+  run shell scripts or Python code without sandboxing.
 - **No validation or drift detection.**
 
 ### 3.3 Copier
@@ -360,7 +360,7 @@ This combination does not exist in any single alternative workflow.
 **From Cookiecutter:**
 
 - No update mechanism in Cookiecutter is a known gap
-- Cookiecutter's hooks are unsafe (arbitrary code execution) [https://onlinelibrary.wiley.com/doi/full/10.1002/spe.70024#2]
+- Cookiecutter's hooks are unsafe (arbitrary code execution)
 - Need for a non-Python tool [https://cookiecutter.readthedocs.io/_/downloads/en/latest/pdf/#12#1]
 - Need for validation and drift detection
 
@@ -458,7 +458,7 @@ seek a solution.
 
 **Must not do:**
 
-- Execute arbitrary code from templates (unlike Cookiecutter hooks) [https://onlinelibrary.wiley.com/doi/full/10.1002/spe.70024#2]
+- Execute arbitrary code from templates (unlike Cookiecutter hooks)
 - Destroy developer modifications (unlike naive update)
 - Require organisational investment to be useful (unlike Backstage)
 

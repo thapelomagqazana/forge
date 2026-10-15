@@ -1217,9 +1217,7 @@ HYP-003 (duplication)          HYP-004 (drift)
                  └── HYP-006 (visibility gap)
 ```
 
-If HYP-001 is unsupported, the entire product thesis
-([ADR-001](./decisions/ADR-001-forge-as-foundation-manager.md)) must be
-revisited. If HYP-001 is supported but HYP-004 is unsupported, Forge's
+If HYP-001 is unsupported, the entire product thesis revisited. If HYP-001 is supported but HYP-004 is unsupported, Forge's
 product identity needs adjustment — the problem is real but the drift
 framing is wrong.
 
@@ -1291,10 +1289,6 @@ maintain reproducible engineering foundations," it is out of scope.
 It treats the engineering foundation of a software repository as a
 first-class artifact — declarative, versioned, verifiable, and
 evolvable.
-
-This definition was recorded in
-[ADR-001](./decisions/ADR-001-forge-as-foundation-manager.md) and
-remains the product's central identity.
 
 ### 9.4 The Core Lifecycle
 
@@ -1660,9 +1654,8 @@ prototype validation in later phases.
    [`docs/research/findings.md`](./research/findings.md).
 3. Update hypothesis statuses in
    [`docs/research/evidence-matrix.md`](./research/evidence-matrix.md).
-4. If any hypothesis is refuted, update this document and
    [ADR-001](./decisions/ADR-001-forge-as-foundation-manager.md).
-5. Feed validated findings into
+4. Feed validated findings into
    [`docs/cli-ux-spec.md`](./cli-ux-spec.md),
    [`docs/blueprint-spec.md`](./blueprint-spec.md), and
    [`docs/mvp-scope.md`](./mvp-scope.md).

@@ -1,7 +1,7 @@
 # Output vs. Logging Architecture
 
 > **Status:** Active
-> **ADR:** [ADR-022](../decisions/ADR-022-output-logging-separation.md)
+> **ADR:**
 > **WBS:** 12.1.1
 > **Owners:** Phase 6 (CLI Output), Phase 10 (JSON Output Contract)
 > **Reviewers:** Architecture Owner, Phase 2 Owner (Structured Error System)
@@ -591,7 +591,6 @@ A: Not after WBS 12.3.2. The lint rule forbids it.
 
 ### 11.1 Internal
 
-- [ADR-022: Output/Logging Separation](../decisions/ADR-022-output-logging-separation.md)
 - [ADR-005: Version Command Output Formats](../decisions/ADR-005-version-command-structure-output-formats-and-stability-guarantees.md)
 - [ADR-006: Help and CLI UX Contracts](../decisions/ADR-006-help-and-cli-ux-contracts-invocation-matrix-output-formats-stream-boundary-and-phase-2-presentation-policy.md)
 - [ADR-011: Closed Error Category Taxonomy](../decisions/ADR-011-closed-error-category-taxonomy.md)

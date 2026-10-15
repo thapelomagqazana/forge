@@ -303,8 +303,6 @@ The following are tested by the suite:
   contract.
 - [`../architecture/output-vs-logging.md`](../architecture/output-vs-logging.md)
   — the two-layer architecture.
-- [ADR-022](../decisions/ADR-022-output-logging-separation.md)
-  — output/logging separation.
 - `schemas/log-record.schema.json` — the JSON schema.
 - `internal/logger/record.go` — the Go type.
 - WBS 12.2.1, FR-CLI-LOG-004, FR-CLI-LOG-005, NFR-OBSERVABILITY-001.

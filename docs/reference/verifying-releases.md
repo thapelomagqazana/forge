@@ -82,7 +82,6 @@ You will need:
 |---|---|---|
 | `sha256sum` | Verify the checksum | Preinstalled on Linux. macOS: `shasum -a 256`. Windows: `certutil -hashfile <file> SHA256` or Git Bash. |
 | `gpg` | Verify the GPG signature | `apt install gnupg`, `brew install gnupg`, or [gnupg.org](https://gnupg.org/download/) |
-| `cosign` | Verify the cosign signature | [sigstore.dev](https://docs.sigstore.dev/cosign/installation/) |
 | `slsa-verifier` | Verify the SLSA provenance | [slsa-verifier releases](https://github.com/slsa-framework/slsa-verifier/releases) |
 | `git` | Rebuild from source | Any recent version |
 
@@ -650,7 +649,6 @@ The security policy is in [`SECURITY.md`](../../SECURITY.md).
 | Document | Role |
 |---|---|
 | [`SECURITY.md`](../../SECURITY.md) | The release key's fingerprint, the cosign identity, and the security contact. |
-| [`docs/reference/release-channels.md`](release-channels.md) | The channels each artifact is published to, and the support window. |
 | [`docs/guides/reproducible-builds.md`](../guides/reproducible-builds.md) | Step 8: rebuild from source. |
 | [`docs/guides/verifying-binaries.md`](../guides/verifying-binaries.md) | The binary verification suite the release pipeline runs before signing. |
 | [`docs/guides/rollback.md`](../guides/rollback.md) | The post-publish rollback procedure. |

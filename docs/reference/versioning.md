@@ -62,10 +62,6 @@ The `v` prefix is **mandatory**. Go modules require it for tags; Forge
 enforces it in the release pipeline. A tag without the prefix is
 rejected before any artifact is produced.
 
-The three channel tag patterns are documented in
-[`release-channels.md`](./release-channels.md) and enforced by
-`internal/version.ChannelOf`.
-
 ---
 
 ## 2. Meaning of each segment for Forge
@@ -258,8 +254,7 @@ v1.0.1          <  v1.1.0
 v1.1.0          <  v2.0.0
 ```
 
-The `nightly` identifier (see [`release-channels.md`](./release-channels.md))
-is not listed here because it does not participate in SemVer
+The `nightly` identifier is not listed here because it does not participate in SemVer
 precedence for package managers: nightlies are not published to package
 managers and are never compared to `alpha`, `beta`, or `rc`.
 
@@ -356,7 +351,6 @@ corrected.
 
 | Document | Role |
 |---|---|
-| [`release-channels.md`](./release-channels.md) | Channel definitions, tag patterns, tag-to-release routing |
 | [`version-metadata.yaml`](./version-metadata.yaml) | Machine-readable form of this document and `release-channels.md` |
 | [`../templates/release-notes.md`](../templates/release-notes.md) | Human template every release fills in |
 | [`../../schemas/version.schema.json`](../../schemas/version.schema.json) | JSON Schema for `version-metadata.yaml` |

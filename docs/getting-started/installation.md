@@ -49,11 +49,6 @@ verification procedure is the same.
 | [Docker](#docker) | A container | `docker pull ghcr.io/forge-cli/forge:latest` |
 | [`go install`](#go-install) | A Go developer | `go install github.com/forge-cli/forge/cmd/forge@latest` |
 
-After installing, verify the binary with
-[`docs/getting-started/verify-installation.md`](verify-installation.md).
-The verification is per-channel; the page links to the right
-procedure for the channel you chose.
-
 ---
 
 ## Direct download
@@ -536,8 +531,6 @@ available separately.
 
 | Document | Role |
 |---|---|
-| [`docs/getting-started/verify-installation.md`](verify-installation.md) | Per-channel verification after install. |
 | [`docs/reference/verifying-releases.md`](../reference/verifying-releases.md) | The release's four proofs. |
-| [`docs/reference/release-channels.md`](../reference/release-channels.md) | The channels and the support window. |
 | [`docs/guides/reproducible-builds.md`](../guides/reproducible-builds.md) | Rebuilding an archive from source. |
 | [`SECURITY.md`](../../SECURITY.md) | The release key's fingerprint. |

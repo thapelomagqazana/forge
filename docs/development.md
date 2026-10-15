@@ -1737,15 +1737,12 @@ for the exact heading and the required keyword.
 
 - [`scripts/deps/`](../scripts/deps/) — dependency integrity and
   policy checks.
-- [`scripts/deps/README.md`](../scripts/deps/README.md) —
-  documentation for the dependency scripts.
 - [`scripts/reproducible/`](../scripts/reproducible/) —
   reproducibility checks.
 - [`scripts/reproducible/README.md`](../scripts/reproducible/README.md)
   — documentation for the reproducibility scripts.
 - [`scripts/adr/`](../scripts/adr/) — Architecture Decision Record
   tooling.
-- [`tests/scripts/`](../tests/scripts/) — shell test harnesses.
 
 ### Configuration
 

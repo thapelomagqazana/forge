@@ -306,7 +306,6 @@ A consumer that reads Forge's streams should:
 
 ## References
 
-- [`exit-codes.md`](exit-codes.md) — the frozen per-code table.
 - [`exit-code-ranges.md`](exit-code-ranges.md) — the range taxonomy.
 - [`error-codes.md`](error-codes.md) — the error code registry.
 - [`../architecture/output-vs-logging.md`](../architecture/output-vs-logging.md)

@@ -25,8 +25,6 @@ This guide is the contract for building Forge. It documents every
 supported build entry point, what each one does, and which invariants
 each one enforces.
 
-For the release pipeline as a whole, see
-[`docs/reference/release-channels.md`](../reference/release-channels.md).
 For the version string semantics, see
 [`docs/reference/versioning.md`](../reference/versioning.md).
 
@@ -184,8 +182,6 @@ partial previous run cannot mask a failure.
 ### Distribution per channel
 
 The channel determines which of the artifacts above are published.
-See [`docs/reference/release-channels.md`](../reference/release-channels.md)
-for the full table. The short version:
 
 | Channel | Distribution |
 |---|---|
@@ -339,7 +335,6 @@ go version -m ./forge | grep -c "/home/"   # should print 0
 |---|---|
 | [`docs/reference/platforms.yaml`](../reference/platforms.yaml) | The platform matrix the driver reads |
 | [`docs/reference/versioning.md`](../reference/versioning.md) | The version string semantics the driver embeds |
-| [`docs/reference/release-channels.md`](../reference/release-channels.md) | The channels the release pipeline routes |
 | [`Taskfile.yml`](../../Taskfile.yml) | The development task definitions |
 | [`scripts/build.go`](../../scripts/build.go) | The cross-compile driver |
 | [`internal/version/version.go`](../../internal/version/version.go) | The four linker variables |

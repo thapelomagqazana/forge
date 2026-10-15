@@ -769,7 +769,6 @@ Any requirement that violates §9 must be rejected or deferred with an ADR.
 - [security-model.md](./security-model.md)
 - [dependency-policy.md](./dependency-policy.md)
 - [development.md](./development.md)
-- [phase-2-definition-of-done.md](./phase-2-definition-of-done.md)
 
 ---
 

@@ -456,4 +456,3 @@ Changing the model is an ADR-level decision, not a PR-level one. The steps:
 - [Layer dependency matrix](./layer-dependency-matrix.md) — the machine-checkable form of §3.
 - [`internal/arch`](../../internal/arch/layers.go) — the enforcement package.
 - [`internal/application`](../../internal/application/doc.go) — the use-case layer and its canonical example service.
-- [Component spec](./component-spec.md), [Blueprint spec](./blueprint-spec.md), [Template spec](./template-spec.md) — domain bounded contexts that live under `internal/domain/...`.

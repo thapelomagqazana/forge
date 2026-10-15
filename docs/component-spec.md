@@ -55,8 +55,6 @@ This specification exists to answer:
   [`docs/blueprint-spec.md`](./blueprint-spec.md))
 - Template format (see
   [`docs/template-spec.md`](./template-spec.md))
-- Registry and distribution (see
-  [`docs/registry-spec.md`](./registry-spec.md), future)
 - Update algorithm (see
   [`docs/update-model.md`](./update-model.md))
 - Filesystem security (see

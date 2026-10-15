@@ -39,7 +39,6 @@ This register:
 
 - Requirement *definitions* (those live in the specifications)
 - Test cases (those live with the code)
-- ADRs (those live in [`docs/decisions/`](../decisions/))
 
 This register indexes requirements. Specifications define them.
 
@@ -65,12 +64,6 @@ Categories: `CORE`, `CLI`, `BLUEPRINT`, `TEMPLATE`, `COMPONENT`,
 `POLICY`, `CHECK`, `UPDATE`, `REGISTRY`, `PERF`, `COMPAT`, `RELI`.
 
 `SEC-` is used without a category (format: `SEC-NNN`).
-
-ADR identifiers use the format `ADR-NNN` and are owned by the
-[decision log](../decisions/README.md).
-
-Full rules are defined in
-[`docs/documentation-guide.md`](../documentation-guide.md) § 8.
 
 ---
 

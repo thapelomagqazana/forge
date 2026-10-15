@@ -4,7 +4,7 @@
 > **Extends:** [clean-architecture.md](./clean-architecture.md) §3 (layer matrix)
 > **Machine-readable:** [dependency-matrix.yaml](./dependency-matrix.yaml)
 > **Schema:** [dependency-matrix.schema.json](../../schemas/dependency-matrix.schema.json)
-> **Enforced by:** [`internal/arch/matrix.go`](../../internal/arch/matrix.go) · [`scripts/arch/verify-matrix.sh`](../../scripts/arch/verify-matrix.sh)
+> **Enforced by:** [`internal/arch/matrix.go`](../../internal/arch/matrix.go)
 > **Traceability:** FR-ARCH-002, NFR-ARCHITECTURE-002
 > **WBS:** 14.1.2
 > **Consumed by:** WBS 14.6.1 (CI lint rule)

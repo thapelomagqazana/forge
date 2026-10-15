@@ -44,8 +44,6 @@ The workflow is triggered by a push of a tag matching `v*`, or by a
 manual `workflow_dispatch` for a dry-run.
 
 This document is the contract. The workflow is its implementation.
-The Go model at
-[`scripts/internal/release/workflow.go`](../../scripts/internal/release/workflow.go)
 is the machine-readable form of the contract;
 [`test/release/workflow_test.go`](../../test/release/workflow_test.go)
 asserts the workflow satisfies it.
@@ -121,9 +119,7 @@ The `route` job computes the channel from the tag via
 | `prerelease` | `vX.Y.Z-rc.N`, `vX.Y.Z-beta.N`, `vX.Y.Z-alpha.N` | Direct download, container image | Yes | Yes | Never |
 | `nightly` | `vX.Y.Z-nightly.NNNNNNNN` | Direct download | No | Yes | 30 days |
 
-The pattern-to-channel mapping is in
-[`docs/reference/release-channels.md`](release-channels.md). The
-workflow's `route` job rejects a tag that matches no channel: a
+The workflow's `route` job rejects a tag that matches no channel: a
 tag that is not a release must not produce a release.
 
 ### Why nightly is unsigned
@@ -404,11 +400,7 @@ The reusable workflow:
 
 The `hashes` output is the contract between the build and the
 provenance. A change to the archive naming convention changes the
-`hashes` input's contents; the two must be updated together. The
-naming convention lives in
-[`scripts/internal/release/release.go`](../../scripts/internal/release/release.go),
-so a change to it touches one file and the two workflows read the
-new value automatically.
+`hashes` input's contents; the two must be updated together.
 
 ---
 
@@ -485,6 +477,5 @@ workflow that breaks one is a defect.
 | [`docs/guides/release-dry-run.md`](../guides/release-dry-run.md) | How to run and read a dry-run. |
 | [`docs/guides/verifying-binaries.md`](../guides/verifying-binaries.md) | The binary smoke suite the `verify` job runs. |
 | [`docs/reference/verifying-releases.md`](verifying-releases.md) | The user-facing verification procedure. |
-| [`docs/reference/release-channels.md`](release-channels.md) | The channel mapping and the support window. |
 | [`docs/reference/versioning.md`](versioning.md) | The tag-to-version contract. |
 | [`SECURITY.md`](../../SECURITY.md) | The credentials and their handling. |

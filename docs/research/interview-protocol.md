@@ -496,9 +496,6 @@ After all interviews:
 3. Update
    [`docs/product-discovery.md`](../product-discovery.md) § 7 with
    refined hypothesis statuses.
-4. If any hypothesis is refuted, note it explicitly and adjust
-   [`ADR-001`](../decisions/ADR-001-forge-as-foundation-manager.md)
-   accordingly.
 
 ---
 

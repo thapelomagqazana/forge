@@ -229,8 +229,7 @@ listed is a documentation defect.
 
 ## 4. The stream contract
 
-Verbose mode obeys the two-layer output architecture
-([ADR-022](../decisions/ADR-022-output-logging-separation.md)):
+Verbose mode obeys the two-layer output architecture:
 
 | Stream | Content under `--verbose` |
 |--------|---------------------------|
@@ -401,6 +400,4 @@ filtering.
   — the two-layer output architecture.
 - [ADR-016](../decisions/ADR-016-error-redaction-policy.md) —
   error redaction policy.
-- [ADR-022](../decisions/ADR-022-output-logging-separation.md) —
-  output/logging separation.
 - FR-CLI-LOG-009, Phase 6 WBS §20.2, WBS 12.5.1.

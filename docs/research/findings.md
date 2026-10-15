@@ -532,7 +532,6 @@ This document is complete when:
 | [Evidence Matrix](./evidence-matrix.md) | Synthesises these findings into classifications |
 | [Product Discovery](../product-discovery.md) | Defines the hypotheses these findings test |
 | [Requirements Register](../requirements-register.md) | Requirements derived from synthesised findings |
-| [Phase 1 Exit Report](../phase-1-exit-report.md) | Uses findings as evidence |
 
 ---
 
