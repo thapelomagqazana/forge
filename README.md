@@ -8,6 +8,8 @@ and evolving software project foundations as code.
 Your repository changes every day. Your engineering standards
 shouldn't disappear with it.
 
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/thapelomagqazana/forge/badge)](https://securityscorecards.dev/viewer/?uri=github.com/thapelomagqazana/forge)
+
 ---
 
 ## Table of Contents

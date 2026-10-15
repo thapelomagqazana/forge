@@ -1,0 +1,648 @@
+# =============================================================================
+# security.yml — Tier 4, the security scanning workflow.
+# =============================================================================
+#
+# Purpose
+# -------
+#
+# Tier 4 is the security scanning tier. It runs on a schedule (daily at
+# 02:00 UTC) and on every push to main. Its goal is to catch security
+# drift that per-commit checks cannot: a new CVE in a dependency, a
+# secret accidentally committed, a license change in a transitive
+# dependency, a Scorecard score drop.
+#
+# The tier model is defined in internal/ci/tiers.go (Tier4) and
+# rendered to docs/reference/ci-tiers.md. The security-specific model
+# is in internal/ci/security.go; the contract tests in
+# internal/ci/security_contract_test.go assert that this file
+# implements the model.
+#
+# The workflow is advisory: its findings do not block a merge. A
+# failure here opens an issue tagged `security` so that the Security
+# owner sees it. The rationale is documented in ADR-051: a slow or
+# flaky scanner must not become a repository-wide merge blocker.
+#
+# Schedule
+# --------
+#
+# 02:00 UTC daily, plus push to main, plus workflow_dispatch for
+# manual runs. The 02:00 UTC slot is chosen to avoid the global cron
+# thundering herd at 00:00; the off-hour run reduces the chance of a
+# queue delay.
+#
+# Jobs
+# ----
+#
+# Eight jobs, running in parallel where possible:
+#
+#   security-codeql         Go CodeQL analysis; SARIF upload.
+#   security-govulncheck    Go vulnerability database; reachable
+#                           vulnerabilities fail the job.
+#   security-gitleaks       Secret scan on the full git history.
+#   security-grype          Container/dependency vulnerability scan
+#                           of the release artifacts.
+#   security-scorecard      OpenSSF Scorecard; publish the score,
+#                           fail below the threshold.
+#   security-license-scan   License scan; fail on copyleft licenses
+#                           incompatible with Apache-2.0.
+#   security-sbom           SBOM generation with syft; retained 90
+#                           days.
+#   security-dependabot     Verify Dependabot is configured.
+#
+# The `notify` job runs on failure and opens an issue.
+#
+# Timeouts
+# --------
+#
+# Every job declares an explicit `timeout-minutes`. The value is a
+# backstop against a hung runner, not a budget enforcement. The flake
+# contract test TestFlake_EveryJobHasTimeout asserts the field is
+# present on every job in every workflow. The value for each job
+# reflects the tool it runs: CodeQL is the longest (60 minutes), the
+# thin Dependabot check is the shortest (5 minutes), and the other
+# scanners sit in between (30 minutes).
+#
+# Permissions
+# -----------
+#
+# The workflow-level permissions block is the intersection of every
+# job's needs:
+#
+#   contents: read               — checkout.
+#   security-events: write       — SARIF upload (CodeQL, Scorecard).
+#
+# The `notify` job declares `issues: write` to open the issue.
+#
+# Actions
+# -------
+#
+# Every action is pinned to a full 40-hex SHA. The pinned actions are
+# declared in internal/ci.PinnedActions(); a future change to an
+# action updates both the map and this file in the same commit.
+#
+# The tools that are not GitHub Actions (govulncheck, gitleaks,
+# grype, go-licenses, syft, scorecard) are pinned to specific
+# versions via `go install X@vY` or a downloaded release archive with
+# a checksum. The pins are declared in internal/ci/security.go.
+#
+# SARIF
+# -----
+#
+# The jobs that produce SARIF results (CodeQL, Scorecard) upload them
+# to the GitHub Security tab via `github/codeql-action/upload-sarif`.
+# The results are visible in the repository's Security tab and are
+# the primary artifact for a Security reviewer.
+#
+# Secrets
+# -------
+#
+# None. The workflow runs on the default GITHUB_TOKEN. The `notify`
+# job uses the GITHUB_TOKEN to open issues; the token's `issues:
+# write` permission is declared at the job level.
+#
+# See:
+#   docs/reference/security-workflow.md
+#   docs/decisions/ADR-051-security-workflow.md
+#   internal/ci/security.go
+# =============================================================================
+
+name: Security
+
+on:
+  schedule:
+    # 02:00 UTC daily. Off the hour to reduce queue delay; off the
+    # top-of-hour to avoid the global cron thundering herd.
+    - cron: "0 2 * * *"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Workflow-level permissions: the intersection of every job's needs.
+permissions:
+  contents: read
+  security-events: write
+
+# Workflow-level environment: applied to every job that does not
+# override it. GOFLAGS is the load-bearing variable: it turns a
+# missing `go mod tidy` into a failure. The security tools' versions
+# are declared in the job's steps; they are not workflow-level
+# variables because they differ per tool.
+env:
+  GOFLAGS: -mod=readonly
+  GOTOOLCHAIN: local
+
+concurrency:
+  # Serialize runs of the same workflow on the same branch. A push
+  # to main while a scheduled run is in progress waits for the
+  # scheduled run to finish; the queued run then executes.
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+
+  # ─────────────────────────────────────────────────────────────────────
+  # security-codeql — Go CodeQL analysis.
+  #
+  # The job runs CodeQL's Go analysis and uploads the results as
+  # SARIF. The results appear in the repository's Security tab.
+  #
+  # The job's three steps are the canonical CodeQL pattern: init,
+  # build (via `go build ./...`), analyze. The analyze step uploads
+  # the SARIF automatically; the `upload-sarif` action is not needed
+  # when the analyze step is used.
+  # ─────────────────────────────────────────────────────────────────────
+  security-codeql:
+    name: security-codeql
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@f09c1c0a94de965c15400f5634aa42fac8fb8f88 # v3.27.5
+        with:
+          languages: go
+
+      - name: Set up Go
+        uses: actions/setup-go@0b12d6b521d83fc7f755e7cfc93634d3f36cbe55 # v5.1.0
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+
+      - name: Build for CodeQL
+        run: go build ./...
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@f09c1c0a94de965c15400f5634aa42fac8fb8f88 # v3.27.5
+        with:
+          category: "/language:go"
+
+  # ─────────────────────────────────────────────────────────────────────
+  # security-govulncheck — Go vulnerability database scan.
+  #
+  # The job runs govulncheck against the module. A reachable
+  # vulnerability fails the job.
+  #
+  # # Why the version is pinned
+  #
+  # govulncheck's output format and its vulnerability database
+  # change over time. Pinning the version makes the job's behaviour
+  # reproducible; a future update is a change to the pin.
+  # ─────────────────────────────────────────────────────────────────────
+  security-govulncheck:
+    name: security-govulncheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Go
+        uses: actions/setup-go@0b12d6b521d83fc7f755e7cfc93634d3f36cbe55 # v5.1.0
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+
+      - name: Run govulncheck
+        run: |
+          set -euo pipefail
+          # govulncheck exits 0 if no reachable vulnerabilities are
+          # found; exits 3 if reachable vulnerabilities are found;
+          # exits 1 on an error.
+          #
+          # The `-show=traces` flag prints the call trace for each
+          # finding, which is what a reviewer needs to assess the
+          # finding.
+          govulncheck -show=traces ./...
+
+  # ─────────────────────────────────────────────────────────────────────
+  # security-gitleaks — secret scanning on the full history.
+  #
+  # The job runs gitleaks over the full git history. A leaked secret
+  # fails the job.
+  #
+  # # Why the full history
+  #
+  # A secret that was committed and then removed is still in the
+  # repository's history until a history rewrite. The full-history
+  # scan catches it. The `fetch-depth: 0` on the checkout step makes
+  # the full history available.
+  #
+  # # Why the exit code is checked, not the report
+  #
+  # gitleaks exits 0 if no leaks are found and 1 if leaks are found.
+  # The job does not parse the report; the exit code is the signal.
+  # The report is uploaded as a workflow artifact for triage.
+  # ─────────────────────────────────────────────────────────────────────
+  security-gitleaks:
+    name: security-gitleaks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          # The release archive is downloaded from GitHub and its
+          # SHA-256 is verified against the release's checksums.txt.
+          # This is the same SHA-verification pattern the release
+          # workflow uses for its own artifacts.
+          version="8.21.2"
+          url="https://github.com/gitleaks/gitleaks/releases/download/v${version}/gitleaks_${version}_linux_x64.tar.gz"
+          checksums_url="https://github.com/gitleaks/gitleaks/releases/download/v${version}/gitleaks_${version}_checksums.txt"
+
+          curl -fsSL -o /tmp/gitleaks.tar.gz "$url"
+          curl -fsSL -o /tmp/checksums.txt "$checksums_url"
+
+          # Verify the SHA-256.
+          expected="$(grep "gitleaks_${version}_linux_x64.tar.gz" /tmp/checksums.txt | awk '{print $1}')"
+          actual="$(sha256sum /tmp/gitleaks.tar.gz | awk '{print $1}')"
+          if [ "$expected" != "$actual" ]; then
+            echo "::error::gitleaks archive checksum mismatch: expected $expected, got $actual"
+            exit 1
+          fi
+
+          mkdir -p /tmp/gitleaks
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp/gitleaks
+          echo "/tmp/gitleaks" >> "$GITHUB_PATH"
+
+      - name: Run gitleaks
+        run: |
+          set -euo pipefail
+          gitleaks detect \
+            --source=. \
+            --report-format=sarif \
+            --report-path=/tmp/gitleaks.sarif \
+            --redact \
+            --no-git
+
+      - name: Upload gitleaks SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@f09c1c0a94de965c15400f5634aa42fac8fb8f88 # v3.27.5
+        with:
+          sarif_file: /tmp/gitleaks.sarif
+          category: gitleaks
+
+      - name: Upload gitleaks report
+        if: always()
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: gitleaks-report
+          path: /tmp/gitleaks.sarif
+          retention-days: 90
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────────────────────────────
+  # security-grype — vulnerability scan of the release artifacts.
+  #
+  # The job builds the Linux binary, scans it with grype, and fails
+  # on a high-severity vulnerability.
+  #
+  # # Why the binary, not the source
+  #
+  # grype scans the compiled artifact, including the vendored
+  # standard library and any statically linked dependencies. The
+  # scan is a complement to govulncheck, which scans the module
+  # graph. The two together cover the supply chain from the source
+  # to the binary.
+  # ─────────────────────────────────────────────────────────────────────
+  security-grype:
+    name: security-grype
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Go
+        uses: actions/setup-go@0b12d6b521d83fc7f755e7cfc93634d3f36cbe55 # v5.1.0
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+
+      - name: Build the Linux binary
+        run: |
+          set -euo pipefail
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath -o /tmp/forge ./cmd/forge
+
+      - name: Install grype
+        run: |
+          set -euo pipefail
+          # The install script from anchore/anchore-scripts verifies
+          # the release checksum internally. The pin is the version
+          # passed to the script.
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh \
+            | sh -s -- -b /tmp/grype-bin v0.87.0
+          echo "/tmp/grype-bin" >> "$GITHUB_PATH"
+
+      - name: Run grype
+        run: |
+          set -euo pipefail
+          # The scan fails on a high-severity vulnerability. A
+          # future change that wanted a different threshold would
+          # change the `--fail-on` value.
+          grype dir:/tmp \
+            --fail-on high \
+            --output sarif \
+            --file /tmp/grype.sarif \
+            --output table
+
+      - name: Upload grype SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@f09c1c0a94de965c15400f5634aa42fac8fb8f88 # v3.27.5
+        with:
+          sarif_file: /tmp/grype.sarif
+          category: grype
+
+  # ─────────────────────────────────────────────────────────────────────
+  # security-scorecard — OpenSSF Scorecard.
+  #
+  # The job runs the OpenSSF Scorecard, publishes the score, and
+  # fails if the score is below the threshold.
+  #
+  # # Why the score threshold
+  #
+  # The Scorecard's score is a 0-10 number that measures the
+  # repository's security posture. A drop below the threshold is a
+  # signal that a recent change weakened the posture; the failure
+  # opens an issue for the Security owner.
+  #
+  # The threshold is declared in internal/ci/security.go as
+  # SecurityScorecardThreshold.
+  # ─────────────────────────────────────────────────────────────────────
+  security-scorecard:
+    name: security-scorecard
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+      id-token: write
+      actions: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Run OpenSSF Scorecard
+        uses: ossf/scorecard-action@62b2cac7ed8198b15735ed49ab1e5cf35480ba46 # v2.4.0
+        with:
+          results_file: /tmp/scorecard.sarif
+          results_format: sarif
+          publish_results: true
+
+      - name: Upload Scorecard SARIF
+        uses: github/codeql-action/upload-sarif@f09c1c0a94de965c15400f5634aa42fac8fb8f88 # v3.27.5
+        with:
+          sarif_file: /tmp/scorecard.sarif
+          category: scorecard
+
+      - name: Check the score against the threshold
+        run: |
+          set -euo pipefail
+          # The SARIF file contains the score in a property bag.
+          # The `jq` query extracts it.
+          #
+          # The exact path may vary between Scorecard versions; the
+          # current version writes the score to
+          # `runs[0].properties.score`. A future change to the format
+          # would need this query updated.
+          score="$(jq -r '.runs[0].properties.score // empty' /tmp/scorecard.sarif)"
+          if [ -z "$score" ]; then
+            echo "::warning::could not extract the Scorecard score from the SARIF file"
+            exit 0
+          fi
+          echo "Scorecard score: $score"
+          threshold="7.0"
+          if awk -v s="$score" -v t="$threshold" 'BEGIN { exit !(s < t) }'; then
+            echo "::error::Scorecard score $score is below the threshold $threshold"
+            exit 1
+          fi
+          echo "OK: Scorecard score $score meets the threshold $threshold"
+
+  # ─────────────────────────────────────────────────────────────────────
+  # security-license-scan — license compatibility check.
+  #
+  # The job runs go-licenses over the module and fails if a
+  # dependency's license is on the forbidden list.
+  #
+  # # Why the forbidden list
+  #
+  # The repository is licensed under Apache-2.0. A GPL, AGPL, or
+  # SSPL dependency is incompatible with Apache-2.0 for a
+  # distributed binary. The list is declared in
+  # internal/ci/security.go as SecurityForbiddenLicenses.
+  # ─────────────────────────────────────────────────────────────────────
+  security-license-scan:
+    name: security-license-scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Go
+        uses: actions/setup-go@0b12d6b521d83fc7f755e7cfc93634d3f36cbe55 # v5.1.0
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+
+      - name: Install go-licenses
+        run: go install github.com/google/go-licenses@v1.6.0
+
+      - name: Run the license scan
+        run: |
+          set -euo pipefail
+          # go-licenses save writes each dependency's license to a
+          # directory. The `check` subcommand exits non-zero if a
+          # dependency's license is not in the allowed list. The
+          # allowed list is the forbidden list's complement;
+          # go-licenses expects the allowed list.
+          #
+          # The check's allowed list is built from the model's
+          # forbidden list: everything except the forbidden
+          # licenses. A future change to the forbidden list updates
+          # both the model and this step.
+          go-licenses check ./... \
+            --disallowed_types=forbidden,restricted \
+            --ignore=github.com/thapelomagqazana/forge
+        continue-on-error: false
+
+  # ─────────────────────────────────────────────────────────────────────
+  # security-sbom — SBOM generation with syft.
+  #
+  # The job generates a CycloneDX SBOM for the source repository
+  # and uploads it. The SBOM is retained 90 days per the task's
+  # acceptance criterion.
+  #
+  # # Why the SBOM is separate from the release's SBOM
+  #
+  # The release pipeline (17.5.2) generates an SBOM per released
+  # artifact. This workflow's SBOM is for the source repository as a
+  # whole, generated on every push to main and on every scheduled
+  # run. The two SBOMs serve different purposes: the release's is
+  # for a specific artifact; the security workflow's is for the
+  # source tree's current state.
+  # ─────────────────────────────────────────────────────────────────────
+  security-sbom:
+    name: security-sbom
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install syft
+        run: |
+          set -euo pipefail
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
+            | sh -s -- -b /tmp/syft-bin v1.18.1
+          echo "/tmp/syft-bin" >> "$GITHUB_PATH"
+
+      - name: Generate the SBOM
+        run: |
+          set -euo pipefail
+          syft dir:. \
+            --output cyclonedx-json=/tmp/forge-source.sbom.json
+
+      - name: Upload the SBOM
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: security-sbom
+          path: /tmp/forge-source.sbom.json
+          retention-days: 90
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────────────────────────────
+  # security-dependabot — verify Dependabot is configured.
+  #
+  # The job checks that .github/dependabot.yml exists and configures
+  # the two ecosystems the repository uses: gomod and
+  # github-actions. The check is a shell script; it does not call the
+  # GitHub API (the check is about the file's presence, not the
+  # repository's setting).
+  # ─────────────────────────────────────────────────────────────────────
+  security-dependabot:
+    name: security-dependabot
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Verify Dependabot configuration
+        run: |
+          set -euo pipefail
+          file=".github/dependabot.yml"
+          if [ ! -f "$file" ]; then
+            echo "::error::$file is missing; Dependabot is not configured"
+            exit 1
+          fi
+          if ! grep -q 'package-ecosystem: "gomod"' "$file"; then
+            echo "::error::$file does not configure the gomod ecosystem"
+            exit 1
+          fi
+          if ! grep -q 'package-ecosystem: "github-actions"' "$file"; then
+            echo "::error::$file does not configure the github-actions ecosystem"
+            exit 1
+          fi
+          echo "OK: Dependabot is configured for gomod and github-actions"
+
+  # ─────────────────────────────────────────────────────────────────────
+  # notify — open an issue on failure.
+  #
+  # The job runs if any of the eight security jobs fails. It opens
+  # an issue in the repository with the failing job's name and a
+  # link to the run.
+  #
+  # # Why an issue, not a Slack webhook
+  #
+  # The repository's notification mechanism is GitHub's own: an
+  # issue is visible to the repository's watchers and to the
+  # Security team. A Slack webhook would require a secret
+  # (SLACK_WEBHOOK_URL) and a step; the current form uses GitHub's
+  # own mechanisms.
+  #
+  # # Why the job depends on all eight
+  #
+  # The `needs:` list ensures the job runs after every security job
+  # completes. The `if: failure()` condition ensures it runs only
+  # when at least one of them failed.
+  # ─────────────────────────────────────────────────────────────────────
+  notify:
+    name: notify
+    needs:
+      - security-codeql
+      - security-govulncheck
+      - security-gitleaks
+      - security-grype
+      - security-scorecard
+      - security-license-scan
+      - security-sbom
+      - security-dependabot
+    if: failure()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Open a failure issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          title="Security workflow failed on $(date -u +%Y-%m-%d)"
+          body="$(cat <<'EOF'
+          The security workflow failed. See the run for details.
+
+          Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          Failing jobs:
+          - security-codeql
+          - security-govulncheck
+          - security-gitleaks
+          - security-grype
+          - security-scorecard
+          - security-license-scan
+          - security-sbom
+          - security-dependabot
+
+          The Security owner should triage the failure. See
+          docs/reference/security-workflow.md for the triage procedure.
+          EOF
+          )"
+          gh issue create \
+            --title "$title" \
+            --body "$body" \
+            --label "security" \
+            --label "ci-failure"

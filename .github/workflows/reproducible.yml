@@ -15,6 +15,11 @@
 # The verifier's exit code is the workflow's exit code: 0 when every
 # platform reproduced, 1 when any pair differed or a build failed.
 #
+# Timeouts: every job declares an explicit `timeout-minutes`. The value
+# is a backstop against a hung runner, not a budget enforcement. The
+# flake contract test TestFlake_EveryJobHasTimeout asserts the field is
+# present on every job in every workflow.
+#
 # See:
 #   docs/guides/reproducible-builds.md
 #   docs/decisions/ADR-045-reproducibility-posture.md
@@ -41,7 +46,7 @@ permissions:
 # competing for the runner. cancel-in-progress is false: a running
 # verifier is cheap and its result is meaningful.
 concurrency:
-  group: reproducible-${{ github.ref }}
+  group: reproducible-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -63,6 +68,7 @@ jobs:
   matrix:
     name: Select platforms
     runs-on: ubuntu-22.04
+    timeout-minutes: 10
     outputs:
       include: ${{ steps.gen.outputs.include }}
     steps:
@@ -115,10 +121,10 @@ jobs:
     name: Verify ${{ matrix.goos }}/${{ matrix.goarch }}
     needs: matrix
     runs-on: ubuntu-22.04
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.matrix.outputs.include) }}
-    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -168,6 +174,7 @@ jobs:
     needs: verify
     if: always()
     runs-on: ubuntu-22.04
+    timeout-minutes: 10
     steps:
       - name: Report
         run: |

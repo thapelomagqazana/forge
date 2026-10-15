@@ -1,0 +1,40 @@
+# .golangci.yml — the repository's golangci-lint configuration.
+#
+# The configuration is owned by WBS 16.3. The tier-1 lint job reads
+# it via golangci/golangci-lint-action; the action's `version:` input
+# pins the linter binary to the same release the workflow declares.
+#
+# The configuration enables a curated set of linters. A future change
+# that adds a linter must add it here and in the model's tier-1
+# description in the same commit.
+
+run:
+  timeout: 5m
+  modules-download-mode: readonly
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gofmt
+    - goimports
+    - misspell
+    - unconvert
+    - unparam
+    - bodyclose
+    - gocritic
+    - revive
+
+linters-settings:
+  gofmt:
+    simplify: true
+  goimports:
+    local-prefixes: github.com/thapelomagqazana/forge
+
+issues:
+  exclude-use-default: false
+  max-issues-per-linter: 0
+  max-same-issues: 0

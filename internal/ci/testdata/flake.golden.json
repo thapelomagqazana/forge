@@ -1,0 +1,12 @@
+{
+  "priority": "P0",
+  "quarantine_within": "24h",
+  "fix_within": "1w",
+  "quarantine_marker": "flaky:",
+  "quarantine_format": "t.Skip(\"flaky: #%d\")",
+  "rate_target": 0.0050,
+  "retry_policy": "none",
+  "tier3_count": 2,
+  "artifact_name": "flake-report",
+  "aggregator_note": "A future aggregator fetches the last N flake-report artifacts and computes the per-test flake rate. The aggregator is out of scope for this task; the target and the artifact's name are the interface it will consume."
+}

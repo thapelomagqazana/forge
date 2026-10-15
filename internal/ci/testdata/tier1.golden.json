@@ -1,0 +1,44 @@
+{
+  "cache_key_template": "%s-go-%s",
+  "cache_restore_key_template": "%s-go-",
+  "go_flags": "-mod=readonly",
+  "go_sum_glob": "**/go.sum",
+  "job_timeout_seconds": 900,
+  "jobs": [
+    {
+      "name": "tier1-format",
+      "permissions": ["contents: read"],
+      "steps": ["Check out the repository", "Set up Go", "gofmt", "goimports"],
+      "timeout_seconds": 900,
+      "uses_cache": true
+    },
+    {
+      "name": "tier1-vet",
+      "permissions": ["contents: read"],
+      "steps": ["Check out the repository", "Set up Go", "go vet"],
+      "timeout_seconds": 900,
+      "uses_cache": true
+    },
+    {
+      "name": "tier1-lint",
+      "permissions": ["contents: read"],
+      "steps": ["Check out the repository", "Set up Go", "golangci-lint"],
+      "timeout_seconds": 900,
+      "uses_cache": true
+    },
+    {
+      "name": "tier1-test-short",
+      "permissions": ["contents: read"],
+      "steps": ["Check out the repository", "Set up Go", "go test -short -race -count=1"],
+      "timeout_seconds": 900,
+      "uses_cache": true
+    },
+    {
+      "name": "tier1-build",
+      "permissions": ["contents: read"],
+      "steps": ["Check out the repository", "Set up Go", "go build ./...", "Build the forge binary"],
+      "timeout_seconds": 900,
+      "uses_cache": true
+    }
+  ]
+}

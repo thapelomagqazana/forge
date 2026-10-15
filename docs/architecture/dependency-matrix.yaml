@@ -55,6 +55,7 @@ groups:
     layer: shared
     packages:
       - internal/arch
+      - internal/ci
 
   # architecture.platform covers internal/platform, the supported-platform
   # matrix loader (WBS 17.1.1, ADR-040). Like architecture.tooling, it is

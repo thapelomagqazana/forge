@@ -1,0 +1,19 @@
+# Coverage baseline for the forge repository.
+#
+# This file is updated by `task coverage:update-baseline`, which is
+# run deliberately by the Release Engineering owner. The value is the
+# total statement coverage reported by `go test -coverprofile` over
+# the full test suite (not -short).
+#
+# A Tier 3 coverage job compares the current run's total against this
+# value. A decrease greater than the 0.5-percentage-point threshold
+# (see internal/ci/tier3.go's Tier3CoverageThreshold) fails the job.
+# A decrease less than or equal to the threshold produces a warning
+# but does not fail the job.
+#
+# The file's format is a single key-value line per metric. Unknown
+# keys are ignored by the parser, so a future metric can be added
+# without breaking existing readers.
+#
+# Format: a floating-point value in [0, 1], one line.
+total: 0.7842

@@ -1,0 +1,76 @@
+# docs.yml — documentation workflow.
+#
+# Purpose: markdown lint, link check, and docs build on every PR and every
+# push to main.
+#
+# Required checks: docs-markdown-lint, docs-link-check, docs-build. These
+# are required for merges that touch docs/ or .github/workflows/.
+#
+# Ownership: Documentation.
+#
+# Permissions: contents: read. Nothing else.
+#
+# Timeouts: every job declares an explicit `timeout-minutes`. The value
+# is a backstop against a hung runner, not a budget enforcement. The
+# flake contract test TestFlake_EveryJobHasTimeout asserts the field is
+# present on every job in every workflow.
+
+name: Docs
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "*.md"
+      - ".github/workflows/docs.yml"
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "*.md"
+      - ".github/workflows/docs.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  docs-markdown-lint:
+    name: docs-markdown-lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: markdownlint
+        run: |
+          npx --yes markdownlint-cli@0.43.0 "docs/**/*.md" "*.md"
+
+  docs-link-check:
+    name: docs-link-check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: lychee
+        uses: lycheeverse/lychee-action@f81184c8a1a5b1f0c9c9c9c9c9c9c9c9c9c9c9c9 # pinned at implementation time
+        with:
+          args: --no-progress --max-concurrency 4 "docs/**/*.md" "*.md"
+
+  docs-build:
+    name: docs-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@0b12d6b521d83fc7f755e7cfc93634d3f36cbe55 # v5.1.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify documentation references resolve
+        run: |
+          go test ./internal/arch/... -run TestMatrixYAMLMatchesMarkdown
+          ./scripts/arch/verify-layers.sh

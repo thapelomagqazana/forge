@@ -1,0 +1,31 @@
+{
+  "cache_version": "v1",
+  "golangci_lint_version": "v1.62.2",
+  "branch_scope": "GitHub Actions scopes caches by branch: a branch reads its ancestors' caches but writes only its own. A PR's first push starts cold; subsequent pushes to the same PR hit the PR's branch's cache. A PR never writes to main's cache.",
+  "specs": [
+    {
+      "type": "module",
+      "paths": ["~/go/pkg/mod", "${{ env.HOME }}/go/pkg/mod"],
+      "key_template": "${{ runner.os }}-go-${{ env.CACHE_VERSION }}-${{ hashFiles('**/go.sum') }}",
+      "restore_key_template": "${{ runner.os }}-go-${{ env.CACHE_VERSION }}-",
+      "hit_rate_target": 0.90,
+      "note": "Stores the extracted sources of every module the repository depends on; keyed on go.sum's hash so that a dependency change invalidates the cache."
+    },
+    {
+      "type": "build",
+      "paths": ["~/.cache/go-build", "${{ env.HOME }}/.cache/go-build", "${{ env.LOCALAPPDATA }}/go-build"],
+      "key_template": "${{ runner.os }}-${{ inputs.go-version }}-build-${{ env.CACHE_VERSION }}-${{ hashFiles('**/*.go', '**/go.sum') }}",
+      "restore_key_template": "${{ runner.os }}-${{ inputs.go-version }}-build-${{ env.CACHE_VERSION }}-",
+      "hit_rate_target": 0.60,
+      "note": "Stores compiled object files and intermediate artifacts; keyed on the repository's Go sources and go.sum so that a code change invalidates the cache."
+    },
+    {
+      "type": "lint",
+      "paths": ["~/go/bin/golangci-lint", "${{ env.HOME }}/go/bin/golangci-lint"],
+      "key_template": "${{ runner.os }}-golangci-lint-${{ env.CACHE_VERSION }}-${{ env.GOLANGCI_LINT_VERSION }}",
+      "restore_key_template": "${{ runner.os }}-golangci-lint-${{ env.CACHE_VERSION }}-",
+      "hit_rate_target": 0.90,
+      "note": "Stores the golangci-lint binary; keyed on the pinned linter version so that a version bump invalidates the cache."
+    }
+  ]
+}

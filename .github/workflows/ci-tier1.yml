@@ -1,0 +1,365 @@
+# =============================================================================
+# ci-tier1.yml — Tier 1, the fast-feedback workflow.
+# =============================================================================
+#
+# Purpose
+# -------
+#
+# Tier 1 is the CI tier that runs on every pull-request push and every
+# push to main. Its goal is to catch the majority of mistakes —
+# formatting, vet, lint, compile errors, unit-test failures, data
+# races in the fast tests — before a reviewer is notified. It is the
+# first line of defence and the tier a contributor interacts with
+# most often.
+#
+# The tier model is defined in internal/ci/tiers.go (Tier1) and
+# rendered to docs/reference/ci-tiers.md. The contract tests in
+# internal/ci/tier1_contract_test.go assert that this file implements
+# the model.
+#
+# Budget: 3 minutes (wall-clock, warm cache).
+# Blocking: yes, on every pull_request and every push to main.
+#
+# Jobs
+# ----
+#
+# Five jobs, running in parallel:
+#
+#   format-check   gofmt -l and goimports -l return no files.
+#   vet            go vet ./...
+#   lint           golangci-lint with .golangci.yml, pinned to v1.62.2.
+#   test-short     go test -short -race -count=1 ./...
+#   build-host     go build ./... for the host platform.
+#
+# Each job:
+#
+#   - has a 15-minute timeout (a backstop against a hung job, not a
+#     budget enforcement — the budget is enforced by the quarterly
+#     review of measured timings),
+#   - declares `permissions: contents: read` (the workflow-level
+#     block is the intersection; each job restates its own to be
+#     explicit),
+#   - uses a pinned action SHA (see internal/ci.PinnedActions),
+#   - provisions the three caches via .github/workflows/cache.yml
+#     (module, build, linter binary) before setting up Go,
+#   - sets GOFLAGS=-mod=readonly so that a missing `go mod tidy` is a
+#     failure rather than a silent modification of go.sum.
+#
+# Caching
+# -------
+#
+# Every job invokes .github/workflows/cache.yml before
+# actions/setup-go. The cache workflow provisions three caches:
+#
+#   - the Go module cache, keyed on go.sum's hash;
+#   - the Go build cache, keyed on the repository's Go sources and
+#     go.sum;
+#   - the golangci-lint binary cache, keyed on the pinned linter
+#     version.
+#
+# The cache workflow is invoked once per job because each job runs on
+# a fresh runner and needs the caches restored at the start. The
+# `cache-key-suffix` input is the job's name (`tier1-format`,
+# `tier1-vet`, etc.); the suffix differentiates this job's cache from
+# the other jobs' caches and from the other tiers' caches.
+#
+# `actions/setup-go`'s implicit cache is disabled with `cache: false`.
+# The explicit cache step above replaces it: a job that left the
+# implicit cache enabled would write a second, disjoint cache and
+# split the hit rate. The contract test
+# TestCache_TierWorkflowsDoNotRelyOnImplicitCache asserts the
+# invariant, and the contract test TestCache_EveryKeyMatchesModel
+# asserts the explicit step's key templates against the model in
+# internal/ci/cache.go.
+#
+# See docs/reference/ci-cache-strategy.md and ADR-049.
+#
+# Fail-fast
+# ---------
+#
+# Tier 1 has no matrix; the Go-version matrix is a Tier 2 concern.
+# The requirement is vacuously satisfied. If a matrix is added to any
+# job in this file, its `strategy.fail-fast` must be `false`, and the
+# contract test `TestTier1_EveryMatrixIsFailFastFalse` asserts the
+# invariant.
+#
+# Secrets
+# -------
+#
+# None. Tier 1 runs on untrusted PR code; it must never have access
+# to repository secrets. This is a structural property of the
+# `pull_request` event, not a runtime check.
+#
+# Reusability
+# -----------
+#
+# This file is a reusable workflow (`on: workflow_call`). It is
+# invoked by ci.yml. The release pipeline (17.5.3) may also invoke it
+# as a pre-flight check. The `workflow_call` event has no direct
+# trigger; a caller must provide the secrets and permissions it needs
+# (none, in Tier 1's case).
+#
+# See:
+#   docs/reference/ci-tiers.md
+#   docs/reference/ci-cache-strategy.md
+#   docs/architecture/ci-architecture.md
+#   docs/decisions/ADR-045-tier1-fast-feedback-workflow.md
+#   docs/decisions/ADR-049-ci-cache-strategy.md
+# =============================================================================
+
+name: CI Tier 1
+
+on:
+  workflow_call:
+    # No inputs, no secrets. Tier 1 is self-contained: it reads the
+    # repository, runs the five jobs, and reports their results. A
+    # caller cannot parameterise it because a parameterised Tier 1
+    # would not be the same tier on every caller.
+
+# Workflow-level permissions: the intersection of every job's needs.
+# All five jobs need `contents: read` and nothing else.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-tier1-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+# Workflow-level environment: applied to every job that does not
+# override it. GOFLAGS is the load-bearing variable: it turns a
+# missing `go mod tidy` into a failure.
+env:
+  GOFLAGS: -mod=readonly
+  GOTOOLCHAIN: local
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────
+  # format-check — gofmt and goimports must report no files.
+  # ─────────────────────────────────────────────────────────────────────
+  format-check:
+    name: tier1-format
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      # Provision the caches explicitly. The cache workflow restores
+      # the Go module cache, the Go build cache, and the
+      # golangci-lint binary cache before setup-go runs. The suffix
+      # `tier1-format` differentiates this job's cache from the other
+      # jobs'.
+      - name: Provision caches
+        uses: ./.github/workflows/cache.yml
+        with:
+          go-version: '1.23'
+          cache-key-suffix: tier1-format
+
+      - name: Set up Go
+        uses: actions/setup-go@0b12d6b521d83fc7f755e7cfc93634d3f36cbe55 # v5.1.0
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          # The explicit cache step above owns caching. Leaving the
+          # implicit cache enabled would write a second, disjoint
+          # cache and split the hit rate.
+          cache: false
+
+      - name: gofmt
+        run: |
+          set -euo pipefail
+          out="$(gofmt -l .)"
+          if [ -n "$out" ]; then
+            echo "::error::gofmt found unformatted files:"
+            echo "$out"
+            echo
+            echo "Run 'gofmt -w .' locally and commit the result."
+            exit 1
+          fi
+
+      - name: goimports
+        run: |
+          set -euo pipefail
+          # goimports is installed from golang.org/x/tools, pinned to
+          # the same version the lint job uses. The pin is a version
+          # string, not a SHA: x/tools is a Go module and its version
+          # is resolved by the Go module proxy, which is content-
+          # addressed. This is the one place where a version pin is
+          # sufficient; see ADR-045 for the rationale.
+          #
+          # The binary is cached: the `go install` command writes the
+          # binary to ~/go/bin/goimports, which the cache workflow's
+          # lint cache restores. On a warm cache the install is
+          # skipped (the binary exists); on a cold cache the install
+          # runs and the cache is updated at the end of the job.
+          if ! command -v goimports >/dev/null 2>&1; then
+            go install golang.org/x/tools/cmd/goimports@v0.28.0
+          fi
+          out="$(goimports -l .)"
+          if [ -n "$out" ]; then
+            echo "::error::goimports found files with ungrouped imports:"
+            echo "$out"
+            echo
+            echo "Run 'goimports -w .' locally and commit the result."
+            exit 1
+          fi
+
+  # ─────────────────────────────────────────────────────────────────────
+  # vet — go vet ./...
+  # ─────────────────────────────────────────────────────────────────────
+  vet:
+    name: tier1-vet
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      # Provision the caches explicitly. The suffix `tier1-vet`
+      # differentiates this job's cache from the other jobs'.
+      - name: Provision caches
+        uses: ./.github/workflows/cache.yml
+        with:
+          go-version: '1.23'
+          cache-key-suffix: tier1-vet
+
+      - name: Set up Go
+        uses: actions/setup-go@0b12d6b521d83fc7f755e7cfc93634d3f36cbe55 # v5.1.0
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          # The explicit cache step above owns caching.
+          cache: false
+
+      - name: go vet
+        run: go vet ./...
+
+  # ─────────────────────────────────────────────────────────────────────
+  # lint — golangci-lint with .golangci.yml.
+  # ─────────────────────────────────────────────────────────────────────
+  #
+  # The action is pinned to a SHA. The golangci-lint binary is pinned
+  # to a version; the action downloads the release archive and
+  # verifies its SHA-256 against the release's checksums.txt. This is
+  # the "SHA-verified" part of the task's acceptance criteria.
+  #
+  # The `.golangci.yml` configuration is owned by WBS 16.3. This job
+  # reads it; it does not define it.
+  #
+  # The golangci-lint binary cache (from the cache workflow) stores
+  # the binary between runs. The action reads the cached binary if
+  # present; a version bump (from the input) invalidates the cache.
+  lint:
+    name: tier1-lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      # Provision the caches explicitly. The suffix `tier1-lint`
+      # differentiates this job's cache from the other jobs'. The
+      # lint cache (golangci-lint binary) is the one this job uses
+      # most.
+      - name: Provision caches
+        uses: ./.github/workflows/cache.yml
+        with:
+          go-version: '1.23'
+          cache-key-suffix: tier1-lint
+
+      - name: Set up Go
+        uses: actions/setup-go@0b12d6b521d83fc7f755e7cfc93634d3f36cbe55 # v5.1.0
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          # The explicit cache step above owns caching.
+          cache: false
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@ec5d18412c0aeab7936cb16880d708ba2a64e1ae # v6.2.0
+        with:
+          version: v1.62.2
+          only-new-issues: false
+
+  # ─────────────────────────────────────────────────────────────────────
+  # test-short — go test -short -race -count=1 ./...
+  # ─────────────────────────────────────────────────────────────────────
+  #
+  # The -count=1 flag disables the test cache. Without it, `go test`
+  # would return cached results for packages whose inputs have not
+  # changed, and the race detector would not run on them. The
+  # combination -short -race -count=1 is the fastest form of "run
+  # the fast tests with the race detector".
+  test-short:
+    name: tier1-test-short
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      # Provision the caches explicitly. The suffix
+      # `tier1-test-short` differentiates this job's cache from the
+      # other jobs'.
+      - name: Provision caches
+        uses: ./.github/workflows/cache.yml
+        with:
+          go-version: '1.23'
+          cache-key-suffix: tier1-test-short
+
+      - name: Set up Go
+        uses: actions/setup-go@0b12d6b521d83fc7f755e7cfc93634d3f36cbe55 # v5.1.0
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          # The explicit cache step above owns caching.
+          cache: false
+
+      - name: go test -short -race -count=1
+        run: go test -short -race -count=1 ./...
+
+  # ─────────────────────────────────────────────────────────────────────
+  # build-host — go build ./... for the host platform.
+  # ─────────────────────────────────────────────────────────────────────
+  build-host:
+    name: tier1-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      # Provision the caches explicitly. The suffix `tier1-build`
+      # differentiates this job's cache from the other jobs'.
+      - name: Provision caches
+        uses: ./.github/workflows/cache.yml
+        with:
+          go-version: '1.23'
+          cache-key-suffix: tier1-build
+
+      - name: Set up Go
+        uses: actions/setup-go@0b12d6b521d83fc7f755e7cfc93634d3f36cbe55 # v5.1.0
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          # The explicit cache step above owns caching.
+          cache: false
+
+      - name: go build ./...
+        run: go build ./...
+
+      - name: Build the forge binary
+        run: |
+          set -euo pipefail
+          go build -o /tmp/forge ./cmd/forge
+          /tmp/forge --version
