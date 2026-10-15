@@ -75,10 +75,6 @@ All community leaders are obligated to respect the privacy and security
 of the reporter of any incident.
 
 The project team is the community leaders responsible for enforcement.
-The team's current members are listed in the repository's
-[`.github/CODEOWNERS`](.github/CODEOWNERS) file; the
-`@thapelomagqazana/release-engineering` and
-`@thapelomagqazana/security` teams are the enforcement body.
 
 ### What to include in a report
 

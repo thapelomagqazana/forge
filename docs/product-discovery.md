@@ -1654,7 +1654,6 @@ prototype validation in later phases.
    [`docs/research/findings.md`](./research/findings.md).
 3. Update hypothesis statuses in
    [`docs/research/evidence-matrix.md`](./research/evidence-matrix.md).
-   [ADR-001](./decisions/ADR-001-forge-as-foundation-manager.md).
 4. Feed validated findings into
    [`docs/cli-ux-spec.md`](./cli-ux-spec.md),
    [`docs/blueprint-spec.md`](./blueprint-spec.md), and
