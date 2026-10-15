@@ -234,6 +234,4 @@ A: No. See §5.
   for `--verbose`.
 - [`../architecture/output-vs-logging.md`](../architecture/output-vs-logging.md)
   — the two-layer output architecture.
-- [ADR-022](../decisions/ADR-022-output-logging-separation.md) —
-  output/logging separation.
 - FR-CLI-LOG-010, WBS 12.6.1, Phase 6 WBS §19.

@@ -394,4 +394,3 @@ test is in the same PR as the fix.
 | [`docs/guides/verifying-binaries.md`](verifying-binaries.md) | The binary smoke suite the pipeline runs before signing. |
 | [`docs/reference/verifying-releases.md`](../reference/verifying-releases.md) | The verification procedure a user follows. |
 | [`SECURITY.md`](../../SECURITY.md) | How to report a defect and the credentials' handling. |
-| [`docs/reference/release-channels.md`](../reference/release-channels.md) | The channels a release is published to, and the support window. |

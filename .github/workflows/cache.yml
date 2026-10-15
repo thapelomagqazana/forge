@@ -1,0 +1,234 @@
+# =============================================================================
+# cache.yml — the reusable workflow that provisions the CI caches.
+# =============================================================================
+#
+# Purpose
+# -------
+#
+# The three tier workflows (ci-tier1.yml, ci-tier2.yml, ci-tier3.yml)
+# each need the same three caches: the Go module cache, the Go build
+# cache, and the golangci-lint binary cache. This workflow
+# provisions them. A tier workflow invokes it once, at the start of
+# its job, and receives the caches' `cache-hit` outputs.
+#
+# The workflow's shape is deliberate: it is a reusable workflow, not
+# a set of steps a tier workflow copies. A change to a cache key is a
+# change to this file, not to three files.
+#
+# # Cache keys
+#
+# The three keys are:
+#
+#   module:  ${{ runner.os }}-go-${{ env.CACHE_VERSION }}-${{ hashFiles('**/go.sum') }}
+#   build:   ${{ runner.os }}-${{ inputs.go-version }}-build-${{ env.CACHE_VERSION }}-${{ hashFiles('**/*.go', '**/go.sum') }}
+#   lint:    ${{ runner.os }}-golangci-lint-${{ env.CACHE_VERSION }}-${{ env.GOLANGCI_LINT_VERSION }}
+#
+# Each key is expressed as a template in
+# internal/ci/cache.go. The contract test
+# TestCache_EveryKeyMatchesModel reads this file and asserts each
+# `key:` line matches one of the templates after substitution.
+#
+# # Restore keys
+#
+# Each cache has a restore key that is a prefix of the key (without
+# the hash or version component). A change to the hash component
+# produces a cache miss on the exact key but a cache hit on the
+# restore key, which fetches the most recent cache with the same
+# prefix. The Go toolchain (or the linter installer) then updates the
+# cache by downloading only what changed.
+#
+# # Branch scope
+#
+# GitHub Actions scopes caches by branch. A branch reads its
+# ancestors' caches but writes only its own. A PR's first push
+# starts cold; subsequent pushes to the same PR hit the PR's
+# branch's cache. A PR never writes to main's cache. The behaviour
+# is GitHub's, not this workflow's.
+#
+# # Invalidation
+#
+# The CACHE_VERSION environment variable is the invalidation
+# mechanism. Bumping it (v1 -> v2) forces a cache miss on every key.
+# See docs/reference/ci-cache-strategy.md § "Invalidation".
+#
+# # Safety
+#
+# The caches store derived artifacts only: module sources, compiled
+# objects, the linter binary. None contains a secret. The workflow's
+# `env:` block declares no secret. `go.mod` and `go.sum` are not
+# cached (they are source files, not derived artifacts).
+#
+# # Inputs
+#
+#   go-version         The Go version the caller uses. It appears in
+#                      the build cache's key so that a change to the
+#                      Go version invalidates the cache.
+#   cache-key-suffix   An optional suffix that differentiates the
+#                      caller's caches from other callers' caches.
+#                      A tier workflow passes its tier's name
+#                      ("tier1", "tier2-min", "tier2-current"); a
+#                      second tier workflow that shared the same
+#                      suffix would share the same cache.
+#
+# # Outputs
+#
+#   module-cache-hit   "true" if the module cache hit; "false"
+#                      otherwise. A caller may use the value to
+#                      decide whether to run a cache-miss-only step.
+#   build-cache-hit    Same for the build cache.
+#   lint-cache-hit     Same for the linter cache.
+#
+# See:
+#   docs/reference/ci-cache-strategy.md
+#   docs/decisions/ADR-049-ci-cache-strategy.md
+#   internal/ci/cache.go
+
+name: Cache
+
+on:
+  workflow_call:
+    inputs:
+      go-version:
+        description: "The Go version the caller uses."
+        type: string
+        required: true
+      cache-key-suffix:
+        description: "An optional suffix that differentiates the caller's caches."
+        type: string
+        required: false
+        default: ""
+    outputs:
+      module-cache-hit:
+        description: "Whether the module cache hit."
+        value: ${{ steps.module-cache.outputs.cache-hit }}
+      build-cache-hit:
+        description: "Whether the build cache hit."
+        value: ${{ steps.build-cache.outputs.cache-hit }}
+      lint-cache-hit:
+        description: "Whether the linter cache hit."
+        value: ${{ steps.lint-cache.outputs.cache-hit }}
+
+# Workflow-level permissions: the intersection of every job's needs.
+# The cache workflow reads and writes the repository's actions cache,
+# which requires `actions: write` on some runner versions. The block
+# is the minimum.
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: cache-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+# Workflow-level environment.
+#
+#   CACHE_VERSION               The invalidation prefix. Bump to
+#                               force a cache miss on every key.
+#   GOLANGCI_LINT_VERSION       The pinned linter version. It is
+#                               part of the lint cache's key.
+env:
+  CACHE_VERSION: v1
+  GOLANGCI_LINT_VERSION: v1.62.2
+
+jobs:
+  cache:
+    name: cache
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # ─────────────────────────────────────────────────────────────────
+      # Module cache
+      #
+      # Key:    ${{ runner.os }}-go-${{ env.CACHE_VERSION }}-${{ hashFiles('**/go.sum') }}
+      # Paths:  ~/go/pkg/mod
+      #
+      # The key changes when go.sum changes. The restore key falls
+      # back to the same prefix without the hash, so a go.sum change
+      # restores the previous cache and downloads only the new
+      # modules.
+      #
+      # The `cache-hit` output is exported by the action. A caller
+      # that wants the value reads this step's output via the
+      # workflow's module-cache-hit output.
+      # ─────────────────────────────────────────────────────────────────
+      - name: Cache Go modules
+        id: module-cache
+        uses: actions/cache@3624ceb22c1c5a301c8db4169662070a689d9ea8 # v4.1.2
+        with:
+          path: |
+            ~/go/pkg/mod
+            ${{ env.HOME }}/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ env.CACHE_VERSION }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-${{ env.CACHE_VERSION }}-
+
+      # ─────────────────────────────────────────────────────────────────
+      # Build cache
+      #
+      # Key:    ${{ runner.os }}-${{ inputs.go-version }}-build-${{ env.CACHE_VERSION }}-${{ hashFiles('**/*.go', '**/go.sum') }}
+      # Paths:  ~/.cache/go-build, ${{ env.LOCALAPPDATA }}/go-build
+      #
+      # The key changes when any Go source file or go.sum changes.
+      # The Go version appears in the key so that a change to the
+      # Go toolchain invalidates the cache (compiled objects from a
+      # different Go version are not compatible).
+      #
+      # The `LOCALAPPDATA` path is for Windows runners; the
+      # `~/.cache/go-build` path is for Unix runners. On a runner,
+      # one of the two paths exists and the other does not; the
+      # action tolerates a missing path.
+      # ─────────────────────────────────────────────────────────────────
+      - name: Cache Go build artifacts
+        id: build-cache
+        uses: actions/cache@3624ceb22c1c5a301c8db4169662070a689d9ea8 # v4.1.2
+        with:
+          path: |
+            ~/.cache/go-build
+            ${{ env.HOME }}/.cache/go-build
+            ${{ env.LOCALAPPDATA }}/go-build
+          key: ${{ runner.os }}-${{ inputs.go-version }}-build-${{ env.CACHE_VERSION }}-${{ hashFiles('**/*.go', '**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ inputs.go-version }}-build-${{ env.CACHE_VERSION }}-
+
+      # ─────────────────────────────────────────────────────────────────
+      # Linter binary cache
+      #
+      # Key:    ${{ runner.os }}-golangci-lint-${{ env.CACHE_VERSION }}-${{ env.GOLANGCI_LINT_VERSION }}
+      # Paths:  ~/go/bin/golangci-lint
+      #
+      # The key changes when the pinned linter version changes. The
+      # cache stores the installed binary, not the source; a version
+      # bump installs a new binary and caches it under a new key.
+      #
+      # The cache is not used by the workflow itself; it is used by
+      # the caller's lint job. The caller installs the linter with
+      # `go install` if the cache misses; the install writes the
+      # binary to the cached path.
+      # ─────────────────────────────────────────────────────────────────
+      - name: Cache golangci-lint binary
+        id: lint-cache
+        uses: actions/cache@3624ceb22c1c5a301c8db4169662070a689d9ea8 # v4.1.2
+        with:
+          path: |
+            ~/go/bin/golangci-lint
+            ${{ env.HOME }}/go/bin/golangci-lint
+          key: ${{ runner.os }}-golangci-lint-${{ env.CACHE_VERSION }}-${{ env.GOLANGCI_LINT_VERSION }}
+          restore-keys: |
+            ${{ runner.os }}-golangci-lint-${{ env.CACHE_VERSION }}-
+
+      # ─────────────────────────────────────────────────────────────────
+      # Report the cache hits.
+      #
+      # The step prints the three hit values to the job log so that a
+      # contributor reviewing a run sees them without opening the
+      # action's own output. The values are also the workflow's
+      # outputs; a caller that wants them reads the workflow's
+      # outputs, not this step.
+      # ─────────────────────────────────────────────────────────────────
+      - name: Report cache hits
+        run: |
+          set -euo pipefail
+          echo "module-cache-hit: ${{ steps.module-cache.outputs.cache-hit }}"
+          echo "build-cache-hit:  ${{ steps.build-cache.outputs.cache-hit }}"
+          echo "lint-cache-hit:   ${{ steps.lint-cache.outputs.cache-hit }}"
+          echo "CACHE_VERSION:    ${{ env.CACHE_VERSION }}"

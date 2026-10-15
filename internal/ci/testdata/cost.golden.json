@@ -1,0 +1,82 @@
+{
+  "public_monthly_minutes": 2000,
+  "private_monthly_minutes": 5000,
+  "alert_threshold": 0.80,
+  "target_minutes_per_pr": 50,
+  "target_minutes_per_main_push": 20,
+  "multipliers": {
+    "linux": 1,
+    "windows": 2,
+    "macos": 10
+  },
+  "tiers": [
+    {
+      "tier": "tier1",
+      "runner": "linux",
+      "job_count": 5,
+      "per_job_minutes": 1,
+      "runs_on_pr": true,
+      "runs_on_main": true,
+      "notes": "Five fast jobs on Ubuntu. With a warm cache, ~1 minute per job wall-clock."
+    },
+    {
+      "tier": "tier2",
+      "runner": "linux",
+      "job_count": 4,
+      "per_job_minutes": 5,
+      "runs_on_pr": true,
+      "runs_on_main": true,
+      "notes": "Four jobs; the matrix job runs six cells across three OSes. The macOS cells' 10× multiplier dominates the tier's cost."
+    },
+    {
+      "tier": "tier3",
+      "runner": "linux",
+      "job_count": 5,
+      "per_job_minutes": 10,
+      "runs_on_pr": false,
+      "runs_on_main": true,
+      "notes": "Five depth jobs on Ubuntu. The tier is gated on main, so its cost is paid once per main push, not per PR push."
+    },
+    {
+      "tier": "tier4",
+      "runner": "linux",
+      "job_count": 8,
+      "per_job_minutes": 8,
+      "runs_on_pr": false,
+      "runs_on_main": true,
+      "notes": "Eight security jobs on Ubuntu. The tier runs on the daily schedule and on main pushes; the scheduled runs dominate the tier's cost."
+    }
+  ],
+  "optimizations": [
+    {
+      "name": "Concurrency cancel-in-progress",
+      "rationale": "A superseded PR push's run is cancelled; the runner is freed for the new run. The technique reduces the billed minutes for a rapid series of PR pushes.",
+      "mechanism": "internal/ci/concurrency.go (CancelPolicyOnPR)"
+    },
+    {
+      "name": "Skip CI for docs-only changes",
+      "rationale": "A change under docs/ or to a Markdown file does not trigger the CI tier. The technique eliminates the CI cost of documentation changes.",
+      "mechanism": ".github/workflows/ci.yml (on.pull_request.paths-ignore)"
+    },
+    {
+      "name": "Cache aggressively",
+      "rationale": "The Go module cache, the Go build cache, and the linter binary cache reduce the wall-clock of every job. The technique reduces the billed minutes proportionally.",
+      "mechanism": "internal/ci/cache.go"
+    },
+    {
+      "name": "Fail-fast off, cancel-on-fail for matrix",
+      "rationale": "A matrix job with fail-fast: false reports all cells' failures in one run. The technique avoids a second run that would only re-detect the same failure.",
+      "mechanism": "internal/ci/tier2.go, internal/ci/tier3.go (the matrix jobs)"
+    },
+    {
+      "name": "Run expensive jobs on main only",
+      "rationale": "Tier 3's depth checks are gated on main pushes. The technique pays the depth checks' cost once per main push, not once per PR push.",
+      "mechanism": "internal/ci/tiers.go (Tier3.Advisory), .github/workflows/ci.yml (the tier3 gate)"
+    },
+    {
+      "name": "Use Linux runners where possible",
+      "rationale": "Linux's 1× multiplier is the cheapest. The technique confines the Windows (2×) and macOS (10×) multipliers to the workflows that need them.",
+      "mechanism": "internal/ci/platform_matrix.go, .github/workflows/ci-tier2.yml"
+    }
+  ]
+}

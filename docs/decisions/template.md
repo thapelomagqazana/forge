@@ -236,9 +236,6 @@ change. This ensures the index never lags behind the directory.
 
 ## Appendix B: Worked Example
 
-See [`ADR-001-forge-as-foundation-manager.md`](./ADR-001-forge-as-foundation-manager.md)
-for a complete, accepted ADR produced from this template.
-
 ---
 
 *End of template.*

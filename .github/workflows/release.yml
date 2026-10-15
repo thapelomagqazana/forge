@@ -1,21 +1,80 @@
-# Release pipeline. Every tag matching v* triggers this workflow.
+# release.yml — tag-triggered release workflow.
 #
-# Channel is a pure function of the tag. The routing step computes it
-# and passes it to the rest of the pipeline. No branch name, no
-# environment variable, and no human approval influences the channel.
+# Purpose: build, sign, and publish a release. Owned by task 17.5.3.
 #
-# Job order and rationale:
+# The workflow is the only one in the repository that has access to
+# release secrets and to the OIDC token used for SLSA provenance and
+# cosign keyless signing. It runs on every tag matching v* and on
+# manual dispatch.
+#
+# # Trigger
+#
+#   - push of a tag matching v*
+#   - workflow_dispatch, for dry-runs and re-runs
+#
+# # Permissions
+#
+# The top-level permissions block is the intersection of every job's
+# needs, not the union. It is `contents: read`. Each job that needs
+# more declares its own block:
+#
+#   - publish: contents: write (to create the GitHub Release)
+#   - sign, provenance: id-token: write (for OIDC)
+#   - provenance: actions: read, contents: write
+#
+# A job that declares no `permissions:` block inherits the top-level
+# block. The contract test
+# TestWorkflow_TopLevelPermissionsIsMinimum asserts the top-level
+# block grants no write scope.
+#
+# # Pinning
+#
+# Every action reference is pinned to a full 40-hex-character SHA.
+# The SHA is the commit the tag pointed to at the time of pinning;
+# the trailing comment names the tag so a reviewer can tell which
+# release the SHA corresponds to without leaving the file.
+#
+# The one exception is the reusable workflow reference to the SLSA
+# generator. A reusable workflow is referenced as
+# `owner/repo/.github/workflows/file.yml@ref`, and GitHub does not
+# support SHA pinning for reusable workflows in the same way it
+# supports it for actions. The SLSA generator's own documentation
+# recommends the version tag. The pinning policy exempts references
+# whose path contains `/.github/workflows/`; the contract tests skip
+# them. The verification mechanism for the reusable workflow is the
+# attestation it produces, not the pin.
+#
+# # Dry-run
+#
+# workflow_dispatch with dry_run: true runs every job except publish
+# and verify-release. The GPG key is not imported. Every artifact is
+# uploaded as a workflow artifact.
+#
+# # Required checks
+#
+# None. This workflow never gates a merge.
+#
+# # Timeouts
+#
+# Every job declares an explicit `timeout-minutes`. The value is a
+# backstop against a hung runner, not a budget enforcement. The flake
+# contract test TestFlake_EveryJobHasTimeout asserts the field is
+# present on every job in every workflow.
+#
+# # Job order and rationale
 #
 #   route       Determine the channel from the tag via
 #               cmd/forge-internal-version. Rejects tags that match no
 #               channel. This is the only job that reads the tag.
 #
-#   build       Calls the reusable build workflow to cross-compile the
-#               Tier 1 matrix and upload each binary as an artifact.
-#               Exposes `hashes` for the SLSA provenance job.
+#   build       Calls the reusable build workflow to cross-compile
+#               the Tier 1 matrix and upload each binary as an
+#               artifact. Exposes `hashes` for the SLSA provenance
+#               job.
 #
 #   verify      Runs the binary smoke suite (WBS 17.5.1) against the
-#               freshly built artifacts. A broken binary is not signed.
+#               freshly built artifacts. A broken binary is not
+#               signed.
 #
 #   checksums   Per-binary .sha256 files, SHA256SUMS, SHA256SUMS.asc,
 #               SHA256SUMS.gpg (WBS 17.5.2). Runs after verify so the
@@ -27,31 +86,32 @@
 #   sign        cosign keyless signatures over every archive, plus
 #               macOS notarization and Windows Authenticode where the
 #               credentials are available (WBS 17.5.2). Runs after
-#               checksums so the signature is over the final artifact.
+#               checksums so the signature is over the final
+#               artifact.
 #
 #   provenance  SLSA Level 3 attestation via slsa-github-generator
 #               (WBS 17.5.2). Runs after build; the attestation
 #               describes what was built. The attestation's proof is
-#               its own signature, checked by slsa-verifier; it is not
-#               separately cosign-signed.
+#               its own signature, checked by slsa-verifier; it is
+#               not separately cosign-signed.
 #
 #   publish     Downloads every artifact, attaches them to the GitHub
 #               Release, and (for stable) prepares the package-manager
 #               submissions. Skipped in a dry-run.
+#
+#   distribute  Updates every distribution channel for a release
+#               (WBS 17.5.4). Runs after publish.
 #
 #   verify-rel  Post-publish assertions: the GPG signature over
 #               SHA256SUMS, the artifact-presence check, and the
 #               channel-distribution invariant check. Skipped in a
 #               dry-run.
 #
-# Dry-run: workflow_dispatch with dry_run: true runs every job except
-# publish and verify-release. The GPG key is not imported. Every
-# artifact is uploaded as a workflow artifact.
-#
 # See docs/reference/release-process.md, docs/guides/rollback.md,
 # docs/guides/release-dry-run.md, docs/reference/verifying-releases.md,
-# SECURITY.md, docs/decisions/ADR-043-versioning-and-release-channels.md,
+# SECURITY.md, docs/decisions/ADR-043-ci-workflow-architecture.md,
 # and docs/decisions/ADR-048-supply-chain-integrity.md.
+
 name: release
 
 on:
@@ -81,8 +141,16 @@ permissions:
 # bug; serializing is the safe default. A dry-run for a version shares
 # the group with a real release for the same version so the two
 # serialize.
+#
+# The group begins with the workflow's short name and includes
+# github.workflow, matching every other workflow's concurrency group.
+# The `github.workflow` marker prevents a release run from sharing a
+# group with a tier run on the same ref. The version input is
+# preferred when present so a dry-run for a specific version shares
+# the group with a real release for that version; otherwise the ref
+# scopes the group per tag.
 concurrency:
-  group: release-${{ inputs.version || github.ref }}
+  group: release-${{ github.workflow }}-${{ inputs.version || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -90,6 +158,7 @@ jobs:
   route:
     name: Route tag to channel
     runs-on: ubuntu-22.04
+    timeout-minutes: 10
     permissions:
       contents: read
     outputs:
@@ -97,11 +166,11 @@ jobs:
       version: ${{ steps.route.outputs.version }}
       dry_run: ${{ steps.route.outputs.dry_run }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
         with:
           go-version-file: go.mod
           check-latest: false
@@ -150,6 +219,7 @@ jobs:
   build:
     name: Build
     needs: route
+    timeout-minutes: 45
     permissions:
       contents: read
     uses: ./.github/workflows/build.yml
@@ -161,18 +231,19 @@ jobs:
     name: Verify binaries
     needs: [route, build]
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
         with:
           go-version-file: go.mod
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
         with:
           path: dist
           merge-multiple: true
@@ -184,16 +255,17 @@ jobs:
     name: Checksums and GPG signatures
     needs: [route, verify]
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
         with:
           go-version-file: go.mod
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
         with:
           path: dist
           merge-multiple: true
@@ -219,7 +291,7 @@ jobs:
           fi
           go run ./cmd/forge-internal-checksums $flags
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:
           name: release-checksums
           path: |
@@ -233,16 +305,17 @@ jobs:
     name: SBOM
     needs: [route, verify]
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
         with:
           go-version-file: go.mod
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
         with:
           path: dist
           merge-multiple: true
@@ -254,7 +327,7 @@ jobs:
             --dist=dist \
             --version="${{ needs.route.outputs.version }}"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:
           name: release-sbom
           path: |
@@ -266,22 +339,26 @@ jobs:
     name: Sign
     needs: [route, verify, checksums]
     runs-on: ubuntu-22.04
+    timeout-minutes: 45
     permissions:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
         with:
           go-version-file: go.mod
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
         with:
           path: dist
           merge-multiple: true
 
-      - uses: sigstore/cosign-installer@v3
+      # sigstore/cosign-installer is pinned to its v3.7.0 commit.
+      # The SHA is the current release of the action at the time of
+      # pinning; Dependabot's weekly grouped PR keeps it current.
+      - uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
 
       - name: Sign archives
         env:
@@ -293,7 +370,7 @@ jobs:
           set -euo pipefail
           go run ./cmd/forge-internal-sign --dist=dist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:
           name: release-signatures
           path: |
@@ -304,10 +381,17 @@ jobs:
   provenance:
     name: SLSA provenance
     needs: [route, build]
+    timeout-minutes: 45
     permissions:
       actions: read
       id-token: write
       contents: write
+    # A reusable workflow is referenced by owner/repo/path@ref. The
+    # pinning policy exempts references whose path contains
+    # /.github/workflows/; the SLSA generator's own documentation
+    # recommends a version tag. The verification mechanism for the
+    # generated attestation is the attestation itself, checked by
+    # slsa-verifier, not the pin on the reusable workflow.
     uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.0.0
     with:
       base64-subjects: ${{ needs.build.outputs.hashes }}
@@ -319,28 +403,29 @@ jobs:
     needs: [route, build, checksums, sbom, sign, provenance]
     if: ${{ needs.route.outputs.dry_run != '1' }}
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
     permissions:
       contents: write
       packages: write
     outputs:
       release_url: ${{ steps.create.outputs.url }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
         with:
           go-version-file: go.mod
 
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
         with:
           path: dist
           merge-multiple: true
 
       - name: Download SLSA provenance
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
         with:
           name: ${{ needs.provenance.outputs.provenance-name }}
           path: dist
@@ -383,7 +468,7 @@ jobs:
 
       - name: Create GitHub Release
         id: create
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@01570a1f39cbab3405188dda4dd59e0b9c1c9c9c # v2.2.0
         with:
           name: "Forge ${{ needs.route.outputs.version }}"
           body_path: "docs/releases/${{ needs.route.outputs.version }}.md"
@@ -422,39 +507,22 @@ jobs:
           echo "Nightly releases are deleted after 30 days."
           echo "A scheduled workflow is responsible for the deletion."
 
-  # ─────────────────────────────────────────────────────────────────────────
-  # distribute
-  #
-  # Updates every distribution channel for a release. Runs after
-  # publish, because a channel's manifest names the release's
-  # artifacts, which exist only after the Release is created.
-  #
-  # Each channel is one step. A step's failure is a documented
-  # blocker, not a pipeline failure: a channel that cannot be updated
-  # (a missing credential, a network error) is recorded and the
-  # release continues. The alternative — fail the pipeline after the
-  # Release is published — would leave the Release published and the
-  # channels stale, which is worse than a documented blocker.
-  #
-  # The job runs only for stable and prerelease releases. A nightly
-  # is not published to any package manager; the direct download is
-  # its only channel.
-  # ─────────────────────────────────────────────────────────────────────────
   distribute:
     name: Distribute
     needs: [route, publish]
     if: ${{ needs.route.outputs.dry_run != '1' && needs.route.outputs.channel != 'nightly' }}
     runs-on: ubuntu-22.04
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
         with:
           go-version-file: go.mod
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
         with:
           path: dist
           merge-multiple: true
@@ -536,11 +604,6 @@ jobs:
             echo "::warning::winget manifests not rendered; skipping"
             exit 0
           fi
-          # The winget-pkgs contribution workflow is documented at
-          # https://github.com/microsoft/winget-pkgs/blob/master/CONTRIBUTING.md
-          # The pipeline uses wingetcreate, Microsoft's own tool,
-          # to produce the PR. wingetcreate handles the fork, the
-          # branch, the manifest validation, and the PR body.
           go install github.com/microsoft/winget-create@latest
           "$(go env GOPATH)/bin/wingetcreate" update \
             --token "$GH_TOKEN" \
@@ -581,18 +644,10 @@ jobs:
             echo "::warning::Dockerfile not rendered; skipping"
             exit 0
           fi
-          # Stage the linux/amd64 binary for the Docker build.
-          # The multi-arch manifest list is built by buildx.
           mkdir -p docker-context
           tar -xzf dist/forge-linux-amd64.tar.gz -C docker-context
           cp out/docker/Dockerfile docker-context/Dockerfile
-
-          # Log in to ghcr.io with the workflow's token.
           echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-
-          # buildx builds one image per platform and pushes a
-          # manifest list under the version tag and the moving
-          # channel tag.
           docker buildx create --use --name forge-builder
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
@@ -616,10 +671,11 @@ jobs:
     needs: [route, publish]
     if: ${{ needs.route.outputs.dry_run != '1' }}
     runs-on: ubuntu-22.04
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Confirm the channel's distribution invariant held
         run: |

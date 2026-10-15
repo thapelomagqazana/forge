@@ -1,0 +1,73 @@
+# nightly.yml — scheduled long-running workflow.
+#
+# Purpose: run the checks that are too slow for every PR: fuzz for one hour,
+# the race detector over the full suite, and the matrix expansion across all
+# Tier 1 and Tier 2 platforms.
+#
+# Required checks: none. Advisory only.
+#
+# Ownership: Release Engineering.
+#
+# Permissions: contents: read. Nothing else.
+#
+# Timeouts: every job declares an explicit `timeout-minutes`. The value
+# is a backstop against a hung runner, not a budget enforcement. The
+# flake contract test TestFlake_EveryJobHasTimeout asserts the field is
+# present on every job in every workflow.
+
+name: Nightly
+
+on:
+  schedule:
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  fuzz:
+    name: fuzz
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Fuzz for one hour
+        run: |
+          go test ./internal/... -run=^$ -fuzz=Fuzz -fuzztime=1h
+
+  race-full:
+    name: race-full
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test -race -count=2 ./...
+
+  matrix:
+    name: matrix-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14, windows-2022]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test ./...

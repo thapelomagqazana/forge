@@ -653,7 +653,6 @@ reviewer can trace either direction.
 
 ## See Also
 
-- [ADR-035 — Filesystem Enforcement by Construction](../decisions/ADR-035-filesystem-enforcement-by-construction.md)
 - [Filesystem Layering](./../architecture/filesystem-layering.md)
 - [Filesystem API Reference](./filesystem-api.md)
 - [internal/filesystem/safefs package doc](../../internal/filesystem/safefs/doc.go)

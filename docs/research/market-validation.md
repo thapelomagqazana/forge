@@ -29,8 +29,6 @@ The output of the interviews is:
   [`docs/research/findings.md`](./findings.md)
 - Hypothesis classification in
   [`docs/research/evidence-matrix.md`](./evidence-matrix.md)
-- A Go/No-Go decision on the product thesis in
-  [`docs/phase-1-exit-report.md`](../phase-1-exit-report.md)
 
 This document is not the interviews. It is the guide that makes the
 interviews comparable, honest, and useful.
@@ -487,9 +485,6 @@ Findings inform updates to
 
 ### 7.4 Prepare the Go/No-Go Decision
 
-The synthesis feeds into
-[`docs/phase-1-exit-report.md`](../phase-1-exit-report.md).
-
 The Go/No-Go decision is based on:
 
 - Whether the core hypotheses (HYP-001, HYP-004) are supported
@@ -745,7 +740,6 @@ findings is committed.
 | [Findings](./findings.md) | Where findings are recorded |
 | [Participant Summary](./participant-summary.md) | Where participant profiles are recorded |
 | [Evidence Matrix](./evidence-matrix.md) | Where hypothesis statuses are recorded |
-| [Phase 1 Exit Report](../phase-1-exit-report.md) | Where the Go/No-Go decision is recorded |
 
 ---
 

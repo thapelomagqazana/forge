@@ -923,9 +923,6 @@ remediations, but these must be explicit.
 In CI, remediation is included in the output but not applied. The
 developer must fix the issue in a subsequent commit.
 
-For CI-specific workflows, see
-[`docs/ci-spec.md`](./ci-spec.md) (Phase 10, future).
-
 ---
 
 ## 11. Validation in Different Contexts

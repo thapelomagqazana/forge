@@ -464,7 +464,6 @@ The participant summary is complete when:
 | [Findings](./findings.md) | Where raw findings are recorded |
 | [Evidence Matrix](./evidence-matrix.md) | Where findings are synthesised |
 | [Product Discovery](../product-discovery.md) | Defines the hypotheses being tested |
-| [Phase 1 Exit Report](../phase-1-exit-report.md) | Uses the summary as evidence of coverage |
 
 ---
 

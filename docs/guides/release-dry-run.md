@@ -445,4 +445,3 @@ of the same workflow; the dry-run is the rehearsal.
 | [`docs/guides/verifying-binaries.md`](verifying-binaries.md) | The binary smoke suite the `verify` job runs. |
 | [`docs/reference/verifying-releases.md`](../reference/verifying-releases.md) | The user-facing verification procedure. |
 | [`SECURITY.md`](../../SECURITY.md) | The credentials and their handling. |
-| [`docs/reference/release-channels.md`](../reference/release-channels.md) | The channels a release is published to. |

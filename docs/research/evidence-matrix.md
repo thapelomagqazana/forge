@@ -52,8 +52,6 @@ what the interviews revealed.
 - Interview operational guide (see
   [`docs/research/market-validation.md`](./market-validation.md))
 - Raw findings (see [`docs/research/findings.md`](./findings.md))
-- Final product decisions (see
-  [`docs/phase-1-exit-report.md`](../phase-1-exit-report.md))
 
 ---
 
@@ -1035,8 +1033,6 @@ Synthesis is complete when:
 | [Participant Summary](./participant-summary.md) | Where participant profiles are recorded |
 | [Product Discovery](../product-discovery.md) | Defines the hypotheses being classified |
 | [Requirements Register](../requirements-register.md) | Where derived requirements are recorded |
-| [Phase 1 Exit Report](../phase-1-exit-report.md) | Where the Go/No-Go decision is recorded |
-| [ADR-001](../decisions/ADR-001-forge-as-foundation-manager.md) | The foundational decision this synthesis validates |
 
 ---
 

@@ -1,0 +1,543 @@
+# =============================================================================
+# ci-tier3.yml — Tier 3, the depth workflow (main only).
+# =============================================================================
+#
+# Purpose
+# -------
+#
+# Tier 3 is the CI tier that runs depth checks on every push to main.
+# Its goal is to catch problems that the fast tiers cannot: a build
+# that is not reproducible, a test that is flaky, a race that the
+# min-Go compiler detects but the current one does not, a coverage
+# regression, and a binary that fails the verification suite on a
+# platform the CI matrix does not run.
+#
+# Tier 3 is advisory on pull_request and blocking on push. The scope
+# decision is implemented by the caller in ci.yml, which gates the
+# invocation on github.event_name == 'push'. The reusable workflow
+# itself is unconditional.
+#
+# The tier model is defined in internal/ci/tiers.go (Tier3) and
+# rendered to docs/reference/ci-tiers.md. The contract tests in
+# internal/ci/tier3_contract_test.go assert that this file implements
+# the model.
+#
+# Budget: 60 minutes (wall-clock, warm cache).
+# Blocking: advisory on pull_request, blocking on push.
+#
+# Jobs
+# ----
+#
+#   tier3-reproducibility   Build twice from clean state; compare SHA-256.
+#   tier3-flake-check       go test -count=2 ./... to detect flaky tests.
+#   tier3-race-full         go test -race ./... on the min and current Go
+#                           versions.
+#   tier3-coverage          go test -coverprofile, upload to Codecov, and
+#                           compare against coverage/baseline.txt.
+#   tier3-binary-verify-all Full 17.5.1 suite for all six release platforms.
+#
+# The job keys carry the `tier3-` prefix that the model's
+# Tier3Jobs() returns. The `name:` fields drop the prefix for
+# readability in the GitHub UI. The contract test
+# TestTier3_EveryJobIsImplementedInTheWorkflow compares the model's
+# names against the workflow's job keys, so the two must agree.
+#
+# Artifacts
+# ---------
+#
+# Three artifacts, each retained 30 days:
+#
+#   repro-manifest.json   The two build hashes and the epoch.
+#   flake-report.txt      The flake-check's output.
+#   coverage-report       The coverage profile and the comparison.
+#
+# Caching
+# -------
+#
+# Every job invokes .github/workflows/cache.yml before
+# actions/setup-go. The cache workflow provisions three caches:
+#
+#   - the Go module cache, keyed on go.sum's hash;
+#   - the Go build cache, keyed on the repository's Go sources and
+#     go.sum;
+#   - the golangci-lint binary cache, keyed on the pinned linter
+#     version.
+#
+# The `cache-key-suffix` input is the job's name (`reproducibility`,
+# `flake-check`, `coverage`, `binary-verify-all`) plus, for the
+# race-full matrix, the Go-version axis (`race-full-min`,
+# `race-full-current`). The suffix differentiates each job's cache
+# from every other job's.
+#
+# `actions/setup-go`'s implicit cache is disabled with `cache: false`.
+# The explicit cache step above replaces it: a job that left the
+# implicit cache enabled would write a second, disjoint cache and
+# split the hit rate. The contract test
+# TestCache_TierWorkflowsDoNotRelyOnImplicitCache asserts the
+# invariant, and the contract test TestCache_EveryKeyMatchesModel
+# asserts the explicit step's key templates against the model in
+# internal/ci/cache.go.
+#
+# See docs/reference/ci-cache-strategy.md and ADR-049.
+#
+# Secrets
+# -------
+#
+# None for the workflow as a whole. The coverage job uses the
+# CODECOV_TOKEN secret, which is scoped to that job. Tier 3 runs on
+# main, where secrets are available; the coverage job is the only one
+# that needs one, because Codecov requires a token for private
+# repositories.
+#
+# fail-fast
+# ---------
+#
+# Every matrix in this file sets `fail-fast: false`. A failure in one
+# cell must not cancel the other cells. The contract test
+# TestTier3_EveryMatrixIsFailFastFalse asserts the invariant.
+#
+# Reusability
+# -----------
+#
+# This file is a reusable workflow (`on: workflow_call`). It is invoked
+# by ci.yml on push, and may be invoked by the release pipeline as a
+# pre-flight check. A caller decides when to invoke it; the workflow
+# itself is unconditional.
+#
+# See:
+#   docs/reference/ci-tiers.md
+#   docs/reference/ci-cache-strategy.md
+#   docs/decisions/ADR-047-tier3-depth-workflow.md
+#   docs/decisions/ADR-049-ci-cache-strategy.md
+# =============================================================================
+
+name: CI Tier 3
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-tier3-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  GOFLAGS: -mod=readonly
+  GOTOOLCHAIN: local
+
+jobs:
+
+  # ─────────────────────────────────────────────────────────────────────
+  # tier3-reproducibility — build twice from clean state, compare SHA-256.
+  #
+  # # Cache interaction
+  #
+  # The job builds twice. The two builds share the Go build cache
+  # restored by the cache workflow; the *repro* driver resets its own
+  # internal state between the two builds so that the reproducibility
+  # check is meaningful (a build that reused its own outputs would
+  # trivially produce identical hashes).
+  #
+  # The cache workflow's contribution is the *first* build's speed:
+  # on a warm cache, the first build reuses compiled objects from the
+  # previous run. The second build's cleanliness is the driver's
+  # responsibility, not the cache's.
+  # ─────────────────────────────────────────────────────────────────────
+  tier3-reproducibility:
+    name: reproducibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      # Provision the caches explicitly.
+      - name: Provision caches
+        uses: ./.github/workflows/cache.yml
+        with:
+          go-version: '1.23'
+          cache-key-suffix: reproducibility
+
+      - name: Set up Go
+        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          # The explicit cache step above owns caching.
+          cache: false
+
+      - name: Resolve SOURCE_DATE_EPOCH
+        id: epoch
+        run: |
+          set -euo pipefail
+          epoch="$(git log -1 --format=%ct)"
+          echo "epoch=$epoch" >> "$GITHUB_OUTPUT"
+          echo "SOURCE_DATE_EPOCH=$epoch"
+
+      - name: Build #1
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.epoch }}
+        run: |
+          set -euo pipefail
+          go run ./cmd/forge-internal-repro \
+            --platform=linux/amd64 \
+            --sde="$SOURCE_DATE_EPOCH" \
+            --out=/tmp/out1 \
+            --print-hash=/tmp/hash1.txt
+
+      - name: Build #2
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.epoch }}
+        run: |
+          set -euo pipefail
+          go run ./cmd/forge-internal-repro \
+            --platform=linux/amd64 \
+            --sde="$SOURCE_DATE_EPOCH" \
+            --out=/tmp/out2 \
+            --print-hash=/tmp/hash2.txt
+
+      - name: Compare hashes
+        id: compare
+        run: |
+          set -euo pipefail
+          h1="$(cat /tmp/hash1.txt)"
+          h2="$(cat /tmp/hash2.txt)"
+          echo "hash1=$h1"
+          echo "hash2=$h2"
+          if [ "$h1" != "$h2" ]; then
+            echo "::error::reproducibility check failed: hashes differ"
+            exit 1
+          fi
+          echo "OK: hashes match ($h1)"
+          echo "hash=$h1" >> "$GITHUB_OUTPUT"
+
+      - name: Write manifest
+        run: |
+          set -euo pipefail
+          cat > /tmp/repro-manifest.json <<EOF
+          {
+            "platform": "linux/amd64",
+            "source_date_epoch": "${{ steps.epoch.outputs.epoch }}",
+            "hash1": "$(cat /tmp/hash1.txt)",
+            "hash2": "$(cat /tmp/hash2.txt)",
+            "match": true
+          }
+          EOF
+          cat /tmp/repro-manifest.json
+
+      - name: Upload manifest
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: repro-manifest
+          path: /tmp/repro-manifest.json
+          retention-days: 30
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────────────────────────────
+  # tier3-flake-check — go test -count=2 ./...
+  # ─────────────────────────────────────────────────────────────────────
+  tier3-flake-check:
+    name: flake-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      # Provision the caches explicitly.
+      - name: Provision caches
+        uses: ./.github/workflows/cache.yml
+        with:
+          go-version: '1.23'
+          cache-key-suffix: flake-check
+
+      - name: Set up Go
+        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          # The explicit cache step above owns caching.
+          cache: false
+
+      - name: Run the full suite twice
+        id: run
+        run: |
+          set -uo pipefail
+          go test -count=2 ./... 2>&1 | tee /tmp/flake.log
+          code="${PIPESTATUS[0]}"
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Write flake report
+        run: |
+          set -euo pipefail
+          report=/tmp/flake-report.txt
+          if [ "${{ steps.run.outputs.exit_code }}" = "0" ]; then
+            {
+              echo "Flake check: PASS"
+              echo "Command: go test -count=2 ./..."
+              echo "Exit code: 0"
+              echo "No flakes detected."
+            } > "$report"
+          else
+            failing="$(grep -E '^--- FAIL:|^    --- FAIL:' /tmp/flake.log || true)"
+            if [ -z "$failing" ]; then
+              failing="(none matched; see the job log)"
+            fi
+            {
+              echo "Flake check: FAIL"
+              echo "Command: go test -count=2 ./..."
+              echo "Exit code: ${{ steps.run.outputs.exit_code }}"
+              echo
+              echo "Failing tests (from the log):"
+              echo
+              echo "$failing"
+            } > "$report"
+          fi
+          cat "$report"
+        shell: bash
+
+      - name: Upload flake report
+        if: always()
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: flake-report
+          path: /tmp/flake-report.txt
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Fail the job if the flake check failed
+        if: ${{ steps.run.outputs.exit_code != '0' }}
+        run: |
+          set -euo pipefail
+          echo "::error::flake check failed (go test -count=2 exited ${{ steps.run.outputs.exit_code }})"
+          exit 1
+
+  # ─────────────────────────────────────────────────────────────────────
+  # tier3-race-full — go test -race ./... on the min and current Go versions.
+  # ─────────────────────────────────────────────────────────────────────
+  tier3-race-full:
+    name: race-full (go=${{ matrix.go }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        go: [min, current]
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      # Provision the caches explicitly. The suffix includes the
+      # Go-version axis so the two cells do not race on the same key.
+      # The `go-version` input is the resolved version.
+      - name: Provision caches
+        uses: ./.github/workflows/cache.yml
+        with:
+          go-version: ${{ matrix.go == 'min' && '1.23' || '1.24' }}
+          cache-key-suffix: race-full-${{ matrix.go }}
+
+      - name: Set up Go (${{ matrix.go }})
+        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
+        with:
+          go-version: ${{ matrix.go == 'min' && '1.23' || '1.24' }}
+          check-latest: false
+          # The explicit cache step above owns caching.
+          cache: false
+
+      - name: go test -race ./...
+        run: go test -race -count=1 ./...
+
+  # ─────────────────────────────────────────────────────────────────────
+  # tier3-coverage — measure, upload, and compare against the baseline.
+  # ─────────────────────────────────────────────────────────────────────
+  tier3-coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      # Provision the caches explicitly.
+      - name: Provision caches
+        uses: ./.github/workflows/cache.yml
+        with:
+          go-version: '1.23'
+          cache-key-suffix: coverage
+
+      - name: Set up Go
+        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          # The explicit cache step above owns caching.
+          cache: false
+
+      - name: Measure coverage
+        run: |
+          set -euo pipefail
+          go test -count=1 -covermode=atomic -coverprofile=/tmp/coverage.out ./...
+          go tool cover -func=/tmp/coverage.out | tail -n 1
+
+      - name: Extract total coverage
+        id: extract
+        run: |
+          set -euo pipefail
+          total_line="$(go tool cover -func=/tmp/coverage.out | tail -n 1)"
+          total="$(echo "$total_line" | awk '{print $3}' | tr -d '%')"
+          if ! echo "$total" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
+            echo "::error::could not parse coverage total from: $total_line"
+            exit 1
+          fi
+          echo "total=$total" >> "$GITHUB_OUTPUT"
+          echo "Total coverage: $total%"
+
+      - name: Compare against baseline
+        id: compare
+        run: |
+          set -euo pipefail
+          baseline_line="$(grep -E '^total:' coverage/baseline.txt || true)"
+          if [ -z "$baseline_line" ]; then
+            echo "::error::coverage/baseline.txt has no 'total:' line"
+            exit 1
+          fi
+          baseline="$(echo "$baseline_line" | awk '{print $2}')"
+          current="${{ steps.extract.outputs.total }}"
+
+          result="$(awk -v b="$baseline" -v c="$current" 'BEGIN {
+            diff = c - b
+            if (diff < -0.5) print "fail " diff;
+            else if (diff < 0) print "warn " diff;
+            else print "ok " diff;
+          }')"
+
+          status="$(echo "$result" | awk '{print $1}')"
+          diff="$(echo "$result" | awk '{print $2}')"
+
+          echo "Baseline: $baseline%"
+          echo "Current:  $current%"
+          echo "Diff:     $diff percentage points"
+
+          echo "baseline=$baseline" >> "$GITHUB_OUTPUT"
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "diff=$diff" >> "$GITHUB_OUTPUT"
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+
+          case "$status" in
+            fail)
+              echo "::error::coverage regression of $diff percentage points exceeds the 0.5 threshold"
+              exit 1
+              ;;
+            warn)
+              echo "::warning::coverage decreased by $diff percentage points; below the 0.5 threshold"
+              ;;
+            ok)
+              echo "OK: coverage did not decrease"
+              ;;
+          esac
+
+      - name: Upload to Codecov
+        if: always()
+        uses: codecov/codecov-action@01570a1f39cbab3405188dda4dd59e0b9c1c9c9c # v4.5.0
+        with:
+          files: /tmp/coverage.out
+          fail_ci_if_error: false
+          verbose: true
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Write coverage report
+        if: always()
+        run: |
+          set -euo pipefail
+          cat > /tmp/coverage-report.txt <<EOF
+          Coverage report
+          ===============
+          Baseline: ${{ steps.compare.outputs.baseline }}%
+          Current:  ${{ steps.compare.outputs.current }}%
+          Diff:     ${{ steps.compare.outputs.diff }} percentage points
+          Status:   ${{ steps.compare.outputs.status }}
+          Threshold: 0.5 percentage points
+          EOF
+          cat /tmp/coverage-report.txt
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: coverage-report
+          path: |
+            /tmp/coverage-report.txt
+            /tmp/coverage.out
+          retention-days: 30
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────────────────────────────
+  # tier3-binary-verify-all — full 17.5.1 suite for all six release platforms.
+  # ─────────────────────────────────────────────────────────────────────
+  tier3-binary-verify-all:
+    name: binary-verify-all
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      # Provision the caches explicitly.
+      - name: Provision caches
+        uses: ./.github/workflows/cache.yml
+        with:
+          go-version: '1.23'
+          cache-key-suffix: binary-verify-all
+
+      - name: Set up Go
+        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          # The explicit cache step above owns caching.
+          cache: false
+
+      - name: Verify every platform
+        run: |
+          set -euo pipefail
+          targets="$(go run ./cmd/forge-internal-platform ci-matrix)"
+          if [ -z "$targets" ]; then
+            echo "::error::cmd/forge-internal-platform ci-matrix produced no output"
+            exit 1
+          fi
+
+          failed=0
+          while read -r target; do
+            [ -z "$target" ] && continue
+            goos="${target%/*}"
+            goarch="${target#*/}"
+            echo "::group::verify $goos/$goarch"
+            if ! go run ./cmd/forge-internal-verify \
+              --platform="$target" \
+              --all-modes; then
+              echo "::error::verify failed for $goos/$goarch"
+              failed=1
+            fi
+            echo "::endgroup::"
+          done < <(printf '%s\n' "$targets")
+
+          if [ "$failed" -ne 0 ]; then
+            exit 1
+          fi
+        shell: bash

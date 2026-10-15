@@ -32,6 +32,13 @@
 #   platform:*           — Platform matrix tooling (WBS 17.1.1)
 #   version:*            — Version and release-channel tooling (WBS 17.1.2)
 #   release:*            — Release pipeline helpers (WBS 17.2.1, WBS 17.3.1)
+#   ci:*                 — CI tier tooling (WBS 18.2.1, 18.2.2, 18.2.3)
+#     ci:render-tierN          — render the tier's golden JSON
+#     ci:verify-tierN          — verify the tier's model and artifacts
+#     ci:measure-tierN         — measure the tier's wall-clock over 5 runs
+#     ci:verify-tiers          — run every tier model and contract test
+#   coverage:*           — Coverage baseline maintenance (WBS 18.2.3)
+#     coverage:update-baseline — regenerate coverage/baseline.txt
 #   lint:*               — Linting (Markdown, and future linters)
 #   tidy                 — Dependency lockfile maintenance (maintainers only)
 #   build:*              — Binary compilation with injected metadata
@@ -592,8 +599,7 @@ tasks:
   # binary twice and compares SHA-256. The section is unified because
   # all six checks answer the same question at different layers.
   #
-  # See docs/guides/reproducible-builds.md and
-  # docs/decisions/ADR-045-reproducibility-posture.md.
+  # See docs/guides/reproducible-builds.md.
   # ═══════════════════════════════════════════════════════════════════════════
 
   verify:reproducible:
@@ -1449,8 +1455,6 @@ tasks:
   # and docs/reference/version-metadata.yaml. The schema is
   # schemas/version-metadata.schema.json. The tooling is
   # cmd/forge-internal-version.
-  #
-  # See docs/decisions/ADR-043-versioning-and-release-channels.md.
   # ═══════════════════════════════════════════════════════════════════════════
 
   version:verify:
@@ -1490,7 +1494,6 @@ tasks:
   #
   # See docs/guides/building.md,
   # docs/guides/reproducible-builds.md, and
-  # docs/decisions/ADR-044-makefile-and-cross-compile.md.
   # ═══════════════════════════════════════════════════════════════════════════
 
   verify:tagged:
@@ -1543,6 +1546,253 @@ tasks:
         export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
         echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH ($(date -u -d "@$SOURCE_DATE_EPOCH" +%Y-%m-%dT%H:%M:%SZ))"
         go run ./cmd/forge-internal-repro --verbose
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Release verification (WBS 17.5.1)
+  # ───────────────────────────────────────────────────────────────────────────
+  #
+  # release:verify-binaries runs the ten-check smoke suite against
+  # the artifacts in dist/. It is invoked by the Makefile's
+  # release-dry-run target between sbom and sign.
+  #
+  # The verifier classifies each platform as runnable or
+  # inspect-only based on the host's GOOS/GOARCH. The runnable
+  # platforms receive all ten checks; the inspect-only platforms
+  # receive checks 1, 2, 3, and 9.
+  #
+  # See docs/guides/verifying-binaries.md and
+  # docs/decisions/ADR-047-binary-verification-thresholds.md.
+
+  release:verify-binaries:
+    desc: Run the binary smoke suite against dist/ (WBS 17.5.1)
+    dir: "{{.ROOT}}"
+    preconditions:
+      - sh: test -d dist
+        msg: |
+          dist/ does not exist. Run `task release:build-all` first,
+          or run `make build-all` if you prefer the Makefile.
+    cmds:
+      - go run ./cmd/forge-internal-verify --dist=dist --verbose
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CI tier tooling (WBS 18.2.1, 18.2.2, 18.2.3)
+  # ═══════════════════════════════════════════════════════════════════════════
+  #
+  # The ci: namespace groups the tasks that render, verify, and
+  # measure the CI tiers. The tasks are the local counterparts of
+  # the workflow steps in .github/workflows/ci-tier*.yml.
+  #
+  # Each tier has three tasks:
+  #
+  #   ci:render-tierN    — regenerate internal/ci/testdata/tierN.golden.json.
+  #   ci:verify-tierN    — run the tier's model and contract tests.
+  #   ci:measure-tierN   — sample the last 5 runs' wall-clock against
+  #                        the tier's budget. The quarterly review uses
+  #                        the scripts directly with their --runs=20
+  #                        default; the task's --runs=5 is for a
+  #                        contributor's quick check.
+  #
+  # A contributor who changes internal/ci/tierN.go runs the render
+  # task, reviews the diff to the golden file, and commits both
+  # changes. The contract test
+  # (TestTierN_GoldenMatchesModel) fails if the two drift.
+  #
+  # See:
+  #   internal/ci/tiers.go
+  #   internal/ci/tier1.go, tier2.go, tier3.go
+  #   docs/reference/ci-tiers.md
+  #   docs/decisions/ADR-045-tier1-fast-feedback-workflow.md
+  #   docs/decisions/ADR-046-tier2-cross-platform-matrix-workflow.md
+  #   docs/decisions/ADR-047-tier3-depth-workflow.md
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Tier 1 — fast feedback (WBS 18.2.1)
+  # ───────────────────────────────────────────────────────────────────────────
+
+  ci:render-tier1:
+    desc: "Render internal/ci/testdata/tier1.golden.json from internal/ci/tier1.go."
+    cmds:
+      - go run ./scripts/ci/render-tier1.go
+
+  ci:verify-tier1:
+    desc: "Verify the Tier 1 model and its artifacts are consistent."
+    cmds:
+      - go test ./internal/ci/... -run 'Tier1' -count=1 -v
+
+  ci:measure-tier1:
+    desc: "Measure Tier 1's wall-clock time over the last 5 runs."
+    cmds:
+      - ./scripts/ci/measure-tier1.sh --runs=5
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Tier 2 — cross-platform confidence (WBS 18.2.2)
+  # ───────────────────────────────────────────────────────────────────────────
+
+  ci:render-tier2:
+    desc: "Render internal/ci/testdata/tier2.golden.json from internal/ci/tier2.go."
+    cmds:
+      - go run ./scripts/ci/render-tier2.go
+
+  ci:verify-tier2:
+    desc: "Verify the Tier 2 model and its artifacts are consistent."
+    cmds:
+      - go test ./internal/ci/... -run 'Tier2' -count=1 -v
+
+  ci:measure-tier2:
+    desc: "Measure Tier 2's wall-clock time over the last 5 runs."
+    cmds:
+      - ./scripts/ci/measure-tier2.sh --runs=5
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Tier 3 — depth (WBS 18.2.3)
+  # ───────────────────────────────────────────────────────────────────────────
+
+  ci:render-tier3:
+    desc: "Render internal/ci/testdata/tier3.golden.json from internal/ci/tier3.go."
+    cmds:
+      - go run ./scripts/ci/render-tier3.go
+
+  ci:verify-tier3:
+    desc: "Verify the Tier 3 model and its artifacts are consistent."
+    cmds:
+      - go test ./internal/ci/... -run 'Tier3' -count=1 -v
+
+  ci:measure-tier3:
+    desc: "Measure Tier 3's wall-clock time over the last 5 runs."
+    cmds:
+      - ./scripts/ci/measure-tier3.sh --runs=5
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Cross-tier verification
+  # ───────────────────────────────────────────────────────────────────────────
+  #
+  # ci:verify-tiers runs every tier model and contract test in one
+  # invocation. It is the tier-agnostic entry point: a contributor
+  # who wants "all the tier tests" runs this task. It does not
+  # replace the per-tier tasks; it composes them.
+
+  ci:verify-tiers:
+    desc: "Run every tier model and contract test."
+    cmds:
+      - go test ./internal/ci/... -run 'Tier' -count=1 -v
+  
+  ci:render-security:
+    desc: "Render docs/reference/security-workflow.md and testdata/security.golden.json from internal/ci/security.go."
+    cmds:
+      - go run ./scripts/ci/render-security.go
+
+  ci:verify-security:
+    desc: "Verify the security model and its artifacts are consistent."
+    cmds:
+      - go test ./internal/ci/... -run 'Security' -count=1 -v
+
+  ci:render-concurrency:
+    desc: "Render docs/reference/concurrency-policy.md and testdata/concurrency.golden.json from internal/ci/concurrency.go."
+    cmds:
+      - go run ./scripts/ci/render-concurrency.go
+
+  ci:render-flake:
+    desc: "Render docs/reference/flake-policy.md and testdata/flake.golden.json from internal/ci/flake.go."
+    cmds:
+      - go run ./scripts/ci/render-flake.go
+
+  ci:render-cost:
+    desc: "Render docs/reference/ci-cost-budget.md and testdata/cost.golden.json from internal/ci/cost.go."
+    cmds:
+      - go run ./scripts/ci/render-cost.go
+
+  ci:verify-cost:
+    desc: "Verify the cost model and its artifacts are consistent."
+    cmds:
+      - go test ./internal/ci/... -run 'Cost' -count=1 -v
+
+  ci:render-tiers:
+    desc: Render docs/reference/ci-tiers.md and testdata/ci-tiers.golden.md from internal/ci/tiers.go.
+    cmds:
+      - go run ./scripts/ci/render-tiers.go
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Coverage baseline maintenance (WBS 18.2.3)
+  # ═══════════════════════════════════════════════════════════════════════════
+  #
+  # The coverage baseline is the file the Tier 3 coverage job compares
+  # against. It lives at coverage/baseline.txt and is documented in
+  # coverage/README.md.
+  #
+  # The baseline is updated deliberately, not on every main push: an
+  # automatic update would let a small decrease become the new
+  # baseline silently. The task is run by the Release Engineering
+  # owner; the resulting change is reviewed in a PR.
+  #
+  # See:
+  #   coverage/README.md
+  #   internal/ci/tier3.go (Tier3CoverageThreshold, Tier3BaselinePath)
+  #   .github/workflows/ci-tier3.yml (the coverage job)
+  #   docs/decisions/ADR-047-tier3-depth-workflow.md
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  coverage:update-baseline:
+    desc: "Update coverage/baseline.txt from the current test suite's coverage."
+    dir: "{{.USER_WORKING_DIR}}"
+    # The task requires a clean working tree. The coverage of an
+    # uncommitted change is not the coverage the baseline should
+    # record; a contributor runs the task on a committed state.
+    preconditions:
+      - sh: test -z "$(git status --porcelain 2>/dev/null)"
+        msg: |
+          Working tree is not clean. Commit or stash changes before
+          running coverage:update-baseline; the coverage of an
+          uncommitted change is not the coverage the baseline should
+          record.
+    # sources: and generates: skip the task's body when the inputs
+    # are unchanged and the output exists. A contributor who runs
+    # the task twice sees the second run skip the body; a
+    # contributor who changes a source file sees the body run.
+    sources:
+      - go.mod
+      - go.sum
+      - "**/*.go"
+    generates:
+      - coverage/baseline.txt
+    cmds:
+      - |
+        set -euo pipefail
+
+        profile=$(mktemp)
+        trap 'rm -f "$profile"' EXIT
+
+        echo "Running the full test suite with coverage ..."
+        go test -count=1 -covermode=atomic -coverprofile="$profile" ./...
+
+        echo "Extracting the total coverage ..."
+        total_line=$(go tool cover -func="$profile" | tail -n 1)
+        total=$(echo "$total_line" | awk '{print $3}' | tr -d '%')
+
+        # Validate the parsed value before writing. A future change
+        # to `go tool cover`'s output format would otherwise write
+        # an empty or malformed baseline.
+        if ! echo "$total" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
+          echo "FAIL: could not parse coverage total from: $total_line" >&2
+          exit 1
+        fi
+
+        # Convert the percentage to a fraction in [0, 1].
+        fraction=$(awk -v p="$total" 'BEGIN { printf "%.4f", p / 100 }')
+
+        # Rewrite the baseline file, preserving the header comment.
+        # The file's format is documented in coverage/README.md: one
+        # `key: value` line per metric, with `total` the only key
+        # currently read.
+        tmp=$(mktemp)
+        if [ -f coverage/baseline.txt ]; then
+          # Preserve the header comment (lines starting with `#`).
+          grep -E '^#' coverage/baseline.txt > "$tmp" || true
+        fi
+        echo "total: $fraction" >> "$tmp"
+        mv "$tmp" coverage/baseline.txt
+
+        echo "OK: wrote coverage/baseline.txt with total: $fraction (${total}%)"
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Lint — documentation and configuration quality
@@ -1600,6 +1850,7 @@ tasks:
       - task: verify:injection           # WBS 6.1.2
       - task: platform:verify            # WBS 17.1.1
       - task: version:verify             # WBS 17.1.2
+      - task: ci:verify-tiers            # WBS 18.2.1, 18.2.2, 18.2.3
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Tidy — dependency lockfile maintenance (WBS 2.3.1)
@@ -1676,33 +1927,6 @@ tasks:
     dir: "{{.USER_WORKING_DIR}}"
     cmds:
       - go build -ldflags "{{.LDFLAGS}}" -o forge ./cmd/forge
-  
-  # ───────────────────────────────────────────────────────────────────────────
-  # Release verification (WBS 17.5.1)
-  # ───────────────────────────────────────────────────────────────────────────
-  #
-  # release:verify-binaries runs the ten-check smoke suite against
-  # the artifacts in dist/. It is invoked by the Makefile's
-  # release-dry-run target between sbom and sign.
-  #
-  # The verifier classifies each platform as runnable or
-  # inspect-only based on the host's GOOS/GOARCH. The runnable
-  # platforms receive all ten checks; the inspect-only platforms
-  # receive checks 1, 2, 3, and 9.
-  #
-  # See docs/guides/verifying-binaries.md and
-  # docs/decisions/ADR-047-binary-verification-thresholds.md.
-
-  release:verify-binaries:
-    desc: Run the binary smoke suite against dist/ (WBS 17.5.1)
-    dir: "{{.ROOT}}"
-    preconditions:
-      - sh: test -d dist
-        msg: |
-          dist/ does not exist. Run `task release:build-all` first,
-          or run `make build-all` if you prefer the Makefile.
-    cmds:
-      - go run ./cmd/forge-internal-verify --dist=dist --verbose
 
   # ═══════════════════════════════════════════════════════════════════════════
   # Development — tests, formatting, static analysis
@@ -1771,15 +1995,17 @@ tasks:
   #   11. verify:injection       — fast; linker injection contract (WBS 6.1.2)
   #   12. platform:verify        — fast; platform matrix (WBS 17.1.1)
   #   13. version:verify         — fast; version metadata (WBS 17.1.2)
-  #   14. test                   — slow; full test suite
-  #   15. test:integration       — slowest; process boundary
+  #   14. ci:verify-tiers        — fast; tier models and contract tests
+  #                                (WBS 18.2.1, 18.2.2, 18.2.3)
+  #   15. test                   — slow; full test suite
+  #   16. test:integration       — slowest; process boundary
   check:
     desc: |
       Run the full quality gate
       (format, lint, vet, version matrix, reproducibility, resolution,
        cobra, dependency policy, two-boundary model, handler boundary,
-       injection contract, platform matrix, version metadata, test,
-       integration)
+       injection contract, platform matrix, version metadata, tier
+       models, test, integration)
     dir: "{{.USER_WORKING_DIR}}"
     cmds:
       - task: fmt:check
@@ -1795,6 +2021,7 @@ tasks:
       - task: verify:injection           # WBS 6.1.2
       - task: platform:verify            # WBS 17.1.1
       - task: version:verify             # WBS 17.1.2
+      - task: ci:verify-tiers            # WBS 18.2.1, 18.2.2, 18.2.3
       - task: test
       - task: test:integration
 

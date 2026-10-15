@@ -1,7 +1,6 @@
 # Clean Architecture Layer Model
 
 > **Status:** Adopted
-> **ADR:** [ADR-040 — Clean Architecture Layer Model](../decisions/ADR-040-clean-architecture-layer-model.md)
 > **Enforced by:** [`internal/arch`](../../internal/arch/layers.go) (Go test) + [`scripts/arch/verify-layers.sh`](../../scripts/arch/verify-layers.sh) (pre-commit / CI)
 > **Traceability:** FR-ARCH-001, NFR-ARCHITECTURE-001
 > **WBS:** 14.1.1
@@ -385,7 +384,6 @@ a superseding ADR.** Every entry is a promise to move.
 The model was adopted in **WBS 14.1.1**. This task ships:
 
 - this specification,
-- [ADR-040](../decisions/ADR-040-clean-architecture-layer-model.md),
 - the enforcement package [`internal/arch`](../../internal/arch/layers.go),
 - the pre-commit / CI wrapper [`scripts/arch/verify-layers.sh`](../../scripts/arch/verify-layers.sh),
 - the `internal/application` package skeleton with one canonical example
@@ -395,8 +393,7 @@ The model was adopted in **WBS 14.1.1**. This task ships:
   roots exist and are classified from day one.
 
 Physical relocation of existing packages is sequenced under later phases. The
-mapping is recorded in [ADR-040, Appendix](../decisions/ADR-040-clean-architecture-layer-model.md#appendix-existing-package-mapping)
-and in `DefaultGrandfathers()`:
+mapping is recorded in `DefaultGrandfathers()`:
 
 | Existing package                 | Target layer    | Target package                          | Removal phase |
 |----------------------------------|-----------------|-----------------------------------------|---------------|
@@ -451,7 +448,6 @@ Changing the model is an ADR-level decision, not a PR-level one. The steps:
 
 ## 11. Cross-references
 
-- [ADR-040 — Clean Architecture Layer Model](../decisions/ADR-040-clean-architecture-layer-model.md) — the decision record for this model.
 - [ADR-019 — Single exit boundary in main](../decisions/ADR-019-single-exit-boundary-in-main.md) — why the exit boundary is in Presentation.
 - [ADR-022 — Output and logging are separate architectural layers](../decisions/ADR-022-output-and-logging-are-separate-architectural-layers.md) — why renderer and logger are distinct adapters.
 - [ADR-026 — The logger interface has four level methods and a `With` combinator](../decisions/ADR-026-the-logger-interface-has-four-level-methods-and-a-with-combinator-the-implementation-is-slog-backed-and-hidden.md) — why the logger interface lives in Shared and its adapter in Infrastructure.
@@ -460,4 +456,3 @@ Changing the model is an ADR-level decision, not a PR-level one. The steps:
 - [Layer dependency matrix](./layer-dependency-matrix.md) — the machine-checkable form of §3.
 - [`internal/arch`](../../internal/arch/layers.go) — the enforcement package.
 - [`internal/application`](../../internal/application/doc.go) — the use-case layer and its canonical example service.
-- [Component spec](./component-spec.md), [Blueprint spec](./blueprint-spec.md), [Template spec](./template-spec.md) — domain bounded contexts that live under `internal/domain/...`.

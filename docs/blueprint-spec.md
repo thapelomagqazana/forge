@@ -94,10 +94,6 @@ materialised**.
 The Blueprint is the declaration. The Template is the implementation.
 The Repository is the result.
 
-This separation is the central architectural decision of Forge,
-recorded in
-[ADR-001](./decisions/ADR-001-forge-as-foundation-manager.md).
-
 ### 3.1 What a Blueprint Is
 
 - A declarative description of a project's engineering foundation

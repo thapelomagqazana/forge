@@ -120,7 +120,6 @@ script alone would not tell them what to do with the finding.
 
 ## References
 
-- [ADR-022: Output/Logging Separation](../decisions/ADR-022-output-logging-separation.md)
 - [`../architecture/output-vs-logging.md`](output-vs-logging.md)
 - [`../reference/output-streams.md`](../reference/output-streams.md)
 - [`../reference/log-record-format.md`](../reference/log-record-format.md)

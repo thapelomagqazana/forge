@@ -35,8 +35,7 @@ The two streams have distinct, non-overlapping roles:
   never appear on stdout.
 
 This two-layer split (product surface vs. operational surface) is defined
-in detail by [ADR-022](../decisions/ADR-022-output-logging-separation.md)
-and [`docs/architecture/output-vs-logging.md`](../architecture/output-vs-logging.md).
+in detail [`docs/architecture/output-vs-logging.md`](../architecture/output-vs-logging.md).
 This document is the **per-exit-code projection** of that architecture —
 the table a consumer can rely on.
 
@@ -101,7 +100,7 @@ Four invariants hold across every row:
    process's exit code.
 4. **Logger records continue on stderr, unchanged, regardless of
    `--format`.** Under `--format json`, logger records are never injected
-   into stdout. (See [ADR-022](../decisions/ADR-022-output-logging-separation.md) §4.)
+   into stdout.
 
 > **Note on "at most one stream."** Earlier versions of this document
 > stated that every invocation writes to at most one stream for its
@@ -218,7 +217,7 @@ envelope.
 
 Under `--format json`, logger records continue on stderr in the format
 selected by `--log-format`, which is independent of `--format`. This is
-the interaction rule of [ADR-022](../decisions/ADR-022-output-logging-separation.md) §4:
+the interaction rule:
 
 > When `--format json` is active, stdout contains exactly one JSON
 > document — the output envelope. The logger continues to emit to stderr
@@ -307,7 +306,6 @@ A consumer that reads Forge's streams should:
 
 ## References
 
-- [`exit-codes.md`](exit-codes.md) — the frozen per-code table.
 - [`exit-code-ranges.md`](exit-code-ranges.md) — the range taxonomy.
 - [`error-codes.md`](error-codes.md) — the error code registry.
 - [`../architecture/output-vs-logging.md`](../architecture/output-vs-logging.md)
@@ -318,8 +316,6 @@ A consumer that reads Forge's streams should:
   — the stdout/stderr contract.
 - [`../decisions/ADR-021-json-error-envelope-for-format-json.md`](../decisions/ADR-021-json-error-envelope-for-format-json.md)
   — the JSON error envelope.
-- [`../decisions/ADR-022-output-logging-separation.md`](../decisions/ADR-022-output-logging-separation.md)
-  — output/logging separation.
 - `schemas/output-envelope.schema.json` — the success envelope's schema.
 - `schemas/error-envelope.schema.json` — the error envelope's schema.
 - `docs/cli-ux-spec.md` § 4.12 — flag semantics.

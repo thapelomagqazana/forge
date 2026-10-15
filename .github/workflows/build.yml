@@ -37,6 +37,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
 
   # ─────────────────────────────────────────────────────────────────────────
@@ -49,6 +53,7 @@ jobs:
   matrix:
     name: Generate build matrix
     runs-on: ubuntu-22.04
+    timeout-minutes: 10
     outputs:
       include: ${{ steps.gen.outputs.include }}
     steps:
@@ -81,6 +86,7 @@ jobs:
     name: Build ${{ matrix.name }}
     needs: matrix
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.matrix.outputs.include) }}
@@ -189,6 +195,7 @@ jobs:
     name: Compute subject hashes
     needs: build
     runs-on: ubuntu-22.04
+    timeout-minutes: 10
     outputs:
       value: ${{ steps.hash.outputs.value }}
     steps:

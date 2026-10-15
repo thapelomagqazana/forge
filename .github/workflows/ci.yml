@@ -1,236 +1,264 @@
-# # =============================================================================
-# # .github/workflows/ci.yml — Forge continuous integration
-# # =============================================================================
-# #
-# # This workflow runs the full quality gate on every push and pull
-# # request. It is the authoritative definition of "what CI runs" for
-# # the Forge repository.
-# #
-# # # Structure
-# #
-# # The workflow has three jobs, ordered by fast-fail priority:
-# #
-# #   drift       — Detects go.mod / go.sum drift. Runs in seconds.
-# #   verify      — Runs the reproducibility and integrity checks.
-# #                 Runs in a minute or two.
-# #   test        — Runs the unit and integration tests. Runs in a
-# #                 few minutes.
-# #
-# # A failure in an earlier job prevents later jobs from running.
-# # This is the fast-fail ordering specified in WBS 3.3.1.
-# #
-# # # Platform matrix
-# #
-# # The drift job runs only on ubuntu-latest, because drift is
-# # deterministic across operating systems. The verify and test jobs
-# # run on the full matrix (ubuntu-latest, macos-latest,
-# # windows-latest) to catch platform-specific issues.
-# #
-# # # Go version matrix
-# #
-# # The verify and test jobs run against both the minimum supported
-# # Go version and the current development version, per the version
-# # matrix defined in WBS 2.1.2. The drift job runs only against the
-# # canonical version, because drift detection is a single-target
-# # check.
-# #
-# # # Caching
-# #
-# # The Go module cache is cached between runs, keyed on go.sum. This
-# # reduces the time to resolve dependencies from minutes to seconds
-# # on subsequent runs.
-# #
-# # # Required status checks
-# #
-# # The drift job is a required status check for merging to main. See
-# # the branch protection specification in
-# # docs/development.md "Detecting Dependency Drift".
-# # =============================================================================
+# =============================================================================
+# ci.yml — the top-level CI workflow.
+# =============================================================================
+#
+# Purpose
+# -------
+#
+# ci.yml is the workflow that runs on every pull request against main
+# and every push to main. It is a dispatcher: it invokes the tier
+# workflows, one per CI tier, and does not itself contain any checks.
+#
+# The tiers and their contents are defined in internal/ci/tiers.go
+# and rendered to docs/reference/ci-tiers.md. The tier workflows are:
+#
+#   Tier 1 — ci-tier1.yml — five jobs. Owned by 18.2.1. Landed.
+#   Tier 2 — ci-tier2.yml — four jobs. Owned by 18.2.2. Landed.
+#   Tier 3 — ci-tier3.yml — five jobs. Owned by 18.2.3. Landed.
+#   Tier 4 — security.yml, nightly.yml — scheduled. Owned by 18.5.x,
+#            18.6.x. Not dispatched from this file.
+#
+# Every tier is a reusable workflow. This file's job graph is three
+# `uses:` calls, one per tier, plus the workflow-level configuration
+# that the calls inherit.
+#
+# Trigger
+# -------
+#
+#   - pull_request to main
+#   - push to main
+#
+# Concurrency
+# -----------
+#
+# A PR push that supersedes a previous push cancels the previous run.
+# A push to main is never cancelled: it is the source of truth for the
+# branch. The cancel-in-progress expression encodes both rules.
+#
+# Permissions
+# -----------
+#
+# contents: read (to check out the repository) and pull-requests: read
+# (for PR metadata). No write scope. A CI check that writes to the
+# repository is a bug.
+#
+# Required checks
+# ---------------
+#
+# Every aggregate job in this file is required for merge:
+#
+#   - tier1  — the aggregate of the five Tier 1 checks
+#   - tier2  — the aggregate of the four Tier 2 checks
+#   - tier3  — the aggregate of the five Tier 3 checks (main only)
+#
+# The aggregate names are the branch-protection anchors. The individual
+# sub-checks appear in the job list under each aggregate but are not
+# themselves required.
+#
+# Tier 3 is gated on `github.event_name == 'push'`. On a pull_request
+# the gate skips the job, so the tier3 aggregate is not present in the
+# PR's required-checks set. On a push to main the gate passes and the
+# tier3 aggregate is present. The branch-protection configuration
+# requires tier3, and GitHub treats an absent job as "not yet run" for
+# the PR's check set, which is the intended behaviour: a PR is not
+# blocked by a tier that does not run on PRs.
+#
+# Timeouts
+# --------
+#
+# Every job declares an explicit `timeout-minutes`. The value is a
+# backstop against a hung runner, not a budget enforcement. Each
+# aggregate's timeout matches its tier's per-job timeout in the tier
+# workflow:
+#
+#   tier1  — 15 minutes (matches ci-tier1.yml's per-job timeout)
+#   tier2  — 20 minutes (matches ci-tier2.yml's per-job timeout)
+#   tier3  — 60 minutes (matches ci-tier3.yml's per-job timeout)
+#
+# The flake contract test TestFlake_EveryJobHasTimeout asserts the
+# field is present on every job in every workflow.
+#
+# Secrets
+# -------
+#
+# The only secret passed to a tier is CODECOV_TOKEN, which ci-tier3.yml
+# reads in its coverage job. It is passed via the `secrets:` block on
+# the tier3 job. The other two tiers do not read any secret.
+#
+# This workflow itself does not reference any secret. It runs on
+# untrusted PR code and must never have direct access to repository
+# secrets. The CODECOV_TOKEN is passed to a reusable workflow, whose
+# permissions are independent of this workflow's; a compromised tier
+# workflow cannot widen this workflow's permissions.
+#
+# Pinned-action policy
+# --------------------
+#
+# Every `uses:` in this file is a local reusable workflow
+# (`./.github/workflows/*.yml`). A local reference has no `@ref` and
+# is exempt from the SHA-pinning policy. The three tier workflows
+# each pin their own action references to full SHAs.
+#
+# See:
+#   docs/architecture/ci-architecture.md
+#   docs/reference/ci-tiers.md
+#   docs/decisions/ADR-043-ci-workflow-architecture.md
+#   docs/decisions/ADR-044-ci-tier-model.md
+#   docs/decisions/ADR-045-tier1-fast-feedback-workflow.md
+#   docs/decisions/ADR-046-tier2-cross-platform-matrix-workflow.md
+#   docs/decisions/ADR-047-tier3-depth-workflow.md
+# =============================================================================
 
-# name: CI
+name: CI
 
-# # ─────────────────────────────────────────────────────────────────────
-# # Triggers
-# # ─────────────────────────────────────────────────────────────────────
-# #
-# # The workflow runs on:
-# #
-# #   - Every push to main.
-# #   - Every pull request targeting main.
-# #   - Manual dispatch, for ad-hoc verification.
-# #
-# # It does not run on every push to feature branches. Contributors
-# # who want CI on a feature branch can open a draft pull request.
+on:
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "*.md"
+      - "LICENSE"
+      - ".github/CODEOWNERS"
+  push:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "*.md"
+      - "LICENSE"
+      - ".github/CODEOWNERS"
 
-# on:
-#   push:
-#     branches: [main]
-#   pull_request:
-#     branches: [main]
-#   workflow_dispatch:
+# Deny-by-default permissions. Every job widens only what it needs, and
+# no job needs more than the two read scopes below.
+permissions:
+  contents: read
+  pull-requests: read
 
-# # ─────────────────────────────────────────────────────────────────────
-# # Permissions
-# # ─────────────────────────────────────────────────────────────────────
-# #
-# # The workflow requests the minimum permissions it needs. It reads
-# # the repository contents and writes nothing.
-# #
-# # The principle of least privilege applies: a compromised workflow
-# # file cannot push commits, create releases, or modify issues.
+# Cancel superseded runs on the same PR. Main-branch runs are never
+# cancelled because they are the source of truth for the branch.
+#
+# The concurrency key includes the workflow name so that a future
+# workflow that reuses the key (for example, a docs-only workflow that
+# also runs on pull_request) does not collide with this one.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
-# permissions:
-#   contents: read
+# Workflow-level environment, applied to every job that does not
+# override it.
+#
+#   GOFLAGS=-mod=readonly   — a missing `go mod tidy` is a failure.
+#   GOTOOLCHAIN=local       — the Go version is what setup-go installed.
+#
+# Both are duplicated in each ci-tier*.yml. The duplication is
+# deliberate: each tier workflow is self-contained, so a standalone
+# invocation has the same environment.
+env:
+  GOFLAGS: -mod=readonly
+  GOTOOLCHAIN: local
 
-# # ─────────────────────────────────────────────────────────────────────
-# # Environment
-# # ─────────────────────────────────────────────────────────────────────
-# #
-# # Every job inherits these environment variables. They are the
-# # canonical values from docs/dependency-policy.md, section "Module
-# # resolution policy".
-# #
-# # Setting them at the workflow level ensures that every job uses the
-# # same environment, regardless of the runner's defaults.
+jobs:
 
-# env:
-#   GOFLAGS: -mod=readonly
-#   GOTOOLCHAIN: auto
-#   GOPROXY: https://proxy.golang.org,direct
-#   GOSUMDB: sum.golang.org
+  # ─────────────────────────────────────────────────────────────────────
+  # tier1 — fast feedback.
+  #
+  # The five Tier 1 checks live in .github/workflows/ci-tier1.yml.
+  # This job invokes them as a reusable workflow. The aggregate name
+  # is `tier1`; it is the branch-protection anchor. The five
+  # individual checks (tier1-format, tier1-vet, tier1-lint,
+  # tier1-test-short, tier1-build) appear as sub-checks under it.
+  #
+  # Budget: 3 minutes. Blocking on pull_request and push.
+  #
+  # See:
+  #   internal/ci/tiers.go (Tier1)
+  #   internal/ci/tier1.go (the Tier 1 model)
+  #   docs/decisions/ADR-045-tier1-fast-feedback-workflow.md
+  # ─────────────────────────────────────────────────────────────────────
+  tier1:
+    name: tier1
+    uses: ./.github/workflows/ci-tier1.yml
+    timeout-minutes: 15
 
-# jobs:
+  # ─────────────────────────────────────────────────────────────────────
+  # tier2 — cross-platform confidence.
+  #
+  # The four Tier 2 checks live in .github/workflows/ci-tier2.yml.
+  # This job invokes them as a reusable workflow. The aggregate name
+  # is `tier2`; it is the branch-protection anchor. The four
+  # individual checks (tier2-matrix, tier2-cross-compile,
+  # tier2-smoke, tier2-release-dry-run) appear as sub-checks under
+  # it, and the matrix's cells appear as sub-sub-checks under
+  # tier2-matrix and tier2-smoke.
+  #
+  # Budget: 15 minutes. Blocking on pull_request and push.
+  #
+  # See:
+  #   internal/ci/tiers.go (Tier2)
+  #   internal/ci/tier2.go (the Tier 2 model)
+  #   docs/decisions/ADR-046-tier2-cross-platform-matrix-workflow.md
+  #
+  # History:
+  #   Before 18.2.2, this file carried four inline Tier 2 jobs
+  #   (tier2-test-full, tier2-race, tier2-lint, tier2-arch). They were
+  #   replaced by this single `uses:` call. The tier2-lint job's
+  #   function moved to tier1-lint in 18.2.1 (lint does not need
+  #   cross-platform coverage); the other three jobs' functions moved
+  #   to ci-tier2.yml's test-matrix, cross-compile, and smoke jobs.
+  # ─────────────────────────────────────────────────────────────────────
+  tier2:
+    name: tier2
+    uses: ./.github/workflows/ci-tier2.yml
+    timeout-minutes: 20
 
-#   # ═══════════════════════════════════════════════════════════════════
-#   # Job 1 — Dependency drift detection
-#   # ═══════════════════════════════════════════════════════════════════
-#   #
-#   # The fast-fail job. Runs in seconds. Detects the five drift types
-#   # defined in WBS 3.3.1:
-#   #
-#   #   D1  go.sum is missing entries required by go.mod.
-#   #   D2  go.sum has extra entries not referenced by go.mod.
-#   #   D3  go.mod is not tidy.
-#   #   D4  go.mod requires a newer Go version than the pinned toolchain.
-#   #   D5  Unpinned dependency version.
-#   #
-#   # Runs only on ubuntu-latest and only against the canonical Go
-#   # version, because drift is deterministic across platforms and
-#   # versions. Running it on the full matrix would waste CI compute
-#   # without providing additional coverage.
-
-#   drift:
-#     name: Dependency drift
-#     runs-on: ubuntu-latest
-#     timeout-minutes: 5
-
-#     steps:
-#       - name: Check out repository
-#         uses: actions/checkout@v4
-
-#       - name: Set up Go
-#         uses: actions/setup-go@v5
-#         with:
-#           go-version-file: go.mod
-#           cache: true
-
-#       - name: Detect drift
-#         run: sh scripts/deps/detect-drift.sh
-
-#   # ═══════════════════════════════════════════════════════════════════
-#   # Job 2 — Verification
-#   # ═══════════════════════════════════════════════════════════════════
-#   #
-#   # Runs the verification checks: module configuration, version
-#   # matrix, reproducibility invariant, Cobra pin and wiring,
-#   # dependency policy, and script tests.
-#   #
-#   # Runs on the full OS matrix because some checks (path handling,
-#   # file permissions) may behave differently on different
-#   # platforms. Runs against both the minimum and current Go
-#   # versions because language features may behave differently.
-
-#   verify:
-#     name: Verify (${{ matrix.os }}, Go ${{ matrix.go }})
-#     needs: drift
-#     runs-on: ${{ matrix.os }}
-#     timeout-minutes: 15
-
-#     strategy:
-#       fail-fast: false
-#       matrix:
-#         os: [ubuntu-latest, macos-latest, windows-latest]
-#         go: ['1.23.0', '1.23.4']
-#         include:
-#           # Add the latest supported Go version on ubuntu only, as
-#           # a forward-compatibility check.
-#           - os: ubuntu-latest
-#             go: '1.24'
-
-#     steps:
-#       - name: Check out repository
-#         uses: actions/checkout@v4
-
-#       - name: Set up Go
-#         uses: actions/setup-go@v5
-#         with:
-#           go-version: ${{ matrix.go }}
-#           cache: true
-
-#       - name: Install Task
-#         uses: arduino/setup-task@v2
-#         with:
-#           version: 3.x
-#           repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-#       - name: Install markdownlint-cli2
-#         run: npm install -g markdownlint-cli2
-
-#       - name: Run verification
-#         run: task verify
-
-#       - name: Run script tests
-#         run: task test:scripts
-
-#   # ═══════════════════════════════════════════════════════════════════
-#   # Job 3 — Tests
-#   # ═══════════════════════════════════════════════════════════════════
-#   #
-#   # Runs the unit and integration tests. This is the slowest job.
-#   # It runs after verification because the verification checks are
-#   # cheaper and more likely to fail.
-
-#   test:
-#     name: Test (${{ matrix.os }}, Go ${{ matrix.go }})
-#     needs: verify
-#     runs-on: ${{ matrix.os }}
-#     timeout-minutes: 20
-
-#     strategy:
-#       fail-fast: false
-#       matrix:
-#         os: [ubuntu-latest, macos-latest, windows-latest]
-#         go: ['1.23.0', '1.23.4']
-
-#     steps:
-#       - name: Check out repository
-#         uses: actions/checkout@v4
-
-#       - name: Set up Go
-#         uses: actions/setup-go@v5
-#         with:
-#           go-version: ${{ matrix.go }}
-#           cache: true
-
-#       - name: Install Task
-#         uses: arduino/setup-task@v2
-#         with:
-#           version: 3.x
-#           repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-#       - name: Run unit tests
-#         run: task test
-
-#       - name: Run integration tests
-#         run: task test:integration
-#         if: matrix.os == 'ubuntu-latest'
+  # ─────────────────────────────────────────────────────────────────────
+  # tier3 — depth.
+  #
+  # The five Tier 3 checks live in .github/workflows/ci-tier3.yml.
+  # This job invokes them as a reusable workflow. The aggregate name
+  # is `tier3`; it is the branch-protection anchor for main. The five
+  # individual checks (tier3-reproducibility, tier3-flake-check,
+  # tier3-race-full, tier3-coverage, tier3-binary-verify-all) appear
+  # as sub-checks under it, and the race-full matrix's cells appear as
+  # sub-sub-checks.
+  #
+  # Budget: 60 minutes. Advisory on pull_request, blocking on push.
+  #
+  # # The `if:` gate
+  #
+  # The gate is `github.event_name == 'push'`. On a pull_request the
+  # job is skipped; on a push to main the job runs. The gate is
+  # implemented here, not in ci-tier3.yml, so that a caller that
+  # wants Tier 3 on a PR (a future debugging tool, for example) can
+  # invoke the reusable workflow without changing it.
+  #
+  # # The `secrets:` block
+  #
+  # ci-tier3.yml's coverage job reads CODECOV_TOKEN. GitHub's
+  # reusable-workflow secrets are passed via the caller's `secrets:`
+  # block, not as inputs. The block below is the mechanism; a future
+  # change that adds a secret to a tier workflow must add it here in
+  # the same commit.
+  #
+  # See:
+  #   internal/ci/tiers.go (Tier3)
+  #   internal/ci/tier3.go (the Tier 3 model)
+  #   docs/decisions/ADR-047-tier3-depth-workflow.md
+  #
+  # History:
+  #   Before 18.2.3, this file carried four inline Tier 3 jobs
+  #   (tier3-race, tier3-count2, tier3-cross-compile,
+  #   tier3-release-dry-run). They were replaced by this single
+  #   `uses:` call. The tier3-race job's function moved to
+  #   ci-tier3.yml's race-full job (which runs on the min and current
+  #   Go versions, not just the current one). The tier3-count2 job's
+  #   function moved to flake-check. The tier3-cross-compile job's
+  #   function moved to binary-verify-all. The tier3-release-dry-run
+  #   job's function moved to Tier 2's release-dry-run job in 18.2.2.
+  # ─────────────────────────────────────────────────────────────────────
+  tier3:
+    name: tier3
+    if: ${{ github.event_name == 'push' }}
+    uses: ./.github/workflows/ci-tier3.yml
+    timeout-minutes: 60
+    secrets:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}

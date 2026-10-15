@@ -1,11 +1,10 @@
 # Allowed Dependency Matrix
 
 > **Status:** Adopted
-> **ADR:** [ADR-042 — Package-group Dependency Matrix](../decisions/ADR-042-package-group-dependency-matrix.md)
 > **Extends:** [clean-architecture.md](./clean-architecture.md) §3 (layer matrix)
 > **Machine-readable:** [dependency-matrix.yaml](./dependency-matrix.yaml)
 > **Schema:** [dependency-matrix.schema.json](../../schemas/dependency-matrix.schema.json)
-> **Enforced by:** [`internal/arch/matrix.go`](../../internal/arch/matrix.go) · [`scripts/arch/verify-matrix.sh`](../../scripts/arch/verify-matrix.sh)
+> **Enforced by:** [`internal/arch/matrix.go`](../../internal/arch/matrix.go)
 > **Traceability:** FR-ARCH-002, NFR-ARCHITECTURE-002
 > **WBS:** 14.1.2
 > **Consumed by:** WBS 14.6.1 (CI lint rule)
@@ -320,8 +319,6 @@ procedure is:
 3. Regenerate the Markdown form: `go test ./internal/arch -run TestMatrixYAMLMatchesMarkdown -update`.
 4. Add or update the corresponding condition or exception in §4 or §5.
 5. Run `scripts/arch/verify-matrix.sh`.
-6. Update `docs/decisions/ADR-042-package-group-dependency-matrix.md` if the
-   change touches the exception registry or the group taxonomy.
 
 The `TestMatrixYAMLMatchesMarkdown` test fails until YAML, Markdown, and the
 in-code matrix agree.
@@ -333,7 +330,5 @@ in-code matrix agree.
 - [clean-architecture.md](./clean-architecture.md) — the five-layer model this matrix refines.
 - [layer-dependency-matrix.md](./layer-dependency-matrix.md) — the 5×5 layer matrix.
 - [dependency-matrix.yaml](./dependency-matrix.yaml) — the machine-readable form.
-- [ADR-040](../decisions/ADR-040-clean-architecture-layer-model.md) — the layer model decision.
-- [ADR-042](../decisions/ADR-042-package-group-dependency-matrix.md) — the package-group decision.
 - [`internal/arch/matrix.go`](../../internal/arch/matrix.go) — the parser, validator, and rule engine.
 - [WBS 14.6.1](../phase-2-requirements.md) — the CI lint rule that consumes this matrix.

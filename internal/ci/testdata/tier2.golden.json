@@ -1,0 +1,46 @@
+{
+  "cache_key_template": "%s-go-%s-%s-%s",
+  "go_flags": "-mod=readonly",
+  "job_timeout_seconds": 1200,
+  "race_detector_os": ["ubuntu-latest"],
+  "cross_compile_targets": [
+    {"goos": "linux", "goarch": "amd64"},
+    {"goos": "linux", "goarch": "arm64"},
+    {"goos": "darwin", "goarch": "amd64"},
+    {"goos": "darwin", "goarch": "arm64"},
+    {"goos": "windows", "goarch": "amd64"},
+    {"goos": "windows", "goarch": "arm64"}
+  ],
+  "jobs": [
+    {
+      "name": "test-matrix",
+      "timeout_seconds": 1200,
+      "uses_matrix": true,
+      "matrix_os": ["ubuntu-latest", "windows-latest", "macos-latest"],
+      "matrix_go": ["min", "current"],
+      "steps": ["Check out the repository", "Set up Go", "go test ./...", "go test -race ./... (Linux only)"]
+    },
+    {
+      "name": "cross-compile",
+      "timeout_seconds": 1200,
+      "uses_matrix": false,
+      "runs_on": "ubuntu-latest",
+      "steps": ["Check out the repository", "Set up Go", "Cross-compile every release platform"]
+    },
+    {
+      "name": "smoke",
+      "timeout_seconds": 1200,
+      "uses_matrix": true,
+      "matrix_os": ["ubuntu-latest", "windows-latest", "macos-latest"],
+      "matrix_go": ["min", "current"],
+      "steps": ["Check out the repository", "Set up Go", "Build the forge binary", "Run the binary smoke suite"]
+    },
+    {
+      "name": "release-dry-run",
+      "timeout_seconds": 1800,
+      "uses_matrix": false,
+      "runs_on": "ubuntu-latest",
+      "steps": ["Check out the repository", "Set up Go", "make release-dry-run"]
+    }
+  ]
+}

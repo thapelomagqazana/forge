@@ -339,7 +339,6 @@ transitive dependencies, upgrade criteria, and last reviewed date.
 | License             | Apache-2.0                                           |
 | Maintainer          | Steve Francia and contributors                       |
 | First introduced    | WBS 2.4.1                                            |
-| ADR                 | [ADR-006](decisions/ADR-006-cobra-cli-framework.md)  |
 | Purpose             | CLI command tree, flag parsing, help output          |
 | Last reviewed       | 2026-10-10                                           |
 
@@ -390,7 +389,6 @@ dependency review cycle described in § 4.5.
 | License             | BSD-3-Clause                                         |
 | Maintainer          | Steve Francia and contributors                       |
 | First introduced    | WBS 2.4.1                                            |
-| ADR                 | [ADR-006](decisions/ADR-006-cobra-cli-framework.md)  |
 | Purpose             | POSIX/GNU-style flag parsing                         |
 | Last reviewed       | 2026-10-10                                           |
 
@@ -426,7 +424,6 @@ released, its upgrade will be treated as a Phase 4-or-later concern.
 | License             | MIT and Apache-2.0 (dual-licensed)                   |
 | Maintainer          | Canonical Ltd. and the go-yaml contributors          |
 | First introduced    | WBS 8.4.2                                            |
-| ADR                 | [ADR-007](decisions/ADR-007-yaml-parsing-library.md) |
 | Purpose             | YAML parsing for the config file loader              |
 | Last reviewed       | 2026-10-11                                           |
 
@@ -489,7 +486,6 @@ updated when the library's security advisories are re-checked.
 | License             | MIT                                                  |
 | Maintainer          | Stretchr, Inc. and contributors                      |
 | First introduced    | WBS 9.5.1                                            |
-| ADR                 | [ADR-011](decisions/ADR-011-testify-testing-library.md) |
 | Purpose             | Test assertions (`assert`, `require`)                |
 | Last reviewed       | 2026-10-12                                           |
 
@@ -568,7 +564,6 @@ binary's size, attack surface, or startup time.
 | License             | BSD-3-Clause                                         |
 | Maintainer          | The Go team (golang.org)                             |
 | First introduced    | WBS 14.1.1                                           |
-| ADR                 | [ADR-041](decisions/ADR-041-arch-guardrail-dependency-golang-x-tools.md) |
 | Purpose             | Loading the Go package graph for the architecture guardrail (`internal/arch`) |
 | Last reviewed       | 2026-10-14                                           |
 
@@ -682,7 +677,6 @@ allow/deny lists rather than a full matrix over dynamic package sets.
 | License             | Apache-2.0                                           |
 | Maintainer          | Santhosh Kumar Tekuri                                |
 | First introduced    | WBS 8.4.3                                            |
-| ADR                 | [ADR-008](decisions/ADR-008-config-schema-validation.md) |
 | Purpose             | JSON Schema validation for `forge.yaml`'s schema     |
 | Last reviewed       | 2026-10-15                                           |
 

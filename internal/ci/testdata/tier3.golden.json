@@ -1,0 +1,50 @@
+{
+  "artifact_retention_days": 30,
+  "baseline_path": "coverage/baseline.txt",
+  "coverage_threshold": 0.50,
+  "go_flags": "-mod=readonly",
+  "job_timeout_seconds": 2700,
+  "repro_target": "linux/amd64",
+  "jobs": [
+    {
+      "name": "tier3-reproducibility",
+      "timeout_seconds": 2700,
+      "uses_matrix": false,
+      "runs_on": "ubuntu-latest",
+      "artifacts": ["repro-manifest"],
+      "steps": ["Check out the repository", "Set up Go", "Resolve SOURCE_DATE_EPOCH", "Build #1", "Build #2", "Compare hashes", "Write manifest", "Upload manifest"]
+    },
+    {
+      "name": "tier3-flake-check",
+      "timeout_seconds": 2700,
+      "uses_matrix": false,
+      "runs_on": "ubuntu-latest",
+      "artifacts": ["flake-report"],
+      "steps": ["Check out the repository", "Set up Go", "Run the full suite twice", "Write flake report", "Upload flake report", "Fail the job if the flake check failed"]
+    },
+    {
+      "name": "tier3-race-full",
+      "timeout_seconds": 2700,
+      "uses_matrix": true,
+      "matrix_go": ["min", "current"],
+      "artifacts": [],
+      "steps": ["Check out the repository", "Set up Go", "go test -race ./..."]
+    },
+    {
+      "name": "tier3-coverage",
+      "timeout_seconds": 2700,
+      "uses_matrix": false,
+      "runs_on": "ubuntu-latest",
+      "artifacts": ["coverage-report"],
+      "steps": ["Check out the repository", "Set up Go", "Measure coverage", "Extract total coverage", "Compare against baseline", "Upload to Codecov", "Write coverage report", "Upload coverage report"]
+    },
+    {
+      "name": "tier3-binary-verify-all",
+      "timeout_seconds": 2700,
+      "uses_matrix": false,
+      "runs_on": "ubuntu-latest",
+      "artifacts": [],
+      "steps": ["Check out the repository", "Set up Go", "Verify every platform"]
+    }
+  ]
+}

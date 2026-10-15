@@ -8,6 +8,8 @@ and evolving software project foundations as code.
 Your repository changes every day. Your engineering standards
 shouldn't disappear with it.
 
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/thapelomagqazana/forge/badge)](https://securityscorecards.dev/viewer/?uri=github.com/thapelomagqazana/forge)
+
 ---
 
 ## Table of Contents
@@ -352,8 +354,6 @@ In the meantime:
 - **Bug reports and feature requests** are welcome via
   [GitHub Issues](https://github.com/thapelomagqazana/forge/issues).
   Use the structured templates.
-- **Questions** belong in
-  [GitHub Discussions](https://github.com/thapelomagqazana/forge/discussions).
 - **Security vulnerabilities** must not be reported publicly. See
   `SECURITY.md` for the private reporting process.
 - **Pull requests** should follow the template in

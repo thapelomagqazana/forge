@@ -82,7 +82,6 @@ You will need:
 |---|---|---|
 | `sha256sum` | Verify the checksum | Preinstalled on Linux. macOS: `shasum -a 256`. Windows: `certutil -hashfile <file> SHA256` or Git Bash. |
 | `gpg` | Verify the GPG signature | `apt install gnupg`, `brew install gnupg`, or [gnupg.org](https://gnupg.org/download/) |
-| `cosign` | Verify the cosign signature | [sigstore.dev](https://docs.sigstore.dev/cosign/installation/) |
 | `slsa-verifier` | Verify the SLSA provenance | [slsa-verifier releases](https://github.com/slsa-framework/slsa-verifier/releases) |
 | `git` | Rebuild from source | Any recent version |
 
@@ -641,10 +640,6 @@ signer's build process. The proofs together give a user a chain of
 evidence from the bytes they downloaded to the source commit they
 trust.
 
-The design is recorded in
-[`docs/decisions/ADR-048-supply-chain-integrity.md`](../decisions/ADR-048-supply-chain-integrity.md).
-The user-facing surface's design is recorded in
-[`docs/decisions/ADR-050-user-verification-surface.md`](../decisions/ADR-050-user-verification-surface.md).
 The security policy is in [`SECURITY.md`](../../SECURITY.md).
 
 ---
@@ -654,10 +649,6 @@ The security policy is in [`SECURITY.md`](../../SECURITY.md).
 | Document | Role |
 |---|---|
 | [`SECURITY.md`](../../SECURITY.md) | The release key's fingerprint, the cosign identity, and the security contact. |
-| [`docs/reference/release-channels.md`](release-channels.md) | The channels each artifact is published to, and the support window. |
 | [`docs/guides/reproducible-builds.md`](../guides/reproducible-builds.md) | Step 8: rebuild from source. |
 | [`docs/guides/verifying-binaries.md`](../guides/verifying-binaries.md) | The binary verification suite the release pipeline runs before signing. |
 | [`docs/guides/rollback.md`](../guides/rollback.md) | The post-publish rollback procedure. |
-| [`docs/decisions/ADR-048-supply-chain-integrity.md`](../decisions/ADR-048-supply-chain-integrity.md) | The supply-chain posture and its rationale. |
-| [`docs/decisions/ADR-050-user-verification-surface.md`](../decisions/ADR-050-user-verification-surface.md) | The user-facing surface's design. |
-| [`docs/decisions/ADR-043-versioning-and-release-channels.md`](../decisions/ADR-043-versioning-and-release-channels.md) | The tag-to-channel routing the release workflow implements. |

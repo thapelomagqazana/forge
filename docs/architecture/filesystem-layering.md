@@ -48,8 +48,6 @@ That pattern is:
 This document records the architecture that fixes all four. It is
 the normative reference for "where does my filesystem code go?"
 
-The decision itself is recorded in
-[ADR-035 — Filesystem Enforcement by Construction](../decisions/ADR-035-filesystem-enforcement-by-construction.md).
 This document is the *how-to-apply-it* companion.
 
 ---
@@ -606,7 +604,6 @@ marker. The allow-list must trend to empty.
 - [ADR-022 — Output and Logging Are Separate Architectural Layers](../decisions/ADR-022-output-and-logging-are-separate-architectural-layers.md)
 - [ADR-028 — The Stream Contract](../decisions/ADR-028-the-stream-contract-is-enforced-at-the-boundary-output-stdout-logger-stderr-errors-stderr.md)
 - [ADR-034 — The Redaction Policy Is Closed](../decisions/ADR-034-the-redaction-policy-is-closed-no-log-field-is-exempt-and-every-mechanism-has-a-test.md)
-- [ADR-035 — Filesystem Enforcement by Construction](../decisions/ADR-035-filesystem-enforcement-by-construction.md)
 - [security-model.md](../security-model.md)
 - [security/logging-redaction.md](../security/logging-redaction.md)
 - [dependency-policy.md](../dependency-policy.md)

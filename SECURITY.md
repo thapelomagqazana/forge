@@ -42,9 +42,6 @@ and the maintainers agree that an extension serves users better.
 
 The most recent stable release is supported. Older minor releases
 receive security fixes for 90 days after the next minor's release.
-The support window is documented in
-[`docs/reference/release-channels.md`](docs/reference/release-channels.md)
-§"Support".
 
 The `nightly` channel is not supported. A nightly build is a
 snapshot of `main`; it is published for testing and is deleted
@@ -238,9 +235,6 @@ policy.
 | Apple notary credentials | `FORGE_NOTARY_KEYCHAIN_PROFILE` | Submits binaries to Apple's notary service. | On Apple ID password change or keychain profile rotation. |
 | Windows Authenticode certificate | `FORGE_AUTHENTICODE_SUBJECT`, `FORGE_AUTHENTICODE_SHA1` | Signs windows binaries. | On certificate expiry (code-signing certificates are valid for one to three years). |
 | cosign keyless | None. | Signs archives. | Not applicable: keyless uses a short-lived certificate per run. |
-
-The pipeline's design is recorded in
-[`docs/decisions/ADR-048-supply-chain-integrity.md`](docs/decisions/ADR-048-supply-chain-integrity.md).
 
 ### Why the GPG key is not passphrase-protected
 

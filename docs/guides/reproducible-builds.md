@@ -31,9 +31,7 @@ This document states what "reproducible" means for Forge, how the
 property is achieved, how it is verified, and what residual
 nondeterminism is accepted.
 
-For the build entry points, see [`building.md`](./building.md). For the
-release pipeline as a whole, see
-[`release-channels.md`](../reference/release-channels.md).
+For the build entry points, see [`building.md`](./building.md).
 
 ## Definition
 
@@ -216,8 +214,7 @@ platform's output.
 
 ## Residual nondeterminism
 
-The following sources of nondeterminism are accepted and documented in
-[`ADR-045`](../decisions/ADR-045-reproducibility-posture.md):
+The following sources of nondeterminism are accepted and documented:
 
 | Source | Status | Impact |
 |---|---|---|
@@ -321,9 +318,7 @@ default.
 |---|---|
 | [`docs/reference/platforms.yaml`](../reference/platforms.yaml) | The platform matrix the driver reads |
 | [`docs/reference/versioning.md`](../reference/versioning.md) | The version metadata the driver embeds |
-| [`docs/reference/release-channels.md`](../reference/release-channels.md) | The channels and their distribution rules |
 | [`docs/guides/building.md`](./building.md) | The build entry points and the preconditions |
-| [`docs/decisions/ADR-045-reproducibility-posture.md`](../decisions/ADR-045-reproducibility-posture.md) | The reproducibility posture and residual nondeterminism |
 | [`scripts/build.go`](../../scripts/build.go) | The cross-compile driver |
 | [`scripts/build_test.go`](../../scripts/build_test.go) | The driver's tests |
 | [`cmd/forge-internal-repro/main.go`](../../cmd/forge-internal-repro/main.go) | The reproducibility verifier |

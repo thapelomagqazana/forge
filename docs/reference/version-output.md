@@ -185,9 +185,6 @@ fields appear at the top level, and a `provenance` object carries the
 rest. A consumer that reads only the five fields reads the same
 values from either shape.
 
-The output is validated against
-[`schemas/version-full.schema.json`](../../schemas/version-full.schema.json).
-
 The `provenance` object omits its optional fields when they carry no
 information: a binary built without `-buildvcs=true` has no
 `vcsRevision` and no `vcsTime`, and a binary with no dependencies has
@@ -289,8 +286,6 @@ Three layers:
 2. **Schema tests** in `internal/version/schema_test.go` validate the
    output of `WriteJSON` against
    [`schemas/version.schema.json`](../../schemas/version.schema.json)
-   and the output of `WriteFullJSON` against
-   [`schemas/version-full.schema.json`](../../schemas/version-full.schema.json).
    The schema and the Go writer are two independent implementations
    of the same contract; the tests keep them in agreement.
 
@@ -306,10 +301,7 @@ The `task version:verify` target runs all three.
 | Document | Role |
 |---|---|
 | [`versioning.md`](./versioning.md) | Version string semantics and the release channels |
-| [`release-channels.md`](./release-channels.md) | Channel definitions and tag-to-release routing |
 | [`building.md`](../guides/building.md) | Build entry points and preconditions |
 | [`reproducible-builds.md`](../guides/reproducible-builds.md) | Determinism and the role of `SOURCE_DATE_EPOCH` |
-| [`ADR-046`](../decisions/ADR-046-version-metadata-and-provenance.md) | Why five fields, why `ReadBuildInfo` |
 | [`schemas/version.schema.json`](../../schemas/version.schema.json) | The simple JSON shape |
-| [`schemas/version-full.schema.json`](../../schemas/version-full.schema.json) | The full JSON shape |
 | [`schemas/version-metadata.schema.json`](../../schemas/version-metadata.schema.json) | The policy document's shape (distinct) |

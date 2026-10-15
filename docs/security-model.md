@@ -60,8 +60,6 @@ It answers:
   [`docs/validation-spec.md`](./validation-spec.md))
 - Update algorithm (see
   [`docs/update-model.md`](./update-model.md))
-- Registry implementation (see
-  [`docs/registry-spec.md`](./registry-spec.md), future)
 - CLI command surface (see
   [`docs/cli-ux-spec.md`](./cli-ux-spec.md))
 

@@ -182,7 +182,6 @@ Windows equivalent of `O_NOFOLLOW`. See (a).
 
 ## See Also
 
-- [ADR-035 — Filesystem Enforcement by Construction](../decisions/ADR-035-filesystem-enforcement-by-construction.md)
 - [Path Normalization & Canonicalization](../reference/path-normalization.md)
 - [Boundary Model](../reference/boundary-model.md)
 - [Filesystem Errors](../reference/filesystem-errors.md)

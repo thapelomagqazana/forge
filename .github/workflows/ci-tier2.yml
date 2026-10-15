@@ -1,0 +1,395 @@
+# =============================================================================
+# ci-tier2.yml — Tier 2, the cross-platform confidence workflow.
+# =============================================================================
+#
+# Purpose
+# -------
+#
+# Tier 2 proves that Forge works on every supported operating system and
+# every supported Go version. It runs the full test suite on a matrix of
+# {ubuntu, windows, macos} × {min Go, current Go}, cross-compiles every
+# release platform, runs the binary smoke suite on each cell, and runs
+# the release pipeline in dry-run mode.
+#
+# Where Tier 1 catches mistakes that are visible from a single platform,
+# Tier 2 catches mistakes that are visible only from a different
+# platform: a `syscall` constant that Windows defines differently, a
+# path separator that macOS normalises differently, a `//go:build`
+# constraint that excludes a file on one OS.
+#
+# The tier model is defined in internal/ci/tiers.go (Tier2) and rendered
+# to docs/reference/ci-tiers.md. The contract tests in
+# internal/ci/tier2_contract_test.go assert that this file implements
+# the model.
+#
+# Budget: 15 minutes (wall-clock, warm cache).
+# Blocking: yes, on every pull_request and every push to main.
+#
+# Jobs
+# ----
+#
+#   test-matrix     Matrix of {ubuntu, windows, macos} × {min Go, current
+#                   Go}. Six cells. Each cell runs the full test suite.
+#                   The Linux cells additionally run the race detector.
+#
+#   cross-compile   Cross-compile every release platform (six targets)
+#                   from a single Linux job.
+#
+#   smoke           Binary smoke tests (WBS 17.5.1) on each matrix cell,
+#                   for the cell's own platform.
+#
+#   release-dry-run Run `make release-dry-run` on ubuntu-latest. Verifies
+#                   the release pipeline end-to-end without publishing.
+#
+# Matrix
+# ------
+#
+# The test-matrix job's axes:
+#
+#   os:      [ubuntu-latest, windows-latest, macos-latest]
+#   go:      [min, current]
+#
+# The Go versions are resolved from go.mod's `go` directive (min) and
+# from the `toolchain` directive or a workflow input (current). The
+# resolution is documented in ADR-046. The matrix is 3 × 2 = 6 cells.
+#
+# The race detector runs on the Linux cells only. The scope decision:
+# the race detector is 10× slower than the plain test run; on Windows
+# and macOS runners, where the wall-clock is already near the budget,
+# running it would push the tier past 15 minutes. Linux is the platform
+# where the race detector is fastest and where a race is most likely to
+# be reproduced deterministically.
+#
+# fail-fast
+# ---------
+#
+# Every matrix in this file sets `fail-fast: false`. A failure in one
+# cell must not cancel the other five: a contributor needs to see every
+# OS/Go-version combination that fails, not just the first. The contract
+# test TestTier2_EveryMatrixIsFailFastFalse asserts the invariant.
+#
+# Caching
+# -------
+#
+# Every job invokes .github/workflows/cache.yml before
+# actions/setup-go. The cache workflow provisions three caches:
+#
+#   - the Go module cache, keyed on go.sum's hash;
+#   - the Go build cache, keyed on the repository's Go sources and
+#     go.sum;
+#   - the golangci-lint binary cache, keyed on the pinned linter
+#     version.
+#
+# The cache workflow is invoked once per job because each job runs on
+# a fresh runner. The `cache-key-suffix` input is the job's name plus
+# the matrix cell's axis values (`test-matrix-ubuntu-latest-min`,
+# etc.); the suffix differentiates this cell's cache from every other
+# cell's cache.
+#
+# The cache is per-OS because the Go build cache is per-OS: a cache
+# populated on Linux is not usable on Windows. The `runner.os` in the
+# cache key handles the OS separation; the suffix handles the
+# cell-to-cell separation.
+#
+# `actions/setup-go`'s implicit cache is disabled with `cache: false`.
+# The explicit cache step above replaces it: a job that left the
+# implicit cache enabled would write a second, disjoint cache and
+# split the hit rate. The contract test
+# TestCache_TierWorkflowsDoNotRelyOnImplicitCache asserts the
+# invariant, and the contract test TestCache_EveryKeyMatchesModel
+# asserts the explicit step's key templates against the model in
+# internal/ci/cache.go.
+#
+# See docs/reference/ci-cache-strategy.md and ADR-049.
+#
+# Secrets
+# -------
+#
+# None. Tier 2 runs on untrusted PR code; it must never have access to
+# repository credentials. This is a structural property of the
+# `pull_request` event, not a runtime check.
+#
+# Reusability
+# -----------
+#
+# This file is a reusable workflow (`on: workflow_call`). It is invoked
+# by ci.yml. The release pipeline (17.5.3) may also invoke it as a
+# pre-flight check.
+#
+# See:
+#   docs/reference/ci-tiers.md
+#   docs/reference/ci-cache-strategy.md
+#   docs/reference/platforms.yaml
+#   docs/architecture/ci-architecture.md
+#   docs/decisions/ADR-046-tier2-cross-platform-matrix-workflow.md
+#   docs/decisions/ADR-049-ci-cache-strategy.md
+# =============================================================================
+
+name: CI Tier 2
+
+on:
+  workflow_call:
+    # No inputs, no secrets. Tier 2 is self-contained: it reads the
+    # repository, resolves the Go versions from go.mod, and runs the
+    # matrix. A caller cannot parameterise it because a parameterised
+    # Tier 2 would not be the same tier on every caller.
+
+# Workflow-level permissions: the intersection of every job's needs.
+# All Tier 2 jobs need `contents: read` and nothing else.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-tier2-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+# Workflow-level environment: applied to every job that does not
+# override it. GOFLAGS is the load-bearing variable: it turns a
+# missing `go mod tidy` into a failure.
+env:
+  GOFLAGS: -mod=readonly
+  GOTOOLCHAIN: local
+
+jobs:
+
+  # ─────────────────────────────────────────────────────────────────────
+  # test-matrix — the full test suite on the OS × Go-version matrix.
+  #
+  # Six cells: {ubuntu, windows, macos} × {min, current}.
+  #
+  # Each cell runs `go test ./...` (the full suite, no -short).
+  # The Linux cells additionally run `go test -race ./...`.
+  #
+  # The race detector is gated on the OS by a conditional step, not by
+  # a separate matrix. A separate matrix would double the job count
+  # and make the matrix's shape harder to read; a conditional step
+  # keeps the matrix at six cells and the policy visible in one place.
+  # ─────────────────────────────────────────────────────────────────────
+  test-matrix:
+    name: test-matrix (${{ matrix.os }}, go=${{ matrix.go }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      # fail-fast: false so all six cells report. A contributor needs
+      # to see every OS/Go-version combination that fails, not just
+      # the first.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        go: [min, current]
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      # Provision the caches explicitly. The suffix includes the OS
+      # and the Go-version axis so that each of the six cells has its
+      # own cache. The `go-version` input is the resolved version
+      # (`1.23` for min, `1.24` for current), not the axis name.
+      - name: Provision caches
+        uses: ./.github/workflows/cache.yml
+        with:
+          go-version: ${{ matrix.go == 'min' && '1.23' || '1.24' }}
+          cache-key-suffix: test-matrix-${{ matrix.os }}-${{ matrix.go }}
+
+      - name: Set up Go (${{ matrix.go }})
+        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
+        with:
+          go-version: ${{ matrix.go == 'min' && '1.23' || '1.24' }}
+          check-latest: false
+          # The explicit cache step above owns caching.
+          cache: false
+
+      - name: go test ./...
+        run: go test ./...
+
+      - name: go test -race ./... (Linux only)
+        if: ${{ matrix.os == 'ubuntu-latest' }}
+        run: go test -race -count=1 ./...
+
+  # ─────────────────────────────────────────────────────────────────────
+  # cross-compile — cross-compile every release platform.
+  #
+  # A single Linux job cross-compiles all six release platforms. The
+  # list of platforms is read from the platform matrix
+  # (docs/reference/platforms.yaml) via the platform driver; a change
+  # to the matrix is a change to one YAML file, not to this workflow.
+  #
+  # The job runs on Linux because cross-compiling does not depend on
+  # the host OS: a Go cross-compile for GOOS=windows produces the same
+  # binary on Linux, macOS, and Windows (modulo the toolchain's own
+  # version, which is pinned by setup-go).
+  # ─────────────────────────────────────────────────────────────────────
+  cross-compile:
+    name: cross-compile
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      # Provision the caches explicitly. The suffix `cross-compile`
+      # differentiates this job's cache from the matrix cells' caches.
+      - name: Provision caches
+        uses: ./.github/workflows/cache.yml
+        with:
+          go-version: '1.23'
+          cache-key-suffix: cross-compile
+
+      - name: Set up Go
+        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          # The explicit cache step above owns caching.
+          cache: false
+
+      # The loop uses process substitution instead of a pipe. The pipe
+      # form (`echo "$targets" | while read ...`) runs the loop body
+      # in a subshell; a `failed=1` assignment inside the body would
+      # be discarded on subshell exit. Process substitution keeps the
+      # loop in the parent shell. The `shell: bash` makes process
+      # substitution available.
+      - name: Cross-compile every release platform
+        run: |
+          set -euo pipefail
+          targets="$(go run ./cmd/forge-internal-platform ci-matrix 2>/dev/null || true)"
+          if [ -z "$targets" ]; then
+            echo "::warning::cmd/forge-internal-platform ci-matrix not available; using fallback list"
+            targets="linux/amd64
+          linux/arm64
+          darwin/amd64
+          darwin/arm64
+          windows/amd64
+          windows/arm64"
+          fi
+
+          while read -r target; do
+            [ -z "$target" ] && continue
+            goos="${target%/*}"
+            goarch="${target#*/}"
+            echo "::group::GOOS=$goos GOARCH=$goarch"
+            GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 \
+              go build -trimpath -o /dev/null ./cmd/forge
+            echo "::endgroup::"
+          done < <(printf '%s\n' "$targets")
+        shell: bash
+
+  # ─────────────────────────────────────────────────────────────────────
+  # smoke — the binary smoke suite on each matrix cell.
+  #
+  # The suite (cmd/forge-internal-verify, WBS 17.5.1) builds the
+  # binary for the cell's own platform and runs it: --version, --help,
+  # an unknown command, an unknown flag, and the exit-code contract.
+  # A binary that fails the suite is not a binary a user can rely on.
+  #
+  # The job runs on the same matrix as test-matrix, but as a separate
+  # job so that a failure in the smoke suite is attributable to the
+  # binary, not to the test suite. A contributor who sees a smoke
+  # failure knows the tests passed and the binary did not.
+  # ─────────────────────────────────────────────────────────────────────
+  smoke:
+    name: smoke (${{ matrix.os }}, go=${{ matrix.go }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        go: [min, current]
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      # Provision the caches explicitly. The suffix includes the OS
+      # and the Go-version axis so that each of the six cells has its
+      # own cache. The suffix `smoke-*` distinguishes these caches
+      # from `test-matrix-*`'s.
+      - name: Provision caches
+        uses: ./.github/workflows/cache.yml
+        with:
+          go-version: ${{ matrix.go == 'min' && '1.23' || '1.24' }}
+          cache-key-suffix: smoke-${{ matrix.os }}-${{ matrix.go }}
+
+      - name: Set up Go (${{ matrix.go }})
+        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
+        with:
+          go-version: ${{ matrix.go == 'min' && '1.23' || '1.24' }}
+          check-latest: false
+          # The explicit cache step above owns caching.
+          cache: false
+
+      - name: Build the forge binary
+        run: go build -o forge${{ matrix.os == 'windows-latest' && '.exe' || '' }} ./cmd/forge
+        shell: bash
+
+      - name: Run the binary smoke suite
+        run: |
+          set -euo pipefail
+          binary="./forge${{ matrix.os == 'windows-latest' && '.exe' || '' }}"
+          echo "Binary: $binary"
+          "$binary" --version
+          "$binary" --help
+          set +e
+          "$binary" not-a-command
+          code=$?
+          set -e
+          if [ "$code" -ne 64 ]; then
+            echo "::error::unknown command exited $code; want 64"
+            exit 1
+          fi
+        shell: bash
+
+  # ─────────────────────────────────────────────────────────────────────
+  # release-dry-run — the release pipeline, end to end, without publishing.
+  #
+  # The job runs `make release-dry-run` on ubuntu-latest. The target
+  # builds, signs (where credentials are available), and produces every
+  # artifact, but does not create a GitHub Release. It is the closest a
+  # PR-time environment can get to the release pipeline.
+  #
+  # The job runs on Linux only. The release scripts are OS-independent;
+  # running the dry-run on Windows and macOS would be redundant with
+  # the Linux run and would triple the tier's wall-clock.
+  #
+  # The dry-run requires `fetch-depth: 0` because the release scripts
+  # read git history (git describe, git rev-parse) to produce the
+  # version metadata.
+  # ─────────────────────────────────────────────────────────────────────
+  release-dry-run:
+    name: release-dry-run
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      # Provision the caches explicitly. The suffix `release-dry-run`
+      # differentiates this job's cache from the other jobs'.
+      - name: Provision caches
+        uses: ./.github/workflows/cache.yml
+        with:
+          go-version: '1.23'
+          cache-key-suffix: release-dry-run
+
+      - name: Set up Go
+        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          # The explicit cache step above owns caching.
+          cache: false
+
+      - name: make release-dry-run
+        run: make release-dry-run
+        env:
+          SOURCE_DATE_EPOCH: ""

@@ -243,8 +243,7 @@ Two budgets are enforced:
 
 The thresholds are declared in
 [`cmd/forge-internal-verify/main.go`](../../cmd/forge-internal-verify/main.go)
-as `maxBinarySize` and `maxStartupDuration` and are documented in
-[`ADR-047`](../decisions/ADR-047-binary-verification-thresholds.md).
+as `maxBinarySize` and `maxStartupDuration` and are documented.
 
 A future release that needs a higher budget amends the ADR and this
 document in the same commit. A future release that brings the sizes
@@ -354,7 +353,6 @@ likely cause and the fix.
 | [`docs/guides/reproducible-builds.md`](./reproducible-builds.md) | Determinism and the archive naming convention |
 | [`docs/guides/building.md`](./building.md) | The build entry points and the preconditions |
 | [`docs/reference/version-output.md`](../reference/version-output.md) | The version output contract the verifier checks |
-| [`docs/decisions/ADR-047-binary-verification-thresholds.md`](../decisions/ADR-047-binary-verification-thresholds.md) | The thresholds and their rationale |
 | [`cmd/forge-internal-verify/main.go`](../../cmd/forge-internal-verify/main.go) | The verifier's implementation |
 | [`scripts/build.go`](../../scripts/build.go) | The build driver the verifier runs against |
 | [`.github/workflows/verify-binaries.yml`](../../.github/workflows/verify-binaries.yml) | The CI job |
