@@ -153,7 +153,7 @@ jobs:
       # ─────────────────────────────────────────────────────────────────
       - name: Cache Go modules
         id: module-cache
-        uses: actions/cache@3624ceb22c1c5a301c8db4169662070a689d9ea8 # v4.1.2
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v4.1.2
         with:
           path: |
             ~/go/pkg/mod
@@ -180,7 +180,7 @@ jobs:
       # ─────────────────────────────────────────────────────────────────
       - name: Cache Go build artifacts
         id: build-cache
-        uses: actions/cache@3624ceb22c1c5a301c8db4169662070a689d9ea8 # v4.1.2
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v4.1.2
         with:
           path: |
             ~/.cache/go-build
@@ -207,7 +207,7 @@ jobs:
       # ─────────────────────────────────────────────────────────────────
       - name: Cache golangci-lint binary
         id: lint-cache
-        uses: actions/cache@3624ceb22c1c5a301c8db4169662070a689d9ea8 # v4.1.2
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v4.1.2
         with:
           path: |
             ~/go/bin/golangci-lint

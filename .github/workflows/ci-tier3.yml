@@ -153,7 +153,7 @@ jobs:
       contents: read
     steps:
       - name: Check out the repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -165,7 +165,7 @@ jobs:
           cache-key-suffix: reproducibility
 
       - name: Set up Go
-        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           check-latest: false
@@ -232,7 +232,7 @@ jobs:
           cat /tmp/repro-manifest.json
 
       - name: Upload manifest
-        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: repro-manifest
           path: /tmp/repro-manifest.json
@@ -250,7 +250,7 @@ jobs:
       contents: read
     steps:
       - name: Check out the repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Provision the caches explicitly.
       - name: Provision caches
@@ -260,7 +260,7 @@ jobs:
           cache-key-suffix: flake-check
 
       - name: Set up Go
-        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           check-latest: false
@@ -307,7 +307,7 @@ jobs:
 
       - name: Upload flake report
         if: always()
-        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: flake-report
           path: /tmp/flake-report.txt
@@ -336,7 +336,7 @@ jobs:
         go: [min, current]
     steps:
       - name: Check out the repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Provision the caches explicitly. The suffix includes the
       # Go-version axis so the two cells do not race on the same key.
@@ -348,7 +348,7 @@ jobs:
           cache-key-suffix: race-full-${{ matrix.go }}
 
       - name: Set up Go (${{ matrix.go }})
-        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ matrix.go == 'min' && '1.23' || '1.24' }}
           check-latest: false
@@ -369,7 +369,7 @@ jobs:
       contents: read
     steps:
       - name: Check out the repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Provision the caches explicitly.
       - name: Provision caches
@@ -379,7 +379,7 @@ jobs:
           cache-key-suffix: coverage
 
       - name: Set up Go
-        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           check-latest: false
@@ -476,7 +476,7 @@ jobs:
 
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-report
           path: |
@@ -496,7 +496,7 @@ jobs:
       contents: read
     steps:
       - name: Check out the repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Provision the caches explicitly.
       - name: Provision caches
@@ -506,7 +506,7 @@ jobs:
           cache-key-suffix: binary-verify-all
 
       - name: Set up Go
-        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           check-latest: false
