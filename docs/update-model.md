@@ -54,8 +54,6 @@ affect `forge new` and `forge check`.
 **Out of scope:**
 
 - The update algorithm implementation (Phase 14)
-- Registry distribution (see
-  [`docs/registry-spec.md`](./registry-spec.md), future)
 - Blueprint schema (see
   [`docs/blueprint-spec.md`](./blueprint-spec.md))
 - Template format (see

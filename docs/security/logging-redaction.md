@@ -232,8 +232,6 @@ count on a typical developer machine.
 
 ## 9. References
 
-- [ADR-022](../decisions/ADR-022-output-logging-separation.md) —
-  output/logging separation.
 - [`../architecture/output-vs-logging.md`](../architecture/output-vs-logging.md)
   — the two-layer output architecture.
 - [`../reference/verbose-mode.md`](../reference/verbose-mode.md)

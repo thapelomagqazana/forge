@@ -42,9 +42,6 @@ and the maintainers agree that an extension serves users better.
 
 The most recent stable release is supported. Older minor releases
 receive security fixes for 90 days after the next minor's release.
-The support window is documented in
-[`docs/reference/release-channels.md`](docs/reference/release-channels.md)
-§"Support".
 
 The `nightly` channel is not supported. A nightly build is a
 snapshot of `main`; it is published for testing and is deleted
